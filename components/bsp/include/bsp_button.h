@@ -12,11 +12,18 @@ typedef enum {
     BSP_BTN_OK,
 } bsp_btn_t;
 
+// 长按时长:LONG 用组件默认档的显式值,LONG2 固定为其 2 倍(meta-pass 两级长按返回机制,
+// 见 docs/assets/meta-pass-design.md §5)。数值从 NULL(组件默认)改为显式常量,行为不变、可读可查。
+#define BSP_BTN_LONG_MS   1500u
+#define BSP_BTN_LONG2_MS  (2u * BSP_BTN_LONG_MS)
+
 typedef enum {
     BSP_BTN_PRESS = 0,   // 按下瞬间(低延迟,适合游戏类即时响应)
     BSP_BTN_CLICK,       // 单击(按下并抬起)
     BSP_BTN_DOUBLE,      // 双击
-    BSP_BTN_LONG,        // 长按
+    BSP_BTN_LONG,        // 长按(按住 BSP_BTN_LONG_MS 时触发)
+    BSP_BTN_LONG2,       // 超长按(按住 BSP_BTN_LONG2_MS 时触发);一次 LONG2 按压会先触发一次 LONG,
+                         // 需要"LONG 与 LONG2 互斥"语义的应用需自行忽略 LONG2 之前的 LONG
 } bsp_btn_ev_t;
 
 // 按键事件回调。运行于 button 组件的定时器任务,勿在其中阻塞或做重活。

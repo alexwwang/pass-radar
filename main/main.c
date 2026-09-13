@@ -15,6 +15,7 @@
 #include "esp_timer.h"
 
 #include "lvgl.h"
+#include "metapass_hook.h"
 #include "radar_espnow.h"
 #include "radar_sweep.h"
 #include "radar_ui.h"
@@ -88,6 +89,14 @@ static void start_sweep(void) {
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     (void)user;
     if (!bsp_lvgl_lock(500)) return;
+
+    // LONG2:退回 meta-pass 启动器(先于 LONG 触发,LONG 视为安全的返回上级)。
+    if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG2) {
+        bsp_lvgl_unlock();
+        metapass_return_to_launcher();
+        return;  // 不会到达(restart)
+    }
+
 
     radar_page_t page = radar_ui_current_page();
 
@@ -164,6 +173,9 @@ void app_main(void) {
             ESP_LOGE(TAG, "广播发射启动失败");
         }
     }
+    // meta-pass 子固件适配:自检通过 → 标记有效(跨重启常驻)。
+    // 非 OTA 启动(直接从 factory 调试)时返回非 ESP_OK,可忽略。
+    metapass_mark_valid();
 
     ESP_LOGI(TAG, "就绪");
 }

@@ -7,5 +7,5 @@ idf_component_register(
          "radar_sweep.c"
          "radar_ui.c"
     INCLUDE_DIRS "."
-    REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
+    REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash app_update
 )
