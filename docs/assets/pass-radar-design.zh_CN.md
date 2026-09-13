@@ -28,9 +28,32 @@ ESP32-C3 的 PCB 天线位于卡片顶部边缘。当卡片置于胸前平握时
 
 这是**相对角度**（相对于旋转起始方向），不是绝对罗盘方位。
 
-## 3. 算法流水线
+## 3. 双角色架构
+
+两台设备运行**同一固件**。每台设备：
+
+1. **广播** ESP-NOW 包（20Hz，50ms 间隔），包含 `radar_packet_t`（设备名 +
+   序列号）。
+2. **接收** 对方设备的广播包并测量 RSSI。
+
+ESP-NOW 广播特性：设备不会收到自己的广播，因此每台接收端只看到对方的信号。
+无需角色分配或配对握手——两台卡片刷同一固件即可自动互相检测。
 
 ```
+设备 A                            设备 B
+  │                                 │
+  ├── 广播 @20Hz ─────────────────→│ 接收 A 的信号，测量 RSSI
+  │                                 │
+  │←──────────── 广播 @20Hz ────────┤ 接收 B 的信号，测量 RSSI
+  │                                 │
+```
+
+## 4. 算法流水线
+
+```
+esp_timer（50ms，broadcast_tick）
+  → esp_now_send(BROADCAST_MAC, radar_packet_t)
+
 ESP-NOW 接收（20Hz，Wi-Fi 任务）
   → 卡尔曼滤波（平滑 ±5dB 抖动）
   → volatile s_filtered_rssi（跨线程）
@@ -68,18 +91,19 @@ ESP-NOW 接收（20Hz，Wi-Fi 任务）
 | 最大采样数 | 100 | 20Hz × 4s = 80 预期；100 留余量 |
 | 弱信号阈值 | -88dBm | 低于此值方向不可靠 |
 
-## 4. 线程安全
+## 5. 线程安全
 
 | 写入方 | 读取方 | 机制 |
 | --- | --- | --- |
 | Wi-Fi 任务（ESP-NOW 回调） | LVGL 任务（lv_timer） | `volatile float s_filtered_rssi` + `volatile int s_raw_rssi` |
 | Wi-Fi 任务（扫盘采样） | LVGL 任务（sweep_done） | `volatile bool s_sweeping` + `volatile unsigned s_sample_count` + `radar_sample_t s_samples[]` |
+| esp_timer（广播） | Wi-Fi 驱动 | `esp_now_send()`（IDF 线程安全） |
 
 ESP-NOW 接收回调运行在 Wi-Fi 任务中，不得触碰 LVGL。所有 LVGL 操作在
 `lv_timer` 回调（LVGL 任务）或 `on_key`（button 任务，持有 `bsp_lvgl_lock()`）
 中执行。
 
-## 5. UI 布局（240×320）
+## 6. UI 布局（240×320）
 
 ```
  0        60        120       180       240
@@ -98,17 +122,35 @@ ESP-NOW 接收回调运行在 Wi-Fi 任务中，不得触碰 LVGL。所有 LVGL 
  |---------|---------|---------|---------|
 ```
 
-三个同心环（25、50、75px 半径）用定位 `lv_obj` 小块绘制。中心点 = 用户。
-目标点按极坐标定位（距离→半径，角度→方向，扫盘后显示）。
+三个同心环（25、50、75px 半径）用边框样式 `lv_obj` 圆绘制（每环 1 个对象，
+避免大量点对象耗尽 LVGL 内存）。中心点 = 用户。目标点按极坐标定位
+（距离→半径，角度→方向，扫盘后显示）。
 
-## 6. 分区布局
+## 7. meta-pass 子固件适配
 
-与基线一致：3MB factory，cardid@0x356000。雷达是单一固件，不需要 OTA 槽位。
+pass-radar 是 meta-pass 兼容子固件：
 
-## 7. 未验证项
+- **`metapass_mark_valid()`**（`app_main()`）：调用
+  `esp_ota_mark_app_valid_cancel_rollback()` 实现跨重启常驻。从 factory
+  直接调试运行时返回错误——忽略。
+- **OK LONG2（3秒）** → `metapass_return_to_launcher()`：切换启动分区到
+  factory 并重启。
+- **MNAM 显示名 blob**：由 meta-pass 安装器在安装时写入 OTA 槽位最后
+  4KB sector。pass-radar 不触碰该区域。
+- **BSP LONG2**：`BSP_BTN_LONG2` 事件（3000ms），与 LONG（1500ms）作为
+  第二个 `BUTTON_LONG_PRESS_START` 回调同时注册。
+
+## 8. 分区布局
+
+与基线一致：3MB factory，cardid@0x356000。作为 meta-pass 子固件安装时，
+使用启动器的分区表（含 OTA 槽位）——子固件 app 二进制由安装器写入
+OTA 槽位。
+
+## 9. 未验证项
 
 - 真机 ESP-NOW RSSI 精度与有效距离
 - 硬件上的卡尔曼参数调优
 - 不同用户的人体屏蔽峰值幅度差异
 - 30 米户外距离声明（需实地测试）
-- 发射端固件（不在本仓库范围内）
+- 拥挤 2.4GHz 环境下的 ESP-NOW 广播可靠性
+- meta-pass 槽位安装端到端流程（需真机配对）

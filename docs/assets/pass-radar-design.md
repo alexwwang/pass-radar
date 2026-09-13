@@ -31,9 +31,34 @@ angle = (peak_timestamp / sweep_duration) × 360°
 This is a **relative** angle from the rotation start direction, not an absolute
 compass bearing.
 
-## 3. Algorithm pipeline
+## 3. Dual-role architecture
+
+Both devices run the **same firmware**. Each device:
+
+1. **Broadcasts** ESP-NOW packets at 20Hz (50ms interval) with a `radar_packet_t`
+   containing device name and sequence number.
+2. **Receives** the other device's broadcast packets and measures RSSI.
+
+ESP-NOW broadcast: a device does not receive its own broadcast, so each receiver
+only sees the other device's signal. No role assignment or pairing handshake is
+needed — flash the same binary on two cards and they automatically detect each
+other.
 
 ```
+Device A                          Device B
+  │                                 │
+  ├── broadcast @20Hz ─────────────→│ receives A's signal, measures RSSI
+  │                                 │
+  │←──────────── broadcast @20Hz ──┤ receives B's signal, measures RSSI
+  │                                 │
+```
+
+## 4. Algorithm pipeline
+
+```
+esp_timer (50ms, broadcast_tick)
+  → esp_now_send(BROADCAST_MAC, radar_packet_t)
+
 ESP-NOW recv (20Hz, Wi-Fi task)
   → Kalman filter (smooth ±5dB jitter)
   → volatile s_filtered_rssi (cross-thread)
@@ -71,18 +96,19 @@ Free-space path loss: `distance = 10^((txPower - rssi) / (10 × n))`
 | Max samples | 100 | 20Hz × 4s = 80 expected; 100 with margin |
 | Weak-signal threshold | -88dBm | Below this, direction is unreliable |
 
-## 4. Thread safety
+## 5. Thread safety
 
 | Writer | Reader | Mechanism |
 | --- | --- | --- |
 | Wi-Fi task (ESP-NOW cb) | LVGL task (lv_timer) | `volatile float s_filtered_rssi` + `volatile int s_raw_rssi` |
 | Wi-Fi task (sweep sampling) | LVGL task (sweep_done) | `volatile bool s_sweeping` + `volatile unsigned s_sample_count` + `radar_sample_t s_samples[]` |
+| esp_timer (broadcast) | Wi-Fi driver | `esp_now_send()` (thread-safe by IDF) |
 
 The ESP-NOW receive callback runs in the Wi-Fi task and must not touch LVGL.
 All LVGL operations happen in `lv_timer` callbacks (LVGL task) or in `on_key`
 (button task, after `bsp_lvgl_lock()`).
 
-## 5. UI layout (240×320)
+## 6. UI layout (240×320)
 
 ```
  0        60        120       180       240
@@ -101,19 +127,36 @@ All LVGL operations happen in `lv_timer` callbacks (LVGL task) or in `on_key`
  |---------|---------|---------|---------|
 ```
 
-Three concentric rings (25, 50, 75px radius) drawn as small positioned `lv_obj`
-blocks. Center dot = user. Target dot at polar coordinate (distance→radius,
-angle→direction after sweep).
+Three concentric rings (25, 50, 75px radius) drawn as border-style `lv_obj`
+circles (1 object per ring, avoiding LVGL memory exhaustion from individual
+dot objects). Center dot = user. Target dot at polar coordinate
+(distance→radius, angle→direction after sweep).
 
-## 6. Partition layout
+## 7. meta-pass child firmware adaptation
 
-Unchanged from baseline: 3MB factory, cardid@0x356000. Radar is a single
-firmware — no OTA slots needed.
+pass-radar is a meta-pass-compatible child firmware:
 
-## 7. What is NOT verified
+- **`metapass_mark_valid()`** in `app_main()`: calls
+  `esp_ota_mark_app_valid_cancel_rollback()` to persist across reboots.
+  Returns error when running from factory (direct flash) — ignored.
+- **OK LONG2 (3s)** → `metapass_return_to_launcher()`: sets boot partition to
+  factory and restarts.
+- **MNAM name blob**: written by the meta-pass installer at install time into
+  the last 4KB sector of the OTA slot. pass-radar does not touch this area.
+- **BSP LONG2**: `BSP_BTN_LONG2` event at 3000ms, registered as a second
+  `BUTTON_LONG_PRESS_START` callback alongside LONG at 1500ms.
+
+## 8. Partition layout
+
+Unchanged from baseline: 3MB factory, cardid@0x356000. When installed as a
+meta-pass child, the launcher's partition table (with OTA slots) is used
+instead — the child app binary is written to an OTA slot by the installer.
+
+## 9. What is NOT verified
 
 - Real-device ESP-NOW RSSI accuracy and range
 - Kalman parameter tuning on hardware
 - Body-shielding peak amplitude across different users
 - 30m outdoor range claim (requires field test)
-- Transmitter firmware (out of scope for this repo)
+- ESP-NOW broadcast reliability in crowded 2.4GHz environments
+- meta-pass slot installation end-to-end (requires real device pair)
