@@ -11,6 +11,7 @@
 
 #define RADAR_MAX_SAMPLES 100
 #define RADAR_SWEEP_DURATION_MS 4000
+#define RADAR_PACKET_NAME_LEN  12
 
 // 数据包结构(发射端发送,接收端解析)
 typedef struct __attribute__((packed)) {
@@ -21,6 +22,13 @@ typedef struct __attribute__((packed)) {
 // ESP-NOW 初始化(NVS/netif/event-loop/Wi-Fi/ESP-NOW 全链路)。
 // 必须在 app_main 中调用。
 esp_err_t radar_espnow_init(void);
+
+// 启动 20Hz 广播发射。device_name 用于标识本机(最长 11 字符)。
+// 两台设备刷同一固件即可互相对测:各自广播,各自接收对方的包。
+esp_err_t radar_espnow_start_broadcast(const char *device_name);
+
+// 停止广播发射。
+void radar_espnow_stop_broadcast(void);
 
 // 获取最新滤波后 RSSI(volatile,线程安全读取)。
 float radar_espnow_filtered_rssi(void);

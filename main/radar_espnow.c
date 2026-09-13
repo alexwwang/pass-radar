@@ -131,8 +131,66 @@ esp_err_t radar_espnow_init(void) {
     return ESP_OK;
 }
 
+// ---------- 广播发射 ----------
+
+static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static esp_timer_handle_t s_broadcast_timer;
+static radar_packet_t s_tx_packet;
+static volatile bool s_broadcasting;
+
+static void broadcast_tick(void *arg) {
+    (void)arg;
+    s_tx_packet.sequence++;
+    esp_now_send(BROADCAST_MAC, (const uint8_t *)&s_tx_packet, sizeof(s_tx_packet));
+}
+
+esp_err_t radar_espnow_start_broadcast(const char *device_name) {
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+    if (s_broadcasting) return ESP_OK;
+
+    // 注册广播 peer
+    esp_now_peer_info_t peer = {0};
+    memcpy(peer.peer_addr, BROADCAST_MAC, 6);
+    peer.channel = 0;  // 当前信道
+    peer.encrypt = false;
+    esp_err_t err = esp_now_add_peer(&peer);
+    if (err != ESP_OK && err != ESP_ERR_ESPNOW_EXIST) return err;
+
+    // 填充数据包
+    memset(&s_tx_packet, 0, sizeof(s_tx_packet));
+    strncpy(s_tx_packet.device_name, device_name, RADAR_PACKET_NAME_LEN - 1);
+    s_tx_packet.sequence = 0;
+
+    // 创建 50ms 周期定时器(20Hz)
+    esp_timer_create_args_t timer_args = {
+        .callback = broadcast_tick,
+        .name = "radar_tx",
+    };
+    err = esp_timer_create(&timer_args, &s_broadcast_timer);
+    if (err != ESP_OK) return err;
+
+    err = esp_timer_start_periodic(s_broadcast_timer, 50000);  // 50ms in us
+    if (err != ESP_OK) {
+        esp_timer_delete(s_broadcast_timer);
+        return err;
+    }
+
+    s_broadcasting = true;
+    ESP_LOGI(TAG, "广播发射启动: %s @20Hz", device_name);
+    return ESP_OK;
+}
+
+void radar_espnow_stop_broadcast(void) {
+    if (!s_broadcasting) return;
+    esp_timer_stop(s_broadcast_timer);
+    esp_timer_delete(s_broadcast_timer);
+    s_broadcast_timer = NULL;
+    s_broadcasting = false;
+    esp_now_del_peer(BROADCAST_MAC);
+}
+
 void radar_espnow_deinit(void) {
-    if (!s_initialized) return;
+    radar_espnow_stop_broadcast();
     esp_now_unregister_recv_cb();
     esp_now_deinit();
     esp_wifi_stop();

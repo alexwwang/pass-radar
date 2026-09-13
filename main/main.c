@@ -158,6 +158,11 @@ void app_main(void) {
     // ESP-NOW 初始化放在 UI 之后:失败不阻塞界面,仅影响信号采集。
     if (radar_espnow_init() != ESP_OK) {
         ESP_LOGE(TAG, "ESP-NOW 初始化失败,雷达将无法接收信号");
+    } else {
+        // 自动启动 20Hz 广播发射:两台设备刷同一固件即可互相对测。
+        if (radar_espnow_start_broadcast("pass-radar") != ESP_OK) {
+            ESP_LOGE(TAG, "广播发射启动失败");
+        }
     }
 
     ESP_LOGI(TAG, "就绪");
