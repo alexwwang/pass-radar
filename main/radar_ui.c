@@ -54,19 +54,17 @@ static void polar_to_xy(int angle_deg, int radius, int *x, int *y) {
 
 // ---------- 绘制雷达圆环 ----------
 
-// 在外圈面板内绘制同心环(用小矩形块拼出圆环)。
-// ring_r: 环半径。color: 颜色。每 8° 放一个块。
+// 在外圈面板内绘制同心环(单个圆形边框对象,避免大量 lv_obj 耗尽 LVGL 内存)。
 static void draw_ring(lv_obj_t *parent, int ring_r, uint32_t color) {
-    for (int a = 0; a < 360; a += 8) {
-        int x, y;
-        polar_to_xy(a, ring_r, &x, &y);
-        lv_obj_t *dot = lv_obj_create(parent);
-        lv_obj_set_size(dot, RADAR_RING_W, RADAR_RING_W);
-        lv_obj_set_pos(dot, x - RADAR_RING_W / 2, y - RADAR_RING_W / 2);
-        lv_obj_set_style_bg_color(dot, lv_color_hex(color), 0);
-        lv_obj_set_style_border_width(dot, 0, 0);
-        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-    }
+    lv_obj_t *ring = lv_obj_create(parent);
+    lv_obj_set_size(ring, ring_r * 2, ring_r * 2);
+    lv_obj_set_pos(ring, RADAR_CX - ring_r, RADAR_CY - ring_r);
+    lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(ring, RADAR_RING_W, 0);
+    lv_obj_set_style_border_color(ring, lv_color_hex(color), 0);
+    lv_obj_set_style_border_opa(ring, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+    lv_obj_remove_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
 }
 
 // ---------- 公共小部件 ----------
@@ -210,7 +208,8 @@ void radar_ui_update_tracking(float filtered_rssi, int raw_rssi, float distance_
 
     // 更新文字
     if (s_dist_label) {
-        lv_label_set_text_fmt(s_dist_label, "DIST: %.1f m", (double)distance_m);
+        int dm = (int)(distance_m * 10.0f + 0.5f);  // 分米(整数)
+        lv_label_set_text_fmt(s_dist_label, "DIST: %d.%d m", dm / 10, dm % 10);
     }
     if (s_rssi_label) {
         lv_label_set_text_fmt(s_rssi_label, "RSSI: %d dBm", raw_rssi);
@@ -277,7 +276,8 @@ void radar_ui_show_result(int angle_deg, float distance_m, bool weak_signal) {
         lv_label_set_text_fmt(s_result_angle, "Angle: %d deg", angle_deg);
     }
     if (s_result_dist) {
-        lv_label_set_text_fmt(s_result_dist, "Dist: %.1f m", (double)distance_m);
+        int dm = (int)(distance_m * 10.0f + 0.5f);
+        lv_label_set_text_fmt(s_result_dist, "Dist: %d.%d m", dm / 10, dm % 10);
     }
 
     // 在雷达上画出目标方向

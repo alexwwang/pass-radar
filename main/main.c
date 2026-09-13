@@ -144,11 +144,7 @@ void app_main(void) {
         ESP_LOGE(TAG, "按键初始化失败,设备将无法操作");
     }
 
-    // ESP-NOW 初始化(Wi-Fi 依赖 NVS/netif/event-loop,由 radar_espnow 内部处理)。
-    if (radar_espnow_init() != ESP_OK) {
-        ESP_LOGE(TAG, "ESP-NOW 初始化失败");
-    }
-
+    // 先构建 UI:即使 ESP-NOW 不可用,用户也能看到雷达界面(显示无信号)。
     if (bsp_lvgl_lock(1000)) {
         radar_ui_init();
 
@@ -157,6 +153,11 @@ void app_main(void) {
         s_sweep_timer = NULL;
 
         bsp_lvgl_unlock();
+    }
+
+    // ESP-NOW 初始化放在 UI 之后:失败不阻塞界面,仅影响信号采集。
+    if (radar_espnow_init() != ESP_OK) {
+        ESP_LOGE(TAG, "ESP-NOW 初始化失败,雷达将无法接收信号");
     }
 
     ESP_LOGI(TAG, "就绪");
