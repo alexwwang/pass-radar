@@ -24,34 +24,26 @@ static const char *TAG = "pass-radar";
 // ---------- 状态 ----------
 static lv_timer_t *s_poll_timer;   // 100ms 轮询 RSSI 并更新 UI
 static lv_timer_t *s_sweep_timer;  // 4s 扫盘一次性定时器
+static int64_t     s_sweep_start_ms; // 扫盘起始时刻(start_sweep 记录)
 
 // ---------- 定时器回调(LVGL 任务上下文,可直接操作 lv_obj) ----------
 
-// 100ms 轮询:读 ESP-NOW 最新 RSSI,更新主页面显示。
+// 100ms 轮询:根据当前页面更新显示(追踪 RSSI / 扫盘进度)。
 static void poll_tick(lv_timer_t *t) {
     (void)t;
-    if (radar_ui_current_page() != RADAR_PAGE_MAIN) return;
+    radar_page_t page = radar_ui_current_page();
 
-    float filtered = radar_espnow_filtered_rssi();
-    int raw = radar_espnow_raw_rssi();
-    float dist = radar_sweep_calc_distance(filtered);
-
-    radar_ui_update_tracking(filtered, raw, dist);
-}
-
-// 扫盘进度更新(由 poll_tick 在扫盘页面时代用)。
-static void sweep_progress_tick(lv_timer_t *t) {
-    (void)t;
-    if (radar_ui_current_page() != RADAR_PAGE_SWEEPING) return;
-
-    static int64_t sweep_start_ms = 0;
-    if (sweep_start_ms == 0) {
-        sweep_start_ms = esp_timer_get_time() / 1000;
+    if (page == RADAR_PAGE_MAIN) {
+        float filtered = radar_espnow_filtered_rssi();
+        int raw = radar_espnow_raw_rssi();
+        float dist = radar_sweep_calc_distance(filtered);
+        radar_ui_update_tracking(filtered, raw, dist);
+    } else if (page == RADAR_PAGE_SWEEPING) {
+        int64_t elapsed = (esp_timer_get_time() / 1000) - s_sweep_start_ms;
+        float progress = (float)elapsed / (float)RADAR_SWEEP_DURATION_MS;
+        if (progress > 1.0f) progress = 1.0f;
+        radar_ui_update_sweep_progress(progress);
     }
-    int64_t elapsed = (esp_timer_get_time() / 1000) - sweep_start_ms;
-    float progress = (float)elapsed / (float)RADAR_SWEEP_DURATION_MS;
-    if (progress > 1.0f) progress = 1.0f;
-    radar_ui_update_sweep_progress(progress);
 }
 
 // 4s 扫盘结束:停止采样,计算峰值角度,显示结果。
@@ -82,6 +74,7 @@ static void sweep_done(lv_timer_t *t) {
 // ---------- 扫盘启动 ----------
 
 static void start_sweep(void) {
+    s_sweep_start_ms = esp_timer_get_time() / 1000;
     radar_espnow_start_sweep();
     radar_ui_show_sweeping();
 
