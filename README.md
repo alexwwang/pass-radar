@@ -103,7 +103,7 @@ no ESP-IDF dependency. UI and ESP-NOW integration require real hardware or the
 | Host tests | Kalman convergence + noise reduction, distance model, peak angle detection — all pass |
 | Firmware build | ESP-IDF 5.5.3, app 961KB / 3MB (31%), protected layout PASS |
 | Web simulator | Radar UI renders, button interaction works, sweep animation runs, weak-signal guard triggers, full page cycle verified |
-| Real hardware | **Not tested** — requires two paired devices |
+| Real hardware | Two-device pairing, live distance tracking, 360° sweep direction finding — verified |
 
 ## Relationship to the official firmware
 

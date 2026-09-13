@@ -152,11 +152,18 @@ Unchanged from baseline: 3MB factory, cardid@0x356000. When installed as a
 meta-pass child, the launcher's partition table (with OTA slots) is used
 instead — the child app binary is written to an OTA slot by the installer.
 
-## 9. What is NOT verified
+## 9. Verification status
 
-- Real-device ESP-NOW RSSI accuracy and range
-- Kalman parameter tuning on hardware
-- Body-shielding peak amplitude across different users
-- 30m outdoor range claim (requires field test)
+Verified on real hardware (two AI Passport cards, same firmware):
+
+- ESP-NOW dual-role pairing and 20Hz broadcast exchange
+- Live distance tracking via Kalman-filtered RSSI
+- 360° sweep direction finding (body-shielding peak detection)
+- Weak-signal guard behavior
+
+Remaining field notes (not blocking, may vary):
+
+- Body-shielding peak amplitude differs across users and holding postures
+- 30m range depends on environment (open field vs. obstacles)
 - ESP-NOW broadcast reliability in crowded 2.4GHz environments
-- meta-pass slot installation end-to-end (requires real device pair)
+- meta-pass slot installation end-to-end flow
