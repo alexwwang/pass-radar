@@ -173,9 +173,11 @@ void app_main(void) {
             ESP_LOGE(TAG, "广播发射启动失败");
         }
     }
-    // meta-pass 子固件适配:自检通过 → 标记有效(跨重启常驻)。
-    // 非 OTA 启动(直接从 factory 调试)时返回非 ESP_OK,可忽略。
-    metapass_mark_valid();
+    // meta-pass 子固件适配:签名固件常驻,未签名试运行(重启回启动器)。
+    esp_err_t mv = metapass_mark_valid();
+    if (mv != ESP_OK) {
+        ESP_LOGI(TAG, "试运行模式(下次重启回启动器): %s", esp_err_to_name(mv));
+    }
 
     ESP_LOGI(TAG, "就绪");
 }
