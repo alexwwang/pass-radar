@@ -83,6 +83,7 @@ meta-pass LONG2 launcher return.
 ```text
 Phase 0: Build PASS · Host tests PASS · Device tests NOT RUN
 Phase 1: Build PASS (app 1.19MB / 3MB) · Host tests PASS · Device tests NOT RUN
+Phase 2: Build PASS (app 1.20MB / 3MB) · Host tests PASS · Device tests NOT RUN
 ```
 
 Device-verification note for Phase 1: the follower auto-start, BLE near/far

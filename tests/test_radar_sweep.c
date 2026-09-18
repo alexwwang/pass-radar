@@ -224,6 +224,88 @@ static void test_channel_angles_vote(void) {
     printf("  channel_angles_vote: PASS\n");
 }
 
+// ---- 旋转速度自校正(阶段 2) ----
+
+// 名义 4s 窗口内旋转 early_stop_ms 后停转:完整余弦方向图压缩进
+// [0, early_stop_ms](一圈提前转完),尾部为平坦噪声(无方向信息)。
+static unsigned build_early_stop(radar_sample_t *out, unsigned max,
+                                 uint32_t early_stop_ms, float peak_ms,
+                                 uint8_t channel) {
+    unsigned n = 0;
+    for (uint32_t t = 0; t < SWEEP_MS && n < max; t += 50) {
+        out[n].timestamp_ms = t;
+        out[n].channel = channel;
+        if (t <= early_stop_ms) {
+            float phase = ((float)t - peak_ms) / (float)early_stop_ms * 2.0f * 3.14159265f;
+            out[n].rssi = -70.0f + 12.0f * 0.5f * (1.0f + cosf(phase));
+        } else {
+            out[n].rssi = -70.0f + (float)(n % 3) * 0.4f;  // 停转后平台噪声
+        }
+        n++;
+    }
+    return n;
+}
+
+static void test_rotation_self_correction(void) {
+    radar_sample_t samples[128];
+
+    // 1) 名义 4s 完整旋转:不修正(时长保持 4000,样本数不变)
+    unsigned n = build_pattern(samples, 128, SWEEP_MS, 2000.0f, 12.0f, 0);
+    uint32_t dur = 0;
+    unsigned m = radar_sweep_effective_duration_ms(samples, n, SWEEP_MS, &dur);
+    CHECK(dur == SWEEP_MS, "nominal sweep should not be corrected, dur=%lu", (unsigned long)dur);
+    CHECK(m == n, "nominal sweep should keep all samples, %u vs %u", m, n);
+
+    // 2) 提前 3s 停转(真峰 1500ms → 实际旋转 180°):
+    //    未修正映射 1500/4000 = 135°;修正后 1500/3000 = 180°。
+    n = build_early_stop(samples, 128, 3000, 1500.0f, 0);
+    uint32_t period = radar_sweep_estimate_period_ms(samples, n, SWEEP_MS);
+    CHECK(period >= 2900 && period <= 3100,
+          "estimated period %lu, expected ~3000", (unsigned long)period);
+
+    m = radar_sweep_effective_duration_ms(samples, n, SWEEP_MS, &dur);
+    CHECK(dur <= 3100 && m < n,
+          "early stop should trim samples: m=%u n=%u dur=%lu", m, n, (unsigned long)dur);
+
+    float ang_uncorrected = radar_sweep_harmonic_angle(samples, n, SWEEP_MS, NULL);
+    CHECK(radar_fusion_angle_diff(ang_uncorrected, 135.0f) < 15.0f,
+          "uncorrected angle %.1f should be near 135 (biased)", ang_uncorrected);
+
+    float amp = 0.0f;
+    float ang_corrected = radar_sweep_harmonic_angle(samples, m, dur, &amp);
+    CHECK(ang_corrected >= 0.0f, "corrected fit should succeed (amp %.1f)", amp);
+    if (ang_corrected >= 0.0f) {
+        CHECK(radar_fusion_angle_diff(ang_corrected, 180.0f) < 10.0f,
+              "corrected angle %.1f should be near 180", ang_corrected);
+    }
+
+    // 3) 样本太少或平台无峰:不修正
+    n = build_early_stop(samples, 128, 500, 250.0f, 0);  // 早停且无完整一圈
+    period = radar_sweep_estimate_period_ms(samples, n, SWEEP_MS);
+    CHECK(period == SWEEP_MS, "flat/degenerate samples should not be corrected, got %lu",
+          (unsigned long)period);
+
+    printf("  rotation_self_correction: PASS\n");
+}
+
+static void test_harmonic_fit_no_gate(void) {
+    radar_sample_t samples[80];
+    unsigned n = build_pattern(samples, 80, SWEEP_MS, 2000.0f, 12.0f, 0);
+
+    float amp = 0.0f, res = -1.0f;
+    float ang = radar_sweep_harmonic_fit(samples, n, SWEEP_MS, &amp, &res);
+    CHECK(ang >= 0.0f && radar_fusion_angle_diff(ang, 180.0f) < 5.0f,
+          "fit angle %.1f should be near 180", ang);
+    CHECK(amp > 5.0f, "fit amplitude %.1f should be ~6 (half of 12dB depth)", amp);
+    CHECK(res >= 0.0f && res < 1.0f, "fit residual %.2f should be small", res);
+
+    // 样本不足
+    CHECK(radar_sweep_harmonic_fit(samples, 3, SWEEP_MS, NULL, NULL) < 0.0f,
+          "too few samples should fail");
+
+    printf("  harmonic_fit_no_gate: PASS\n");
+}
+
 int main(void) {
     test_distance();
     test_peak_angle();
@@ -232,6 +314,8 @@ int main(void) {
     test_peak_prominence();
     test_channel_schedule();
     test_channel_angles_vote();
+    test_rotation_self_correction();
+    test_harmonic_fit_no_gate();
     if (s_failures != 0) {
         fprintf(stderr, "FAILED: %d check(s)\n", s_failures);
         return 1;

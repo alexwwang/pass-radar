@@ -152,6 +152,20 @@ float radar_sweep_harmonic_angle_ex(const radar_sample_t *samples, unsigned coun
                                     uint32_t sweep_duration_ms,
                                     float *out_amplitude_db,
                                     float *out_residual_db) {
+    float amp = 0.0f, res = INFINITY;
+    float ang = radar_sweep_harmonic_fit(samples, count, sweep_duration_ms,
+                                         &amp, &res);
+    if (ang < 0.0f) return -1.0f;
+    // 质量门限:拟合残差过大说明方向图非一次谐波(多径/噪声),拒绝该结果。
+    if (!isfinite(res) || res > SWEEP_MAX_RMS_RESIDUAL_DB) return -1.0f;
+    if (out_amplitude_db) *out_amplitude_db = amp;
+    if (out_residual_db) *out_residual_db = res;
+    return ang;
+}
+
+float radar_sweep_harmonic_fit(const radar_sample_t *samples, unsigned count,
+                               uint32_t sweep_duration_ms,
+                               float *out_amplitude_db, float *out_residual_db) {
     if (out_amplitude_db) *out_amplitude_db = 0.0f;
     if (out_residual_db) *out_residual_db = INFINITY;
     if (!samples || count < SWEEP_GROUP_MIN || sweep_duration_ms == 0) return -1.0f;
@@ -193,7 +207,7 @@ float radar_sweep_harmonic_angle_ex(const radar_sample_t *samples, unsigned coun
     }
     float rms = sqrtf(residual_sum / (float)count);
     if (out_residual_db) *out_residual_db = rms;
-    if (!isfinite(rms) || rms > SWEEP_MAX_RMS_RESIDUAL_DB) return -1.0f;
+    if (!isfinite(amp)) return -1.0f;
 
     float ang = atan2f(x[2], x[1]) * 180.0f / SWEEP_PI;
     if (ang < 0.0f) ang += 360.0f;
@@ -281,4 +295,89 @@ float radar_sweep_angle_vote(const float *angles, unsigned count, float *out_spr
     float voted = fmodf(angles[best], 360.0f);
     if (voted < 0.0f) voted += 360.0f;
     return voted;
+}
+
+// ---- 旋转速度自校正(调研 5.4 P1) ----
+
+// 周期搜索范围与接受门限
+#define SWEEP_PERIOD_MIN_MS      2000u
+#define SWEEP_PERIOD_STEP_MS     100u
+#define SWEEP_PERIOD_REFINE_MS   20u
+#define SWEEP_PERIOD_RESIDUAL_GAIN 0.7f   // 残差需比当前最优低 30% 以上
+
+// 样本前缀中时间 ≤ t_ms 的个数(样本已按时间排序)
+static unsigned prefix_count(const radar_sample_t *samples, unsigned count,
+                             uint32_t t_ms) {
+    unsigned m = 0;
+    while (m < count && samples[m].timestamp_ms <= t_ms) m++;
+    return m;
+}
+
+uint32_t radar_sweep_estimate_period_ms(const radar_sample_t *samples, unsigned count,
+                                        uint32_t sweep_duration_ms) {
+    if (!samples || count < 24 ||
+        sweep_duration_ms < SWEEP_PERIOD_MIN_MS + 2u * SWEEP_PERIOD_STEP_MS)
+        return sweep_duration_ms;
+
+    // 名义拟合基线:幅度不足或拟合失败则不校正(交给上层回退路径)。
+    // 注意谐波幅度是峰-基线的一半,与信道门 2·amp 保持同一约定。
+    float amp0 = 0.0f, res0 = INFINITY;
+    if (radar_sweep_harmonic_fit(samples, count, sweep_duration_ms,
+                                 &amp0, &res0) < 0.0f ||
+        2.0f * amp0 < RADAR_SWEEP_MIN_PROMINENCE_DB) {
+        return sweep_duration_ms;
+    }
+
+    // 粗搜索:候选周期 T ∈ [2.0s, duration-100ms],截断到 t ≤ T 后重新拟合,
+    // 残差显著优于当前最优者胜出。提前停转时,尾部样本(恒定姿态,无方向
+    // 信息)会污染名义拟合;正确 T 下一次谐波拟合残差接近纯噪声水平。
+    uint32_t best_t = sweep_duration_ms;
+    float best_res = res0;
+    for (uint32_t t = sweep_duration_ms - SWEEP_PERIOD_STEP_MS;
+         t >= SWEEP_PERIOD_MIN_MS; t -= SWEEP_PERIOD_STEP_MS) {
+        unsigned m = prefix_count(samples, count, t);
+        if (m < 24) break;
+        float amp = 0.0f, res = INFINITY;
+        if (radar_sweep_harmonic_fit(samples, m, t, &amp, &res) < 0.0f) continue;
+        if (2.0f * amp < RADAR_SWEEP_MIN_PROMINENCE_DB) continue;
+        if (res < best_res * SWEEP_PERIOD_RESIDUAL_GAIN) {
+            best_res = res;
+            best_t = t;
+        }
+    }
+    if (best_t == sweep_duration_ms) return sweep_duration_ms;
+
+    // 细化:在最优 T 附近 ±步长内以 20ms 网格重搜(角度粒度 ≤ ~2.5°)。
+    uint32_t lo = best_t > SWEEP_PERIOD_STEP_MS
+                      ? best_t - SWEEP_PERIOD_STEP_MS : best_t;
+    uint32_t hi = best_t + SWEEP_PERIOD_STEP_MS;
+    if (hi >= sweep_duration_ms) hi = sweep_duration_ms - 1;
+    for (uint32_t t = lo; t <= hi; t += SWEEP_PERIOD_REFINE_MS) {
+        unsigned m = prefix_count(samples, count, t);
+        if (m < 24) break;
+        float amp = 0.0f, res = INFINITY;
+        if (radar_sweep_harmonic_fit(samples, m, t, &amp, &res) < 0.0f) continue;
+        if (2.0f * amp < RADAR_SWEEP_MIN_PROMINENCE_DB) continue;
+        if (res < best_res) {
+            best_res = res;
+            best_t = t;
+        }
+    }
+    return best_t;
+}
+
+unsigned radar_sweep_effective_duration_ms(const radar_sample_t *samples, unsigned count,
+                                           uint32_t sweep_duration_ms,
+                                           uint32_t *out_duration_ms) {
+    if (!out_duration_ms) return count;
+    *out_duration_ms = sweep_duration_ms;
+    if (!samples || count == 0) return count;
+
+    uint32_t t = radar_sweep_estimate_period_ms(samples, count, sweep_duration_ms);
+    if (t >= sweep_duration_ms) return count;
+
+    unsigned m = prefix_count(samples, count, t);
+    if (m < 12) return count;   // 截断后样本不足,放弃修正
+    *out_duration_ms = t;
+    return m;
 }

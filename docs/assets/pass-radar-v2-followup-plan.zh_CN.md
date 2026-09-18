@@ -76,6 +76,7 @@ meta-pass LONG2 返回启动器。
 ```text
 Phase 0: Build PASS · Host tests PASS · Device tests NOT RUN
 Phase 1: Build PASS(app 1.19MB / 3MB) · Host tests PASS · Device tests NOT RUN
+Phase 2: Build PASS(app 1.20MB / 3MB) · Host tests PASS · Device tests NOT RUN
 ```
 
 阶段 1 真机验证备注:跟随启动、BLE 远/近阈值、遮挡判据均需按阶段 4

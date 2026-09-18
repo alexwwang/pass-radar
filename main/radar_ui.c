@@ -2,6 +2,8 @@
 // 使用 ui_pixel 基元 + lv_obj 定位块构建 240×320 雷达画面。
 #include "radar_ui.h"
 #include "ui_pixel.h"
+#include "radar_sweep.h"
+#include "radar_ftm.h"
 #include "radar_ble.h"
 #include "lvgl.h"
 #include <math.h>
@@ -48,6 +50,9 @@ static lv_obj_t *s_result_sector;
 
 // 标定页面对象
 static lv_obj_t *s_calib_bar;
+
+// 诊断页面对象
+static lv_obj_t *s_debug_label;
 
 // ---------- 坐标转换 ----------
 
@@ -195,6 +200,18 @@ static void build_calib_page(void) {
     lv_screen_load(s_scr);
 }
 
+static void build_debug_page(void) {
+    s_scr = ui_pixel_screen_create("DEBUG");
+    build_radar_panel();
+
+    // 单块多行文本,避免大量小标签对象(雷达页面 LVGL 内存教训)。
+    s_debug_label = add_info_label(s_scr, 228, &lv_font_montserrat_14);
+    lv_obj_set_width(s_debug_label, 230);
+    lv_label_set_text(s_debug_label, "...");
+
+    lv_screen_load(s_scr);
+}
+
 static void page_teardown(void) {
     if (s_scr) {
         lv_obj_delete(s_scr);
@@ -212,6 +229,7 @@ static void page_teardown(void) {
         s_result_dist = NULL;
         s_result_sector = NULL;
         s_calib_bar = NULL;
+        s_debug_label = NULL;
     }
 }
 
@@ -368,6 +386,48 @@ void radar_ui_show_calib(void) {
     page_teardown();
     s_page = RADAR_PAGE_CALIB;
     build_calib_page();
+}
+
+void radar_ui_show_debug(void) {
+    page_teardown();
+    s_page = RADAR_PAGE_DEBUG;
+    build_debug_page();
+}
+
+void radar_ui_update_debug(const radar_debug_info_t *info) {
+    if (s_page != RADAR_PAGE_DEBUG || !s_scr || !s_debug_label || !info) return;
+
+    // 行1:v1 基线(纯 RSSI 路径损耗)vs v2 融合(A/B 回归,调研 5.9)
+    // 行2:FTM 质量 / BLE 哨兵
+    // 行3:环境与标定参数 / 最近投票分歧
+    if (info->fr && info->fr->conf != RADAR_CONF_OOR && info->fr->distance_m > 0.0f) {
+        int v2dm = (int)(info->fr->distance_m * 10.0f + 0.5f);
+        lv_label_set_text_fmt(s_debug_label,
+            "v1 %d.%d m | v2 %s%d.%d m [%s]\n"
+            "FTM %s %.1f m ±%.1f b%u | BLE %s\n"
+            "env %d n%.1f tx %.0f spread %.0f",
+            (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
+            info->fr->conf == RADAR_CONF_HIGH ? "" : "~",
+            v2dm / 10, v2dm % 10, conf_tag(info->fr->conf),
+            info->ftm_valid ? "ok" : "--",
+            (double)info->ftm_dist_m, (double)info->ftm_spread_m, info->ftm_bursts,
+            info->ble_alive ? "yes" : "no",
+            (int)info->env,
+            (double)radar_env_path_loss_n(info->env),
+            (double)info->tx_ref_sym, (double)info->vote_spread_deg);
+    } else {
+        lv_label_set_text_fmt(s_debug_label,
+            "v1 %d.%d m | v2 OUT OF RANGE\n"
+            "FTM %s %.1f m ±%.1f b%u | BLE %s\n"
+            "env %d n%.1f tx %.0f spread %.0f",
+            (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
+            info->ftm_valid ? "ok" : "--",
+            (double)info->ftm_dist_m, (double)info->ftm_spread_m, info->ftm_bursts,
+            info->ble_alive ? "yes" : "no",
+            (int)info->env,
+            (double)radar_env_path_loss_n(info->env),
+            (double)info->tx_ref_sym, (double)info->vote_spread_deg);
+    }
 }
 
 void radar_ui_update_calib(float progress) {

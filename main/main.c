@@ -3,6 +3,7 @@
 // 按键语义:
 //   确定  短按   主页面=启动 360° 扫盘;结果页=返回主页面
 //   确定  长按   主页面=1m 标定(两卡相距 1m 静止 3s);扫盘中=取消;结果页=返回
+//   上    长按   主页面↔诊断页(v1/v2 管线 A/B 回归 + 现场诊断)
 //   上/下 短按   (保留,暂不分配)
 //
 // 数据流:
@@ -114,6 +115,34 @@ static void poll_tick(lv_timer_t *t) {
         int raw = radar_espnow_raw_rssi();
         radar_ui_update_tracking(&fr, raw, radar_ble_peer_alive(),
                                  s_last_vote_spread);
+    } else if (page == RADAR_PAGE_DEBUG) {
+        // 诊断页:同速率复用融合管线(环境估计每 100ms 仍只喂一次),
+        // 并排显示 v1 纯 RSSI 距离作 A/B 回归基线(调研 5.9)。
+        radar_fusion_result_t fr = run_fusion();
+        radar_debug_info_t di = {
+            .raw_rssi = radar_espnow_raw_rssi(),
+            .filtered_rssi = radar_espnow_filtered_rssi(),
+            .v1_dist_m = radar_sweep_calc_distance(radar_espnow_filtered_rssi()),
+            .fr = &fr,
+            .ftm_valid = false,
+            .ftm_dist_m = RADAR_DIST_INVALID,
+            .ftm_spread_m = 0.0f,
+            .ftm_bursts = 0,
+            .ble_alive = radar_ble_peer_alive(),
+            .ble_rssi = radar_ble_peer_rssi(),
+            .env = s_env_est.env,
+            .env_mean_rssi = s_env_est.mean_rssi,
+            .tx_ref_sym = s_tx_ref_sym,
+            .vote_spread_deg = s_last_vote_spread,
+        };
+        radar_ftm_snapshot_t snap;
+        if (radar_ftm_get_snapshot(&snap)) {
+            di.ftm_valid = true;
+            di.ftm_dist_m = snap.distance_m;
+            di.ftm_spread_m = snap.spread_m;
+            di.ftm_bursts = snap.valid_bursts;
+        }
+        radar_ui_update_debug(&di);
     } else if (page == RADAR_PAGE_SWEEPING) {
         int64_t elapsed = (esp_timer_get_time() / 1000) - s_sweep_start_ms;
         float progress = (float)elapsed / (float)RADAR_SWEEP_DURATION_MS;
@@ -147,11 +176,22 @@ static void sweep_done(lv_timer_t *t) {
     radar_sample_t samples[RADAR_MAX_SAMPLES];
     count = radar_espnow_get_samples(samples, RADAR_MAX_SAMPLES);
 
+    // 旋转速度自校正(调研 5.4 P1):估计实际完成时刻,剔除提前停转后的
+    // 尾部平台样本,并缩短时间→角度映射基准。未检出修正时保持 4s。
+    uint32_t sweep_duration = RADAR_SWEEP_DURATION_MS;
+    count = radar_sweep_effective_duration_ms(samples, count,
+                                              RADAR_SWEEP_DURATION_MS,
+                                              &sweep_duration);
+    if (sweep_duration != RADAR_SWEEP_DURATION_MS) {
+        ESP_LOGI(TAG, "sweep self-correction: duration %u -> %lu ms (%u samples)",
+                 RADAR_SWEEP_DURATION_MS, (unsigned long)sweep_duration, count);
+    }
+
     // 角度:信道分集谐波拟合 + 投票;失败回退全局插值峰检测。
     bool sweep_valid = count >= 12;
     for (unsigned i = 1; sweep_valid && i < count; ++i) {
         if (samples[i].timestamp_ms <= samples[i - 1].timestamp_ms ||
-            samples[i].timestamp_ms > RADAR_SWEEP_DURATION_MS) {
+            samples[i].timestamp_ms > sweep_duration) {
             sweep_valid = false;
         }
     }
@@ -159,14 +199,13 @@ static void sweep_done(lv_timer_t *t) {
     float spread = sweep_valid ? 0.0f : 90.0f;
     float ch_angles[4];
     unsigned nch = sweep_valid ? radar_sweep_channel_angles(samples, count,
-                                                              RADAR_SWEEP_DURATION_MS,
+                                                              sweep_duration,
                                                               ch_angles, 4) : 0;
     if (nch > 0) {
         angle = radar_sweep_angle_vote(ch_angles, nch, &spread);
     } else if (sweep_valid && radar_sweep_peak_prominence(samples, count) >=
                RADAR_SWEEP_MIN_PROMINENCE_DB) {
-        angle = radar_sweep_peak_angle_interp(samples, count,
-                                              RADAR_SWEEP_DURATION_MS);
+        angle = radar_sweep_peak_angle_interp(samples, count, sweep_duration);
         spread = 45.0f;  // 单源估计,给保守分歧
     }
 
@@ -302,6 +341,9 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
             start_sweep();
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
             start_calib();
+        } else if (btn == BSP_BTN_UP && ev == BSP_BTN_LONG) {
+            // 诊断/回归页(RSSI-only A/B 基线 + 现场诊断)。
+            radar_ui_show_debug();
         }
         break;
 
@@ -319,7 +361,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         break;
 
     case RADAR_PAGE_CALIB:
-        // 长按取消标定
+        // 长按或短按取消标定
         if (btn == BSP_BTN_OK && (ev == BSP_BTN_LONG || ev == BSP_BTN_CLICK)) {
             if (s_calib_timer) {
                 lv_timer_delete(s_calib_timer);
@@ -333,6 +375,14 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
             radar_ui_show_main();
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+            radar_ui_show_main();
+        }
+        break;
+
+    case RADAR_PAGE_DEBUG:
+        // 任意 OK 键返回追踪页;UP 长按再次切换(页面向)。
+        if (btn == BSP_BTN_OK ||
+            (btn == BSP_BTN_UP && ev == BSP_BTN_LONG)) {
             radar_ui_show_main();
         }
         break;

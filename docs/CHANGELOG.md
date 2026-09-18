@@ -5,6 +5,13 @@ English | [简体中文](CHANGELOG.zh_CN.md)
 ## Unreleased
 
 ### Added
+- Rotation-speed self-correction: harmonic-fit period search estimates the
+  actual sweep completion time, trims post-stop samples and rescales the
+  time→angle mapping when the user finishes the 360° rotation early
+  (host-tested with 3s early-stop patterns)
+- Debug/regression page (UP long-press from tracking): v1 RSSI-only distance
+  vs v2 fused distance (A/B baseline), FTM quality, BLE sentinel, environment
+  n and calibration reference, last vote spread
 - Dual-end simultaneous sweep: the idle card auto-starts a sweep when the peer
   begins one (per sweep-id, ≤1s late), and the result fuses both angles via
   circular mean with the pair disagreement folded into the reported spread

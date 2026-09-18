@@ -68,13 +68,35 @@ uint8_t radar_sweep_channel_at(uint32_t t_ms, uint32_t sweep_duration_ms);
 // 峰角 = atan2(c, b)。相比原始峰检测,对快跳造成的稀疏/成簇采样鲁棒。
 // out_amplitude_db 输出拟合幅度(峰-基线,dB),可为 NULL。
 // out_residual_db 输出拟合 RMS 残差,可为 NULL。
-// 样本不足(<6)或法方程退化返回 -1.0f。
+// 样本不足(<6)、法方程退化或残差超过门限(SWEEP_MAX_RMS_RESIDUAL_DB)
+// 返回 -1.0f。
 float radar_sweep_harmonic_angle_ex(const radar_sample_t *samples, unsigned count,
                                     uint32_t sweep_duration_ms,
                                     float *out_amplitude_db,
                                     float *out_residual_db);
+// 同上但无残差门限(供周期搜索按残差自由比较)。
+// 样本不足(<6)或法方程退化返回 -1.0f。
+float radar_sweep_harmonic_fit(const radar_sample_t *samples, unsigned count,
+                               uint32_t sweep_duration_ms,
+                               float *out_amplitude_db, float *out_residual_db);
 float radar_sweep_harmonic_angle(const radar_sample_t *samples, unsigned count,
                                  uint32_t sweep_duration_ms, float *out_amplitude_db);
+
+// ---- 旋转速度自校正(调研 5.4 P1) ----
+
+// 估计实际旋转周期(≈ 4s 扫盘窗口内人体遮挡方向的重复周期)。
+// 方法:对候选周期 T 逐个截断样本做一次谐波拟合,残差显著优于名义时长
+// 拟合者胜出(提前停转时尾部样本无方向信息,会推高残差)。
+// 无有效修正返回原 sweep_duration_ms。
+uint32_t radar_sweep_estimate_period_ms(const radar_sample_t *samples, unsigned count,
+                                         uint32_t sweep_duration_ms);
+
+// 返回用于角度映射的有效样本数与有效时长(毫秒)。
+// 无修正时 *out_duration_ms = sweep_duration_ms 并返回全部样本;
+// 检测到提前完成时剔除尾部平台样本并缩短时长。out_duration_ms 可为 NULL。
+unsigned radar_sweep_effective_duration_ms(const radar_sample_t *samples, unsigned count,
+                                           uint32_t sweep_duration_ms,
+                                           uint32_t *out_duration_ms);
 
 // 按信道分组分别做谐波拟合测角,仅保留拟合幅度达标的信道角度。
 // out_angles 最多写 max_out 个角度;返回有效角度个数。

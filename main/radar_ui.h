@@ -16,7 +16,30 @@ typedef enum {
     RADAR_PAGE_SWEEPING,   // 扫盘中:4s 倒计时 + 动画
     RADAR_PAGE_RESULT,     // 结果:角度(±分歧) + 距离 + 置信度
     RADAR_PAGE_CALIB,      // 1m 标定中
+    RADAR_PAGE_DEBUG,      // 诊断/回归:v1/v2 管线 A/B 对比
 } radar_page_t;
+
+// 诊断页数据快照(由 main.c 每 100ms 填充)。
+typedef struct {
+    int   raw_rssi;
+    float filtered_rssi;
+    float v1_dist_m;        // v1 纯 RSSI 路径损耗距离(A/B 基线)
+    const radar_fusion_result_t *fr;   // v2 融合输出(可为 NULL)
+    bool  ftm_valid;
+    float ftm_dist_m;
+    float ftm_spread_m;
+    unsigned ftm_bursts;
+    bool  ble_alive;
+    int   ble_rssi;
+    radar_env_t env;
+    float env_mean_rssi;    // 环境估计长期均值
+    float tx_ref_sym;       // 当前 1m 对称参考(标定值)
+    float vote_spread_deg;  // 最近一次扫盘投票/融合分歧
+} radar_debug_info_t;
+
+// 切换到诊断页并刷新(由 main.c 调用;入口=追踪页 UP 长按)。
+void radar_ui_show_debug(void);
+void radar_ui_update_debug(const radar_debug_info_t *info);
 
 // 初始化雷达 UI(创建主页面并载入)。
 void radar_ui_init(void);
