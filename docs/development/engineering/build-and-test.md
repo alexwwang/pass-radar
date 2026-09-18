@@ -45,12 +45,22 @@ cc -std=c11 -Wall -Wextra -Werror -Imain \
 Use the unified validation entry point:
 
 ```bash
+# The existing uv-created ESP-IDF environment is selected before activation.
+export IDF_PYTHON_ENV_PATH="$HOME/.espressif/python_env/idf5.5_py3.10_env"
+export PATH="$IDF_PYTHON_ENV_PATH/bin:$PATH"
+source <path-to-esp-idf-v5.5.3>/export.sh
 ./tools/validate.sh --static    # repository checks, workflows, links, secrets, host tests
 ./tools/validate.sh --firmware  # build, merge-bin, offsets, and protected layout
-./tools/validate.sh             # complete gate; requires an activated ESP-IDF environment
+./tools/validate.sh             # complete gate; requires ESP-IDF v5.5.3
 ```
 
-CI calls the same script. Fix the shared script or environment if local and CI behavior differs; do not duplicate command sequences in workflows.
+`tools/validate.sh` requires a uv-created Python virtual environment and prints
+its selected interpreter. Set `PASS_RADAR_PYTHON` to an explicit Python
+executable when the environment is not on `PATH`; the script fails before tests
+if it cannot prove that the interpreter is uv-managed. CI calls the same script,
+so provide an equivalent uv environment there rather than silently falling back
+to the system `python3`. Fix the shared script or environment if local and CI
+behavior differs; do not duplicate command sequences in workflows.
 
 Hardware-affecting changes must also run the applicable on-device checklist in the hardware guide. Report compilation separately from physical-device validation.
 

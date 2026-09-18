@@ -1,52 +1,42 @@
 #pragma once
 
-// ESP-NOW 广播收发模块 —— 为雷达提供 RSSI 采集。
+// ESP-NOW 广播收发模块 —— 为雷达提供 RSSI 采集与对端状态交换。
 // 接收回调运行于 Wi-Fi 任务上下文,不得触碰 LVGL。
 
 #include "esp_err.h"
 #include "radar_kalman.h"
+#include "radar_protocol.h"
 #include "radar_sweep.h"
 #include <stdbool.h>
 #include <stdint.h>
 
 #define RADAR_MAX_SAMPLES 100
 #define RADAR_SWEEP_DURATION_MS 4000
-#define RADAR_PACKET_NAME_LEN  12
 
-// 数据包结构(发射端发送,接收端解析)
-typedef struct __attribute__((packed)) {
-    char     device_name[12];
-    uint32_t sequence;
-} radar_packet_t;
-
-// ESP-NOW 初始化(NVS/netif/event-loop/Wi-Fi/ESP-NOW 全链路)。
-// 必须在 app_main 中调用。
 esp_err_t radar_espnow_init(void);
-
-// 启动 20Hz 广播发射。device_name 用于标识本机(最长 11 字符)。
-// 两台设备刷同一固件即可互相对测:各自广播,各自接收对方的包。
 esp_err_t radar_espnow_start_broadcast(const char *device_name);
-
-// 停止广播发射。
 void radar_espnow_stop_broadcast(void);
-
-// 获取最新滤波后 RSSI(volatile,线程安全读取)。
 float radar_espnow_filtered_rssi(void);
-
-// 获取最新原始 RSSI。
 int radar_espnow_raw_rssi(void);
 
-// 进入扫盘采样模式。清空采样缓冲区,记录起始时刻。
+bool radar_espnow_peer_alive(void);
+int radar_espnow_peer_rssi(void);
+float radar_espnow_peer_angle(void);
+float radar_espnow_peer_distance(void);
+void radar_espnow_report_result(float angle_deg, float dist_m);
+
+// 接收源 MAC 仅表示 ESP-NOW 发送接口；FTM 必须使用已验证的 AP MAC。
+bool radar_espnow_peer_mac(uint8_t out_mac[RADAR_MAC_LEN]);
+bool radar_espnow_peer_ap_mac(uint8_t out_mac[RADAR_MAC_LEN]);
+bool radar_espnow_peer_ble_identity(uint8_t out_identity[RADAR_BLE_ID_LEN]);
+bool radar_espnow_is_ftm_initiator(void);
+bool radar_espnow_is_hopping(void);
+
 void radar_espnow_start_sweep(void);
-
-// 退出扫盘采样模式。返回采样数量。
 unsigned radar_espnow_stop_sweep(void);
-
-// 拷贝采样数据到调用者缓冲区。返回实际拷贝数量。
 unsigned radar_espnow_get_samples(radar_sample_t *out, unsigned max_count);
-
-// 是否在扫盘采样中。
 bool radar_espnow_is_sweeping(void);
 
-// 释放 ESP-NOW 与 Wi-Fi 资源。
+esp_err_t radar_espnow_calib_save(float tx_ref_sym);
+esp_err_t radar_espnow_calib_load(float *tx_ref_sym);
 void radar_espnow_deinit(void);

@@ -43,12 +43,20 @@ cc -std=c11 -Wall -Wextra -Werror -Imain \
 统一验证入口：
 
 ```bash
+# 先选择现有的 uv 创建的 ESP-IDF Python 环境，再激活工具链。
+export IDF_PYTHON_ENV_PATH="$HOME/.espressif/python_env/idf5.5_py3.10_env"
+export PATH="$IDF_PYTHON_ENV_PATH/bin:$PATH"
+source <ESP-IDF-v5.5.3-路径>/export.sh
 ./tools/validate.sh --static    # 仓库一致性、workflow、文档链接、敏感信息、host tests
 ./tools/validate.sh --firmware  # ESP-IDF build、merge-bin、偏移与保护布局校验
-./tools/validate.sh             # 完整验证
+./tools/validate.sh             # 完整验证，要求 ESP-IDF v5.5.3
 ```
 
-完整验证要求预先激活 ESP-IDF 5.5.3。CI 与本地使用同一脚本；若 CI 和本地行为不同，应先修复脚本或环境，而不是维护两份命令。
+`tools/validate.sh` 要求使用 uv 创建的 Python 虚拟环境，并会打印实际选中的解释器。
+如果该环境不在 `PATH` 中，可设置 `PASS_RADAR_PYTHON` 指定 Python 可执行文件；
+如果脚本无法确认解释器由 uv 管理，会在测试开始前失败，而不会静默回退到系统
+`python3`。CI 与本地使用同一脚本，因此 CI 也应提供等价的 uv 环境；若两者行为不同，
+应先修复脚本或环境，而不是维护两份命令。
 
 涉及物理外设的改动必须在真机运行硬件指南验收清单，并把“编译通过”与“硬件验证通过”分开记录。
 

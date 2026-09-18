@@ -2,6 +2,33 @@
 
 English | [简体中文](CHANGELOG.zh_CN.md)
 
+## Unreleased
+
+### Added
+- Wi-Fi FTM (802.11mc RTT) ranging: symmetric SoftAP responder + periodic
+  initiator sessions (every 2s, 16 bursts), median-filtered per-burst distances
+- BLE 5.0 Coded PHY long-range sentinel link (NimBLE, 1s extended advertising +
+  sparse passive scan): "FAR (BLE link)" hint beyond Wi-Fi range
+- Fusion engine (`radar_fusion`): symmetric dual-end RSSI averaging, FTM/RSSI
+  weighted fusion with reflected-path rejection, confidence levels
+  (HIGH/MED/LOW/OOR), adaptive path-loss exponent (indoor/outdoor), circular
+  angle statistics
+- Channel-diversity sweep: 1/6/11 fast hopping (100ms dwell) with per-channel
+  first-harmonic least-squares angle fitting and circular-median voting
+- Parabolic-interpolated peak angle (sub-sample resolution) and peak-prominence
+  gating for weak direction detection
+- 1m two-card calibration (OK LONG on main page, 3s sampling, NVS persistence)
+- Result page shows angle spread (±) and confidence; low-confidence results
+  highlighted in warning color
+- ESP-NOW protocol v2: bidirectional RSSI exchange, sweep-sync flag for
+  follower channel hopping, result sharing (backward-compatible with v1)
+- Host tests for fusion engine and new sweep algorithms
+
+### Changed
+- Wi-Fi mode STA → APSTA (required by FTM responder)
+- Home channel fixed to channel 1; sweeps hop 1/6/11 and restore afterwards
+- BLE re-enabled (NimBLE) with Wi-Fi/BLE software coexistence
+
 ## v0.1.0 (2026-09-13)
 
 ### Added

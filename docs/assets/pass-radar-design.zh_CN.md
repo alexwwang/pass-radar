@@ -161,3 +161,57 @@ OTA 槽位。
 - 30 米距离取决于环境（开阔地 vs 障碍物）
 - 拥挤 2.4GHz 环境下的 ESP-NOW 广播可靠性
 - meta-pass 槽位安装端到端流程
+
+## 10. v2：测距与定向增强
+
+v2 针对 v1 的两大误差源：单链路 RSSI 信息量不足（测距）与单信道人体遮挡
+峰的脆弱性（定向）。
+
+### 10.1 观测源
+
+| 观测源 | 物理层 | 用途 |
+| --- | --- | --- |
+| 双向 RSSI | ESP-NOW (Wi-Fi) | 对称平均消除天线/发射功率不对称 |
+| FTM RTT | Wi-Fi 802.11mc | 时间戳测距，米级，免标定 |
+| 信道分集 | Wi-Fi 1/6/11 信道 | 扫盘期间独立衰落采样 |
+| BLE RSSI | BLE 5.0 Coded PHY | 长距哨兵 + 异构交叉校验 |
+
+ESP32-C3 硬件边界决定设计：不支持 BLE 5.1 AoA/AoD（无 CTE 硬件）、不支持
+BLE 6.0 Channel Sounding（需 PBR PHY）、单天线。FTM 需要 AP/STA 角色拆分
+（responder 仅 AP 模式），故 Wi-Fi 工作在 APSTA，双端均开启隐藏 SoftAP
+（`passradar`，启用 FTM responder），各自每 2s 向对方发起一次 FTM session
+（16 burst）。
+
+### 10.2 融合管线（纯逻辑，`radar_fusion` 有 host 测试）
+
+```
+本端 RSSI ─┐
+           ├─ 对称平均 ─→ 路径损耗距离(n 自适应) ─┐
+对端 RSSI ──┘                                      ├─ 融合 ─→ 距离 + 置信度
+FTM burst ─→ 中值 + IQR ─→ 反射径判别(vs RSSI×1.8) ─┘
+```
+
+- FTM 有效且一致 → 0.7·FTM + 0.3·RSSI；双向 RSSI 差 ≤ 8dB 时置信度 HIGH。
+- FTM 存疑（反射径）→ 纯 RSSI，MED。
+- 无对端数据 → 单链路 RSSI，LOW；对称 RSSI < -88dBm → OOR。
+
+### 10.3 定向（`radar_sweep`）
+
+- 4 秒扫盘期间射频在 1/6/11 快跳（100ms 驻留）；双端经 v2 广播包中的
+  扫盘标志共享同一调度。
+- 每信道样本做一次谐波最小二乘拟合 `y = a + b·cosθ + c·sinθ`——对快跳
+  造成的稀疏/成簇采样鲁棒（原始峰检测不行）。
+- 各信道角度按环形中值投票；最大环形分歧作为 ± 不确定度显示，超过
+  20°/45° 时逐级降低置信度。
+- 回退路径：全局抛物线插值峰检测 + 显著性 ≥ 6dB 门限。
+
+### 10.4 BLE 哨兵
+
+NimBLE 扩展广播（Coded PHY，1s 间隔）+ 稀疏被动扫描（约 10% 占空比）。
+Wi-Fi 超界后 UI 显示 "FAR (BLE link)"。BLE 占空比刻意压低——Wi-Fi 与 BLE
+共享单 2.4GHz 射频（软件共存）。
+
+### 10.5 标定
+
+追踪页 OK 长按启动 3s 标定：两卡相距 1m 静止，对称 RSSI 均值钳位到
+-60~-30dBm 后作为 `tx_ref_sym` 存入 NVS（命名空间 `radar`）。

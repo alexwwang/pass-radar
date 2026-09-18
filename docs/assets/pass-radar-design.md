@@ -167,3 +167,60 @@ Remaining field notes (not blocking, may vary):
 - 30m range depends on environment (open field vs. obstacles)
 - ESP-NOW broadcast reliability in crowded 2.4GHz environments
 - meta-pass slot installation end-to-end flow
+
+## 10. v2: ranging & direction-finding enhancements
+
+v2 targets the two dominant error sources of v1: the low information content of
+single-link RSSI (ranging) and the fragility of single-channel body-shielding
+peaks (direction).
+
+### 10.1 Observation sources
+
+| Source | PHY | Use |
+| --- | --- | --- |
+| Bidirectional RSSI | ESP-NOW (Wi-Fi) | Symmetric averaging removes antenna/TX asymmetry |
+| FTM RTT | Wi-Fi 802.11mc | Timestamp-based distance, meter-level, calibration-free |
+| Channel diversity | Wi-Fi ch 1/6/11 | Independent fading samples during sweep |
+| BLE RSSI | BLE 5.0 Coded PHY | Long-range sentinel + heterogeneous cross-check |
+
+ESP32-C3 hardware boundaries that shape the design: no BLE 5.1 AoA/AoD (no CTE
+hardware), no BLE 6.0 Channel Sounding (needs PBR PHY), single antenna. FTM
+requires AP/STA role split (responder in AP mode), hence Wi-Fi runs APSTA with
+a hidden SoftAP (`passradar`, FTM responder enabled) on both devices; each
+device initiates FTM sessions to the peer every 2s (16 bursts).
+
+### 10.2 Fusion pipeline (pure logic, host-tested in `radar_fusion`)
+
+```
+local RSSI ─┐
+            ├─ symmetric mean ─→ path-loss distance (adaptive n) ─┐
+peer RSSI ──┘                                                      ├─ fuse ─→ distance + confidence
+FTM bursts ─→ median + IQR ─→ reflected-path check (vs RSSI×1.8) ──┘
+```
+
+- FTM valid & consistent → 0.7·FTM + 0.3·RSSI, confidence HIGH if the
+  bidirectional RSSI gap ≤ 8dB.
+- FTM suspicious (reflected path) → RSSI only, MED.
+- No peer data → single-link RSSI, LOW. Symmetric RSSI < -88dBm → OOR.
+
+### 10.3 Direction finding (in `radar_sweep`)
+
+- During the 4s sweep the radio fast-hops ch 1/6/11 (100ms dwell); both ends
+  share the schedule via the sweep flag in the v2 broadcast packet.
+- Each channel's samples get a first-harmonic least-squares fit
+  `y = a + b·cosθ + c·sinθ` — robust to the sparse/clustered sampling caused
+  by hopping, unlike raw peak search.
+- Channel angles are voted by circular median; the max circular spread is
+  reported as ± uncertainty and downgrades confidence when > 20°/45°.
+- Fallback: parabolic-interpolated global peak with prominence ≥ 6dB.
+
+### 10.4 BLE sentinel
+
+NimBLE extended advertising on Coded PHY (1s interval) + sparse passive scan
+(~10% duty). Beyond Wi-Fi range the UI shows "FAR (BLE link)". BLE duty is kept
+low because Wi-Fi and BLE share the single 2.4GHz radio (software coexistence).
+
+### 10.5 Calibration
+
+OK LONG on the main page samples symmetric RSSI for 3s at 1m; the clamped mean
+(-60..-30dBm) becomes `tx_ref_sym` and is persisted in NVS (namespace `radar`).

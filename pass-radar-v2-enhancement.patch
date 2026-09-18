@@ -1,0 +1,2970 @@
+From f7c645ce5e77d8d9961faa283fe598bb9931b8e1 Mon Sep 17 00:00:00 2001
+From: kimi <kimi@moonshot.local>
+Date: Thu, 17 Sep 2026 01:48:06 +0800
+Subject: [PATCH] feat: ranging & direction-finding accuracy enhancement (v2)
+
+- Wi-Fi FTM (802.11mc RTT) ranging: symmetric SoftAP responder +
+  periodic initiator, median-filtered per-burst distances
+- Bidirectional RSSI fusion via ESP-NOW protocol v2 (backward compatible)
+- Channel-diversity sweep: 1/6/11 fast hopping (100ms dwell),
+  per-channel first-harmonic least-squares fitting + circular-median vote
+- Parabolic-interpolated peak angle + prominence gating
+- BLE 5.0 Coded PHY sentinel link (NimBLE ext adv + sparse scan)
+- Fusion engine with confidence levels and adaptive indoor/outdoor n
+- 1m two-card calibration persisted in NVS (OK LONG on main page)
+- Result page shows angle spread and confidence
+- Host tests: test_radar_fusion (7 suites), extended test_radar_sweep
+---
+ README.md                              |  36 +++-
+ README.zh_CN.md                        |  24 ++-
+ docs/CHANGELOG.md                      |  27 +++
+ docs/CHANGELOG.zh_CN.md                |  24 +++
+ docs/assets/pass-radar-design.md       |  57 +++++++
+ docs/assets/pass-radar-design.zh_CN.md |  54 ++++++
+ main/CMakeLists.txt                    |   5 +-
+ main/main.c                            | 184 +++++++++++++++++---
+ main/radar_ble.c                       | 156 +++++++++++++++++
+ main/radar_ble.h                       |  24 +++
+ main/radar_espnow.c                    | 181 +++++++++++++++++++-
+ main/radar_espnow.h                    |  55 +++++-
+ main/radar_ftm.c                       | 146 ++++++++++++++++
+ main/radar_ftm.h                       |  36 ++++
+ main/radar_fusion.c                    | 188 ++++++++++++++++++++
+ main/radar_fusion.h                    | 123 ++++++++++++++
+ main/radar_sweep.c                     | 206 ++++++++++++++++++++++
+ main/radar_sweep.h                     |  53 ++++++
+ main/radar_ui.c                        | 151 +++++++++++------
+ main/radar_ui.h                        |  30 +++-
+ sdkconfig.defaults                     |  17 +-
+ tests/test_radar_fusion.c              | 218 ++++++++++++++++++++++++
+ tests/test_radar_sweep.c               | 226 +++++++++++++++++++------
+ tools/validate.sh                      |   6 +-
+ 24 files changed, 2066 insertions(+), 161 deletions(-)
+ create mode 100644 main/radar_ble.c
+ create mode 100644 main/radar_ble.h
+ create mode 100644 main/radar_ftm.c
+ create mode 100644 main/radar_ftm.h
+ create mode 100644 main/radar_fusion.c
+ create mode 100644 main/radar_fusion.h
+ create mode 100644 tests/test_radar_fusion.c
+
+diff --git a/README.md b/README.md
+index cbfef6d..61c6a3b 100644
+--- a/README.md
++++ b/README.md
+@@ -14,6 +14,22 @@ and receives the other's signal. The receiver's human body partially shields the
+ 2.4GHz signal — rotating the card creates a measurable RSSI peak when the antenna
+ faces the other device directly.
+ 
++**v2 enhancements** raise both ranging and direction-finding accuracy:
++
++- **Wi-Fi FTM (802.11mc RTT) ranging** — timestamp-based round-trip distance,
++  immune to TX-power/antenna-gain calibration error (meter-level vs. RSSI's
++  often 50–100% error).
++- **Bidirectional RSSI fusion** — both ends exchange the RSSI they measure,
++  cancelling antenna-pattern asymmetry.
++- **Channel-diversity sweep** — during the 4s rotation the radio hops
++  channels 1/6/11 every 100ms; each channel's direction pattern is fitted
++  with a first-harmonic least-squares model and voted (circular median),
++  rejecting multipath-induced false peaks.
++- **BLE Coded PHY sentinel** — a long-range, low-duty BLE link keeps a
++  coarse "FAR (BLE link)" indication alive beyond Wi-Fi range (~30m).
++- **Confidence reporting** — every result carries HIGH/MED/LOW/OOR confidence
++  so users can judge trustworthiness.
++
+ - **Tracking mode** (default): real-time distance estimation from smoothed RSSI,
+   displayed on a polar radar UI with concentric range rings.
+ - **Sweep mode** (OK key): 4-second guided rotation. The firmware collects RSSI
+@@ -26,10 +42,17 @@ faces the other device directly.
+   simultaneously — flash the same binary on two cards and they pair automatically.
+ - **Kalman-filtered RSSI**: 1D Kalman filter (q=0.15, r=4.0) smooths ±5dB raw
+   jitter into a stable estimate.
+-- **Distance estimation**: free-space path loss model (`10^((txPower-rssi)/(10*n))`,
+-  outdoor n=2.2) converts filtered RSSI to approximate meters.
+-- **360° direction finding**: body-shielding peak detection during a guided 4s
+-  rotation; peak timestamp maps to relative angle.
++- **Fused distance estimation**: Wi-Fi FTM RTT (primary) + symmetric dual-end
++  RSSI (path-loss model, adaptive indoor/outdoor exponent), with
++  reflected-path rejection and confidence levels (HIGH/MED/LOW/OOR).
++- **360° direction finding**: body-shielding detection during a guided 4s
++  rotation, enhanced by channel-diversity voting (1/6/11 fast hopping),
++  first-harmonic least-squares fitting, parabolic interpolation and
++  peak-prominence gating.
++- **1m calibration**: OK LONG on the main page learns the 1m symmetric
++  reference RSSI (persisted in NVS).
++- **BLE sentinel**: Coded PHY long-range link shows "FAR (BLE link)" when
++  Wi-Fi is out of range.
+ - **Weak-signal guard**: RSSI below -88dBm shows "OUT OF RANGE" instead of a
+   false direction.
+ - **Max TX power**: 19.5dBm for outdoor range up to ~30m.
+@@ -40,9 +63,10 @@ faces the other device directly.
+ 
+ | Page | OK click | OK LONG (1.5s) | OK LONG2 (3s) |
+ | --- | --- | --- | --- |
+-| Tracking | Start 360° sweep | — | Return to launcher |
++| Tracking | Start 360° sweep | 1m calibration (3s) | Return to launcher |
+ | Sweeping | — | Cancel, back to tracking | Return to launcher |
+ | Result | Back to tracking | Back to tracking | Return to launcher |
++| Calibration | Cancel | Cancel | Return to launcher |
+ 
+ ## Quick start
+ 
+@@ -90,7 +114,7 @@ no ESP-IDF dependency. UI and ESP-NOW integration require real hardware or the
+ 
+ | Path | Content |
+ | --- | --- |
+-| `main/` | App entry (`main.c`), radar UI (`radar_ui`), ESP-NOW transport (`radar_espnow`), pure logic (`radar_kalman`, `radar_sweep`), UI helpers (`ui_pixel`), meta-pass hook (`metapass_hook`) |
++| `main/` | App entry (`main.c`), radar UI (`radar_ui`), ESP-NOW transport (`radar_espnow`), FTM ranging (`radar_ftm`), BLE sentinel (`radar_ble`), pure logic (`radar_kalman`, `radar_sweep`, `radar_fusion`), UI helpers (`ui_pixel`), meta-pass hook (`metapass_hook`) |
+ | `components/bsp/` | Board support package (with LONG2 button event) |
+ | `tools/validate.sh` | Unified gate: static checks + host tests + firmware build |
+ | `tests/` | Host tests for pure-logic modules |
+diff --git a/README.zh_CN.md b/README.zh_CN.md
+index 93d90a2..5bb1678 100644
+--- a/README.zh_CN.md
++++ b/README.zh_CN.md
+@@ -12,6 +12,17 @@ pass-radar 是一个 **360° 定向雷达玩具**，运行在 FoloToy AI Passpor
+ 接收方人体会部分遮挡 2.4GHz 信号——旋转卡片时，天线正对另一台设备的方向
+ 会出现可测量的 RSSI 峰值。
+ 
++**v2 增强**同时提升测距与定向准确度：
++
++- **Wi-Fi FTM（802.11mc RTT）测距**——基于时间戳的往返测距，不受发射
++  功率/天线增益标定误差影响（米级，而 RSSI 误差常达 50%~100%）。
++- **双向 RSSI 融合**——双端互传各自测得的 RSSI，对置消除天线方向图不对称。
++- **信道分集扫盘**——4 秒旋转期间射频每 100ms 在 1/6/11 信道间跳变；每个
++  信道的方向图做一次谐波最小二乘拟合并投票（环形中值），剔除多径假峰。
++- **BLE Coded PHY 哨兵**——长距低占空比 BLE 链路在 Wi-Fi 超界（~30m）后
++  保持"FAR (BLE link)"粗提示。
++- **置信度输出**——每个结果都带 HIGH/MED/LOW/OOR 置信度，可信度一目了然。
++
+ - **追踪模式**（默认）：实时距离估算，极坐标雷达 UI 显示同心距离环。
+ - **扫盘模式**（按 OK 键）：4 秒引导旋转。采集带时间戳的 RSSI 采样，找到
+   峰值（人体遮挡最小的方向），将峰值时间映射为相对起始方向的 0°–360° 角度。
+@@ -22,8 +33,12 @@ pass-radar 是一个 **360° 定向雷达玩具**，运行在 FoloToy AI Passpor
+   自动配对。
+ - **卡尔曼滤波 RSSI**：一维卡尔曼滤波（q=0.15，r=4.0）将 ±5dB 原始抖动平滑为
+   稳定估计值。
+-- **距离估算**：自由空间路径损耗模型，户外衰减因子 n=2.2。
+-- **360° 定向**：4 秒引导旋转，峰值时间→角度映射。
++- **融合测距**：FTM RTT（主）+ 双向对称 RSSI（路径损耗模型，室内外衰减
++  指数自适应），带反射径判别与置信度分级（HIGH/MED/LOW/OOR）。
++- **360° 定向**：4 秒引导旋转人体遮挡检测，叠加信道分集投票（1/6/11 快跳）、
++  一次谐波拟合、抛物线插值与峰显著性门限。
++- **1m 标定**：追踪页 OK 长按学习 1m 对称参考 RSSI（存入 NVS）。
++- **BLE 哨兵**：Coded PHY 长距链路在 Wi-Fi 超界时提示 "FAR (BLE link)"。
+ - **弱信号保护**：RSSI 低于 -88dBm 时显示"超出范围"，不误报方向。
+ - **最大发射功率**：19.5dBm，户外有效距离约 30 米。
+ - **meta-pass 兼容**：适配子固件——跨重启常驻，OK LONG2（3秒）返回启动器。
+@@ -32,9 +47,10 @@ pass-radar 是一个 **360° 定向雷达玩具**，运行在 FoloToy AI Passpor
+ 
+ | 页面 | OK 短按 | OK 长按（1.5s） | OK 超长按（3s） |
+ | --- | --- | --- | --- |
+-| 追踪页 | 启动 360° 扫盘 | — | 返回启动器 |
++| 追踪页 | 启动 360° 扫盘 | 1m 标定（3s） | 返回启动器 |
+ | 扫盘页 | — | 取消，返回追踪页 | 返回启动器 |
+ | 结果页 | 返回追踪页 | 返回追踪页 | 返回启动器 |
++| 标定页 | 取消 | 取消 | 返回启动器 |
+ 
+ ## 快速开始
+ 
+@@ -76,7 +92,7 @@ source <esp-idf-v5.5.3>/export.sh   # 需要 ESP-IDF v5.5.3
+ 
+ | 路径 | 内容 |
+ | --- | --- |
+-| `main/` | 应用入口（`main.c`）、雷达 UI（`radar_ui`）、ESP-NOW 传输（`radar_espnow`）、纯逻辑（`radar_kalman`、`radar_sweep`）、UI 辅助（`ui_pixel`）、meta-pass 钩子（`metapass_hook`） |
++| `main/` | 应用入口（`main.c`）、雷达 UI（`radar_ui`）、ESP-NOW 传输（`radar_espnow`）、FTM 测距（`radar_ftm`）、BLE 哨兵（`radar_ble`）、纯逻辑（`radar_kalman`、`radar_sweep`、`radar_fusion`）、UI 辅助（`ui_pixel`）、meta-pass 钩子（`metapass_hook`） |
+ | `components/bsp/` | 板级支持包（含 LONG2 按键事件） |
+ | `tools/validate.sh` | 统一门禁：静态检查 + host 测试 + 固件构建 |
+ | `tests/` | 纯逻辑模块 host 测试 |
+diff --git a/docs/CHANGELOG.md b/docs/CHANGELOG.md
+index f8730b6..540d3f0 100644
+--- a/docs/CHANGELOG.md
++++ b/docs/CHANGELOG.md
+@@ -2,6 +2,33 @@
+ 
+ English | [简体中文](CHANGELOG.zh_CN.md)
+ 
++## Unreleased
++
++### Added
++- Wi-Fi FTM (802.11mc RTT) ranging: symmetric SoftAP responder + periodic
++  initiator sessions (every 2s, 16 bursts), median-filtered per-burst distances
++- BLE 5.0 Coded PHY long-range sentinel link (NimBLE, 1s extended advertising +
++  sparse passive scan): "FAR (BLE link)" hint beyond Wi-Fi range
++- Fusion engine (`radar_fusion`): symmetric dual-end RSSI averaging, FTM/RSSI
++  weighted fusion with reflected-path rejection, confidence levels
++  (HIGH/MED/LOW/OOR), adaptive path-loss exponent (indoor/outdoor), circular
++  angle statistics
++- Channel-diversity sweep: 1/6/11 fast hopping (100ms dwell) with per-channel
++  first-harmonic least-squares angle fitting and circular-median voting
++- Parabolic-interpolated peak angle (sub-sample resolution) and peak-prominence
++  gating for weak direction detection
++- 1m two-card calibration (OK LONG on main page, 3s sampling, NVS persistence)
++- Result page shows angle spread (±) and confidence; low-confidence results
++  highlighted in warning color
++- ESP-NOW protocol v2: bidirectional RSSI exchange, sweep-sync flag for
++  follower channel hopping, result sharing (backward-compatible with v1)
++- Host tests for fusion engine and new sweep algorithms
++
++### Changed
++- Wi-Fi mode STA → APSTA (required by FTM responder)
++- Home channel fixed to channel 1; sweeps hop 1/6/11 and restore afterwards
++- BLE re-enabled (NimBLE) with Wi-Fi/BLE software coexistence
++
+ ## v0.1.0 (2026-09-13)
+ 
+ ### Added
+diff --git a/docs/CHANGELOG.zh_CN.md b/docs/CHANGELOG.zh_CN.md
+index 6d4b07c..3c44af9 100644
+--- a/docs/CHANGELOG.zh_CN.md
++++ b/docs/CHANGELOG.zh_CN.md
+@@ -2,6 +2,30 @@
+ 
+ [English](CHANGELOG.md) | 简体中文
+ 
++## 未发布
++
++### 新增
++- Wi-Fi FTM（802.11mc RTT）测距：对称 SoftAP responder + 周期性发起
++  （每 2s 一次、16 burst），逐 burst 距离中值滤波
++- BLE 5.0 Coded PHY 长距哨兵链路（NimBLE，1s 间隔扩展广播 + 稀疏被动
++  扫描）：Wi-Fi 超界后显示"FAR (BLE link)"
++- 融合引擎（`radar_fusion`）：双向 RSSI 对称平均、FTM/RSSI 加权融合与
++  反射径判别、置信度分级（HIGH/MED/LOW/OOR）、室内外路径损耗自适应、
++  环形角度统计
++- 信道分集扫盘：1/6/11 快跳（100ms 驻留），每信道一次谐波最小二乘
++  拟合测角 + 环形中值投票
++- 抛物线插值峰值角度（亚采样分辨率）与峰显著性门限
++- 1m 双卡标定（主页面 OK 长按，3s 采样，NVS 持久化）
++- 结果页显示角度分歧（±）与置信度，低置信度结果以警示色标出
++- ESP-NOW 协议 v2：双向 RSSI 回传、扫盘同步标志（对端跟随跳频）、
++  结果共享（向后兼容 v1）
++- 融合引擎与新扫盘算法的 host 测试
++
++### 变更
++- Wi-Fi 模式 STA → APSTA（FTM responder 需要）
++- 固定主信道为信道 1；扫盘期间跳频 1/6/11，结束后恢复
++- 重新启用 BLE（NimBLE），启用 Wi-Fi/BLE 软件共存
++
+ ## v0.1.0（2026-09-13）
+ 
+ ### 新增
+diff --git a/docs/assets/pass-radar-design.md b/docs/assets/pass-radar-design.md
+index 8446d2d..897cb5d 100644
+--- a/docs/assets/pass-radar-design.md
++++ b/docs/assets/pass-radar-design.md
+@@ -167,3 +167,60 @@ Remaining field notes (not blocking, may vary):
+ - 30m range depends on environment (open field vs. obstacles)
+ - ESP-NOW broadcast reliability in crowded 2.4GHz environments
+ - meta-pass slot installation end-to-end flow
++
++## 10. v2: ranging & direction-finding enhancements
++
++v2 targets the two dominant error sources of v1: the low information content of
++single-link RSSI (ranging) and the fragility of single-channel body-shielding
++peaks (direction).
++
++### 10.1 Observation sources
++
++| Source | PHY | Use |
++| --- | --- | --- |
++| Bidirectional RSSI | ESP-NOW (Wi-Fi) | Symmetric averaging removes antenna/TX asymmetry |
++| FTM RTT | Wi-Fi 802.11mc | Timestamp-based distance, meter-level, calibration-free |
++| Channel diversity | Wi-Fi ch 1/6/11 | Independent fading samples during sweep |
++| BLE RSSI | BLE 5.0 Coded PHY | Long-range sentinel + heterogeneous cross-check |
++
++ESP32-C3 hardware boundaries that shape the design: no BLE 5.1 AoA/AoD (no CTE
++hardware), no BLE 6.0 Channel Sounding (needs PBR PHY), single antenna. FTM
++requires AP/STA role split (responder in AP mode), hence Wi-Fi runs APSTA with
++a hidden SoftAP (`passradar`, FTM responder enabled) on both devices; each
++device initiates FTM sessions to the peer every 2s (16 bursts).
++
++### 10.2 Fusion pipeline (pure logic, host-tested in `radar_fusion`)
++
++```
++local RSSI ─┐
++            ├─ symmetric mean ─→ path-loss distance (adaptive n) ─┐
++peer RSSI ──┘                                                      ├─ fuse ─→ distance + confidence
++FTM bursts ─→ median + IQR ─→ reflected-path check (vs RSSI×1.8) ──┘
++```
++
++- FTM valid & consistent → 0.7·FTM + 0.3·RSSI, confidence HIGH if the
++  bidirectional RSSI gap ≤ 8dB.
++- FTM suspicious (reflected path) → RSSI only, MED.
++- No peer data → single-link RSSI, LOW. Symmetric RSSI < -88dBm → OOR.
++
++### 10.3 Direction finding (in `radar_sweep`)
++
++- During the 4s sweep the radio fast-hops ch 1/6/11 (100ms dwell); both ends
++  share the schedule via the sweep flag in the v2 broadcast packet.
++- Each channel's samples get a first-harmonic least-squares fit
++  `y = a + b·cosθ + c·sinθ` — robust to the sparse/clustered sampling caused
++  by hopping, unlike raw peak search.
++- Channel angles are voted by circular median; the max circular spread is
++  reported as ± uncertainty and downgrades confidence when > 20°/45°.
++- Fallback: parabolic-interpolated global peak with prominence ≥ 6dB.
++
++### 10.4 BLE sentinel
++
++NimBLE extended advertising on Coded PHY (1s interval) + sparse passive scan
++(~10% duty). Beyond Wi-Fi range the UI shows "FAR (BLE link)". BLE duty is kept
++low because Wi-Fi and BLE share the single 2.4GHz radio (software coexistence).
++
++### 10.5 Calibration
++
++OK LONG on the main page samples symmetric RSSI for 3s at 1m; the clamped mean
++(-60..-30dBm) becomes `tx_ref_sym` and is persisted in NVS (namespace `radar`).
+diff --git a/docs/assets/pass-radar-design.zh_CN.md b/docs/assets/pass-radar-design.zh_CN.md
+index 41ce3ae..c8fe7d4 100644
+--- a/docs/assets/pass-radar-design.zh_CN.md
++++ b/docs/assets/pass-radar-design.zh_CN.md
+@@ -161,3 +161,57 @@ OTA 槽位。
+ - 30 米距离取决于环境（开阔地 vs 障碍物）
+ - 拥挤 2.4GHz 环境下的 ESP-NOW 广播可靠性
+ - meta-pass 槽位安装端到端流程
++
++## 10. v2：测距与定向增强
++
++v2 针对 v1 的两大误差源：单链路 RSSI 信息量不足（测距）与单信道人体遮挡
++峰的脆弱性（定向）。
++
++### 10.1 观测源
++
++| 观测源 | 物理层 | 用途 |
++| --- | --- | --- |
++| 双向 RSSI | ESP-NOW (Wi-Fi) | 对称平均消除天线/发射功率不对称 |
++| FTM RTT | Wi-Fi 802.11mc | 时间戳测距，米级，免标定 |
++| 信道分集 | Wi-Fi 1/6/11 信道 | 扫盘期间独立衰落采样 |
++| BLE RSSI | BLE 5.0 Coded PHY | 长距哨兵 + 异构交叉校验 |
++
++ESP32-C3 硬件边界决定设计：不支持 BLE 5.1 AoA/AoD（无 CTE 硬件）、不支持
++BLE 6.0 Channel Sounding（需 PBR PHY）、单天线。FTM 需要 AP/STA 角色拆分
++（responder 仅 AP 模式），故 Wi-Fi 工作在 APSTA，双端均开启隐藏 SoftAP
++（`passradar`，启用 FTM responder），各自每 2s 向对方发起一次 FTM session
++（16 burst）。
++
++### 10.2 融合管线（纯逻辑，`radar_fusion` 有 host 测试）
++
++```
++本端 RSSI ─┐
++           ├─ 对称平均 ─→ 路径损耗距离(n 自适应) ─┐
++对端 RSSI ──┘                                      ├─ 融合 ─→ 距离 + 置信度
++FTM burst ─→ 中值 + IQR ─→ 反射径判别(vs RSSI×1.8) ─┘
++```
++
++- FTM 有效且一致 → 0.7·FTM + 0.3·RSSI；双向 RSSI 差 ≤ 8dB 时置信度 HIGH。
++- FTM 存疑（反射径）→ 纯 RSSI，MED。
++- 无对端数据 → 单链路 RSSI，LOW；对称 RSSI < -88dBm → OOR。
++
++### 10.3 定向（`radar_sweep`）
++
++- 4 秒扫盘期间射频在 1/6/11 快跳（100ms 驻留）；双端经 v2 广播包中的
++  扫盘标志共享同一调度。
++- 每信道样本做一次谐波最小二乘拟合 `y = a + b·cosθ + c·sinθ`——对快跳
++  造成的稀疏/成簇采样鲁棒（原始峰检测不行）。
++- 各信道角度按环形中值投票；最大环形分歧作为 ± 不确定度显示，超过
++  20°/45° 时逐级降低置信度。
++- 回退路径：全局抛物线插值峰检测 + 显著性 ≥ 6dB 门限。
++
++### 10.4 BLE 哨兵
++
++NimBLE 扩展广播（Coded PHY，1s 间隔）+ 稀疏被动扫描（约 10% 占空比）。
++Wi-Fi 超界后 UI 显示 "FAR (BLE link)"。BLE 占空比刻意压低——Wi-Fi 与 BLE
++共享单 2.4GHz 射频（软件共存）。
++
++### 10.5 标定
++
++追踪页 OK 长按启动 3s 标定：两卡相距 1m 静止，对称 RSSI 均值钳位到
++-60~-30dBm 后作为 `tx_ref_sym` 存入 NVS（命名空间 `radar`）。
+diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
+index 984bef5..847d1aa 100644
+--- a/main/CMakeLists.txt
++++ b/main/CMakeLists.txt
+@@ -5,7 +5,10 @@ idf_component_register(
+          "radar_kalman.c"
+          "radar_espnow.c"
+          "radar_sweep.c"
++         "radar_fusion.c"
++         "radar_ftm.c"
++         "radar_ble.c"
+          "radar_ui.c"
+     INCLUDE_DIRS "."
+-    REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash app_update
++    REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash app_update bt
+ )
+diff --git a/main/main.c b/main/main.c
+index 6a67e07..79c1fb5 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -1,9 +1,13 @@
+-// main/main.c —— pass-radar:户外 ESP-NOW 定向雷达。
++// main/main.c —— pass-radar:户外 ESP-NOW 定向雷达(测距/定向增强版)。
+ //
+ // 按键语义:
+ //   确定  短按   主页面=启动 360° 扫盘;结果页=返回主页面
+-//   确定  长按   任意页=返回主页面(取消扫盘)
++//   确定  长按   主页面=1m 标定(两卡相距 1m 静止 3s);扫盘中=取消;结果页=返回
+ //   上/下 短按   (保留,暂不分配)
++//
++// 数据流:
++//   ESP-NOW 双向 RSSI + Wi-Fi FTM(RTT)+ BLE 哨兵
++//     → radar_fusion(纯逻辑)→ 距离/置信度 → UI
+ #include <stdio.h>
+ #include <string.h>
+ 
+@@ -16,74 +20,178 @@
+ 
+ #include "lvgl.h"
+ #include "metapass_hook.h"
++#include "radar_ble.h"
+ #include "radar_espnow.h"
++#include "radar_ftm.h"
++#include "radar_fusion.h"
+ #include "radar_sweep.h"
+ #include "radar_ui.h"
+ 
+ static const char *TAG = "pass-radar";
+ 
++// 标定采样时长
++#define CALIB_DURATION_MS 3000
++
+ // ---------- 状态 ----------
+-static lv_timer_t *s_poll_timer;   // 100ms 轮询 RSSI 并更新 UI
+-static lv_timer_t *s_sweep_timer;  // 4s 扫盘一次性定时器
+-static int64_t     s_sweep_start_ms; // 扫盘起始时刻(start_sweep 记录)
++static lv_timer_t *s_poll_timer;    // 100ms 轮询融合并更新 UI
++static lv_timer_t *s_sweep_timer;   // 4s 扫盘一次性定时器
++static lv_timer_t *s_calib_timer;   // 3s 标定一次性定时器
++static int64_t     s_sweep_start_ms;
++
++static radar_env_est_t s_env_est;   // 环境自适应估计器
++static float s_tx_ref_sym = RADAR_TX_POWER_REF;  // 1m 对称参考(可标定)
++
++// 标定采样累计(LVGL 任务内使用)
++static float   s_calib_sum = 0.0f;
++static unsigned s_calib_cnt = 0;
++
++// ---------- 融合(供追踪页与扫盘结果共用) ----------
++
++static radar_fusion_result_t run_fusion(void) {
++    float local = radar_espnow_filtered_rssi();
++    bool  alive = radar_espnow_peer_alive();
++    float peer  = alive ? (float)radar_espnow_peer_rssi() : RADAR_RSSI_ABSENT;
++
++    // 环境估计(每次轮询喂样本)
++    radar_env_t env = radar_env_est_update(&s_env_est, local);
++
++    return radar_fusion_update(radar_ftm_valid(), radar_ftm_distance_m(),
++                               local, peer, s_tx_ref_sym, env);
++}
+ 
+ // ---------- 定时器回调(LVGL 任务上下文,可直接操作 lv_obj) ----------
+ 
+-// 100ms 轮询:根据当前页面更新显示(追踪 RSSI / 扫盘进度)。
++// 100ms 轮询:按页面更新显示(追踪融合 / 扫盘进度 / 标定采样)。
+ static void poll_tick(lv_timer_t *t) {
+     (void)t;
+     radar_page_t page = radar_ui_current_page();
+ 
++    // FTM 周期驱动(任何页面都需要;跳频期内部自动跳过)
++    radar_ftm_tick();
++
+     if (page == RADAR_PAGE_MAIN) {
+-        float filtered = radar_espnow_filtered_rssi();
++        radar_fusion_result_t fr = run_fusion();
+         int raw = radar_espnow_raw_rssi();
+-        float dist = radar_sweep_calc_distance(filtered);
+-        radar_ui_update_tracking(filtered, raw, dist);
++        radar_ui_update_tracking(&fr, raw, radar_ble_peer_alive());
+     } else if (page == RADAR_PAGE_SWEEPING) {
+         int64_t elapsed = (esp_timer_get_time() / 1000) - s_sweep_start_ms;
+         float progress = (float)elapsed / (float)RADAR_SWEEP_DURATION_MS;
+         if (progress > 1.0f) progress = 1.0f;
+         radar_ui_update_sweep_progress(progress);
++    } else if (page == RADAR_PAGE_CALIB) {
++        // 累计对称 RSSI
++        float local = radar_espnow_filtered_rssi();
++        float peer  = (float)radar_espnow_peer_rssi();
++        if (radar_fusion_sym_valid(local, peer)) {
++            s_calib_sum += radar_fusion_sym_rssi(local, peer);
++            s_calib_cnt++;
++        }
++        // 进度条复用扫盘计时基
++        int64_t elapsed = (esp_timer_get_time() / 1000) - s_sweep_start_ms;
++        float progress = (float)elapsed / (float)CALIB_DURATION_MS;
++        if (progress > 1.0f) progress = 1.0f;
++        radar_ui_update_calib(progress);
+     }
+ }
+ 
+-// 4s 扫盘结束:停止采样,计算峰值角度,显示结果。
++// 4s 扫盘结束:信道分集投票 → 双源距离融合 → 置信度结果页。
+ static void sweep_done(lv_timer_t *t) {
+     (void)t;
+     if (radar_ui_current_page() != RADAR_PAGE_SWEEPING) return;
+ 
+-    // 停止采样并取回数据
++    // 停止采样并取回数据(恢复固定信道),恢复 FTM
+     unsigned count = radar_espnow_stop_sweep();
++    radar_ftm_pause(false);
+     radar_sample_t samples[RADAR_MAX_SAMPLES];
+     count = radar_espnow_get_samples(samples, RADAR_MAX_SAMPLES);
+ 
+-    // 计算峰值角度与 RSSI
+-    int angle = radar_sweep_peak_angle(samples, count, RADAR_SWEEP_DURATION_MS);
++    // 角度:信道分集谐波拟合 + 投票;失败回退全局插值峰检测
++    float angle = RADAR_ANGLE_INVALID;
++    float spread = 0.0f;
++    float ch_angles[4];
++    unsigned nch = radar_sweep_channel_angles(samples, count,
++                                              RADAR_SWEEP_DURATION_MS,
++                                              ch_angles, 4);
++    if (nch > 0) {
++        angle = radar_sweep_angle_vote(ch_angles, nch, &spread);
++    } else if (radar_sweep_peak_prominence(samples, count) >=
++               RADAR_SWEEP_MIN_PROMINENCE_DB) {
++        angle = radar_sweep_peak_angle_interp(samples, count,
++                                              RADAR_SWEEP_DURATION_MS);
++        spread = 45.0f;  // 单源估计,给保守分歧
++    }
++
++    // 距离:走融合管线(FTM 在扫盘期间暂停,用最近有效值)
++    radar_fusion_result_t fr = run_fusion();
+     float peak_rssi = radar_sweep_peak_rssi(samples, count);
+-    float dist = radar_sweep_calc_distance(peak_rssi);
+     bool weak = (peak_rssi < RADAR_RSSI_MIN_VALID);
+ 
+-    radar_ui_show_result(angle, dist, weak);
++    // 方向置信度叠加:投票分歧大则降一级
++    radar_confidence_t conf = fr.conf;
++    if (angle >= 0.0f && !weak) {
++        if (spread > 45.0f && conf > RADAR_CONF_LOW) conf = RADAR_CONF_LOW;
++        else if (spread > 20.0f && conf > RADAR_CONF_MED) conf = RADAR_CONF_MED;
++    }
++
++    // 广播本端结果(供对端参考显示)
++    radar_espnow_report_result(angle, fr.distance_m);
++
++    radar_ui_show_result(angle >= 0.0f ? (int)(angle + 0.5f) : -1,
++                         fr.distance_m, conf, spread, weak);
+ 
+-    // 清理一次性定时器
+     if (s_sweep_timer) {
+         lv_timer_delete(s_sweep_timer);
+         s_sweep_timer = NULL;
+     }
+ }
+ 
+-// ---------- 扫盘启动 ----------
++// 3s 标定结束:计算 1m 对称参考并存 NVS。
++static void calib_done(lv_timer_t *t) {
++    (void)t;
++    if (radar_ui_current_page() != RADAR_PAGE_CALIB) return;
++
++    if (s_calib_cnt >= 10) {
++        float sym = s_calib_sum / (float)s_calib_cnt;
++        s_tx_ref_sym = radar_fusion_calib_ref(sym);
++        if (radar_espnow_calib_save(s_tx_ref_sym) == ESP_OK) {
++            ESP_LOGI(TAG, "标定完成: tx_ref_sym=%.1f (%u samples)",
++                     (double)s_tx_ref_sym, s_calib_cnt);
++        } else {
++            ESP_LOGW(TAG, "标定值保存失败");
++        }
++    } else {
++        ESP_LOGW(TAG, "标定采样不足(%u),保持原值", s_calib_cnt);
++    }
++
++    if (s_calib_timer) {
++        lv_timer_delete(s_calib_timer);
++        s_calib_timer = NULL;
++    }
++    radar_ui_show_main();
++}
++
++// ---------- 扫盘/标定启动 ----------
+ 
+ static void start_sweep(void) {
++    radar_ftm_pause(true);   // 跳频期间暂停 FTM
+     s_sweep_start_ms = esp_timer_get_time() / 1000;
+     radar_espnow_start_sweep();
+     radar_ui_show_sweeping();
+ 
+-    // 创建 4s 一次性定时器
+     s_sweep_timer = lv_timer_create(sweep_done, RADAR_SWEEP_DURATION_MS, NULL);
+     lv_timer_set_repeat_count(s_sweep_timer, 1);
+ }
+ 
++static void start_calib(void) {
++    s_calib_sum = 0.0f;
++    s_calib_cnt = 0;
++    s_sweep_start_ms = esp_timer_get_time() / 1000;  // 复用计时基
++    radar_ui_show_calib();
++
++    s_calib_timer = lv_timer_create(calib_done, CALIB_DURATION_MS, NULL);
++    lv_timer_set_repeat_count(s_calib_timer, 1);
++}
++
+ // ---------- 按键分发(button 任务,须持有锁) ----------
+ 
+ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
+@@ -97,13 +205,14 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
+         return;  // 不会到达(restart)
+     }
+ 
+-
+     radar_page_t page = radar_ui_current_page();
+ 
+     switch (page) {
+     case RADAR_PAGE_MAIN:
+         if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+             start_sweep();
++        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
++            start_calib();
+         }
+         break;
+ 
+@@ -111,6 +220,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
+         // 长按取消扫盘
+         if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+             radar_espnow_stop_sweep();
++            radar_ftm_pause(false);
+             if (s_sweep_timer) {
+                 lv_timer_delete(s_sweep_timer);
+                 s_sweep_timer = NULL;
+@@ -119,6 +229,17 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
+         }
+         break;
+ 
++    case RADAR_PAGE_CALIB:
++        // 长按取消标定
++        if (btn == BSP_BTN_OK && (ev == BSP_BTN_LONG || ev == BSP_BTN_CLICK)) {
++            if (s_calib_timer) {
++                lv_timer_delete(s_calib_timer);
++                s_calib_timer = NULL;
++            }
++            radar_ui_show_main();
++        }
++        break;
++
+     case RADAR_PAGE_RESULT:
+         if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+             radar_ui_show_main();
+@@ -153,13 +274,17 @@ void app_main(void) {
+         ESP_LOGE(TAG, "按键初始化失败,设备将无法操作");
+     }
+ 
+-    // 先构建 UI:即使 ESP-NOW 不可用,用户也能看到雷达界面(显示无信号)。
++    // 环境估计器与标定值
++    radar_env_est_init(&s_env_est);
++
++    // 先构建 UI:即使射频链路不可用,用户也能看到雷达界面(显示无信号)。
+     if (bsp_lvgl_lock(1000)) {
+         radar_ui_init();
+ 
+-        // 100ms 轮询定时器:更新追踪显示 + 扫盘进度
++        // 100ms 轮询定时器:融合 + 追踪显示 + 扫盘/标定进度
+         s_poll_timer = lv_timer_create(poll_tick, 100, NULL);
+         s_sweep_timer = NULL;
++        s_calib_timer = NULL;
+ 
+         bsp_lvgl_unlock();
+     }
+@@ -168,6 +293,23 @@ void app_main(void) {
+     if (radar_espnow_init() != ESP_OK) {
+         ESP_LOGE(TAG, "ESP-NOW 初始化失败,雷达将无法接收信号");
+     } else {
++        // 标定值(NVS,失败保持默认 -42dBm)
++        float calib;
++        if (radar_espnow_calib_load(&calib) == ESP_OK) {
++            s_tx_ref_sym = calib;
++            ESP_LOGI(TAG, "载入标定值 tx_ref_sym=%.1f", (double)calib);
++        }
++
++        // FTM 测距(软依赖:失败降级为纯 RSSI 融合)
++        if (radar_ftm_init() != ESP_OK) {
++            ESP_LOGW(TAG, "FTM 初始化失败,距离将仅基于 RSSI");
++        }
++
++        // BLE 哨兵链路(软依赖:失败无超界提示)
++        if (radar_ble_init() != ESP_OK) {
++            ESP_LOGW(TAG, "BLE 哨兵初始化失败");
++        }
++
+         // 自动启动 20Hz 广播发射:两台设备刷同一固件即可互相对测。
+         if (radar_espnow_start_broadcast("pass-radar") != ESP_OK) {
+             ESP_LOGE(TAG, "广播发射启动失败");
+diff --git a/main/radar_ble.c b/main/radar_ble.c
+new file mode 100644
+index 0000000..f537478
+--- /dev/null
++++ b/main/radar_ble.c
+@@ -0,0 +1,156 @@
++// radar_ble.c —— BLE Coded PHY 长距哨兵链路(NimBLE)。
++#include "radar_ble.h"
++
++#include "esp_log.h"
++#include "esp_timer.h"
++
++#include "nimble/nimble_port.h"
++#include "nimble/nimble_port_freertos.h"
++#include "host/ble_hs.h"
++#include "host/ble_hs_adv.h"
++#include "host/ble_hs_id.h"
++#include "host/ble_gap.h"
++#include "host/util/util.h"
++#include "os/os_mbuf.h"
++
++#include <string.h>
++
++static const char *TAG = "radar_ble";
++
++#define BLE_ADV_NAME     "passradar"
++#define BLE_ADV_INTERVAL_MS 1000   // 低占空比长距广播
++#define BLE_SCAN_ITVL_MS   300     // 扫描稀疏占空比(~10%),避让 Wi-Fi
++#define BLE_SCAN_WIN_MS    30
++#define BLE_PEER_HOLD_US   (10 * 1000 * 1000)
++
++static volatile int     s_ble_rssi   = -127;
++static volatile int64_t s_ble_seen_us = 0;
++static uint8_t          s_own_addr_type;
++static bool             s_initialized = false;
++
++// ---------- 广播 ----------
++
++static int adv_event_cb(struct ble_gap_event *event, void *arg) {
++    (void)event; (void)arg;
++    return 0;  // 不可连接广播,无事件需处理
++}
++
++static void start_advertising(void) {
++    struct ble_gap_ext_adv_params params = {0};
++    params.own_addr_type  = s_own_addr_type;
++    params.primary_phy    = BLE_HCI_LE_PHY_CODED;
++    params.secondary_phy  = BLE_HCI_LE_PHY_CODED;
++    params.sid            = 1;
++    params.itvl_min       = BLE_GAP_ADV_ITVL_MS(BLE_ADV_INTERVAL_MS);
++    params.itvl_max       = BLE_GAP_ADV_ITVL_MS(BLE_ADV_INTERVAL_MS + 200);
++    params.filter_policy  = BLE_HCI_ADV_FILT_NONE;
++
++    int rc = ble_gap_ext_adv_configure(0, &params, NULL, adv_event_cb, NULL);
++    if (rc != 0) {
++        ESP_LOGW(TAG, "ext adv configure rc=%d", rc);
++        return;
++    }
++
++    // 广播数据:flags + 完整名称
++    struct ble_hs_adv_fields fields = {0};
++    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
++    fields.name = (uint8_t *)BLE_ADV_NAME;
++    fields.name_len = strlen(BLE_ADV_NAME);
++    fields.name_is_complete = 1;
++
++    struct os_mbuf *data = os_msys_get_pkthdr(0, 0);
++    if (!data) return;
++    if (ble_hs_adv_set_fields_mbuf(&fields, data) == 0) {
++        ble_gap_ext_adv_set_data(0, data);
++    } else {
++        os_mbuf_free_chain(data);
++    }
++
++    rc = ble_gap_ext_adv_start(0, 0, 0);
++    if (rc != 0) ESP_LOGW(TAG, "ext adv start rc=%d", rc);
++}
++
++// ---------- 扫描 ----------
++
++static int scan_event_cb(struct ble_gap_event *event, void *arg) {
++    (void)arg;
++    if (event->type != BLE_GAP_EVENT_EXT_DISC) return 0;
++
++    const struct ble_gap_ext_disc_desc *desc = &event->ext_disc;
++    if (desc->length_data == 0 || !desc->data) return 0;
++
++    struct ble_hs_adv_fields fields;
++    if (ble_hs_adv_parse_fields(&fields, desc->data, desc->length_data) != 0) return 0;
++
++    if (fields.name_is_complete && fields.name_len == strlen(BLE_ADV_NAME) &&
++        memcmp(fields.name, BLE_ADV_NAME, fields.name_len) == 0) {
++        s_ble_rssi = desc->rssi;
++        s_ble_seen_us = esp_timer_get_time();
++    }
++    return 0;
++}
++
++static void start_scanning(void) {
++    struct ble_gap_ext_disc_params uncoded = {0};
++    uncoded.passive = 1;
++    uncoded.itvl    = BLE_GAP_SCAN_ITVL_MS(BLE_SCAN_ITVL_MS);
++    uncoded.window  = BLE_GAP_SCAN_WIN_MS(BLE_SCAN_WIN_MS);
++
++    struct ble_gap_ext_disc_params coded = uncoded;
++
++    // duration=0 持续扫描;filter_duplicates=0 以持续刷新 RSSI
++    int rc = ble_gap_ext_disc(s_own_addr_type, 0, 0, 0,
++                              BLE_HCI_SCAN_FILT_NO_WL, 0,
++                              &uncoded, &coded, scan_event_cb, NULL);
++    if (rc != 0) ESP_LOGW(TAG, "ext disc rc=%d", rc);
++}
++
++// ---------- NimBLE 生命周期 ----------
++
++static void on_sync(void) {
++    ble_hs_util_ensure_addr(0);
++    ble_hs_id_infer_auto(0, &s_own_addr_type);
++    start_advertising();
++    start_scanning();
++    ESP_LOGI(TAG, "BLE 哨兵就绪(coded PHY)");
++}
++
++static void on_reset(int reason) {
++    ESP_LOGW(TAG, "BLE host reset: %d", reason);
++}
++
++static void ble_host_task(void *param) {
++    (void)param;
++    nimble_port_run();       // 阻塞运行,直到 nimble_port_stop
++    nimble_port_freertos_deinit();
++}
++
++esp_err_t radar_ble_init(void) {
++    if (s_initialized) return ESP_OK;
++
++    esp_err_t err = nimble_port_init();
++    if (err != ESP_OK) {
++        ESP_LOGE(TAG, "nimble_port_init: %s", esp_err_to_name(err));
++        return err;
++    }
++
++    ble_hs_cfg.sync_cb = on_sync;
++    ble_hs_cfg.reset_cb = on_reset;
++    // 无配对/绑定,不需要持久化 store;NimBLE 默认 RAM store 足够。
++
++    nimble_port_freertos_init(ble_host_task);
++
++    s_initialized = true;
++    return ESP_OK;
++}
++
++// ---------- 查询 ----------
++
++int radar_ble_peer_rssi(void) {
++    return radar_ble_peer_alive() ? s_ble_rssi : -127;
++}
++
++bool radar_ble_peer_alive(void) {
++    return s_ble_seen_us != 0 &&
++           (esp_timer_get_time() - s_ble_seen_us) < BLE_PEER_HOLD_US;
++}
+diff --git a/main/radar_ble.h b/main/radar_ble.h
+new file mode 100644
+index 0000000..597fd9f
+--- /dev/null
++++ b/main/radar_ble.h
+@@ -0,0 +1,24 @@
++#pragma once
++
++// BLE 长距哨兵链路(NimBLE + BLE 5.0 Coded PHY)。
++//
++// 角色:辅助链路,非主测距源。
++//   - Wi-Fi/ESP-NOW 判超界(RSSI < -88dBm)后,BLE Coded PHY 链路仍可
++//     达(灵敏度约 +9dB,开阔场量程 3 倍于 Wi-Fi),提供"远/近"两档提示;
++//   - BLE 与 Wi-Fi 衰落相关性低,其 RSSI 可作融合引擎的异构校验源。
++//
++// 实现:扩展广播(Coded PHY, 1s 间隔)+ 被动扫描(约 10% 占空比)。
++// 对端通过广播名 "passradar" 识别。
++
++#include "esp_err.h"
++#include <stdbool.h>
++
++// 初始化 NimBLE、启动广播与扫描。失败返回错误码(调用方降级为无哨兵)。
++// 需在 radar_espnow_init()(NVS/event loop 就绪)之后调用。
++esp_err_t radar_ble_init(void);
++
++// 最近一次收到的对端 BLE 广播 RSSI(dBm)。无数据返回 -127。
++int  radar_ble_peer_rssi(void);
++
++// 最近 10s 内收到过对端 BLE 广播(哨兵为低频链路,窗口比 Wi-Fi 宽)。
++bool radar_ble_peer_alive(void);
+diff --git a/main/radar_espnow.c b/main/radar_espnow.c
+index 306a6c9..a74fdc6 100644
+--- a/main/radar_espnow.c
++++ b/main/radar_espnow.c
+@@ -1,20 +1,39 @@
+-// radar_espnow.c —— ESP-NOW 广播接收 + RSSI 采集。
++// radar_espnow.c —— ESP-NOW 广播接收 + RSSI 采集 + 对端状态交换(v2)。
+ // 接收回调运行于 Wi-Fi 任务,用 volatile 变量向 LVGL 定时器传递数据。
++//
++// v2 增强:
++//   - 双向 RSSI 回传:广播包携带本端测得对端的 RSSI,供对称融合;
++//   - 信道快跳:扫盘期间按 radar_sweep_channel_at() 调度在 1/6/11 间切换,
++//     发起端(本端扫盘)与跟随端(对端扫盘)共用同一调度保持链路;
++//   - 1m 标定值存 NVS。
+ #include "radar_espnow.h"
+ 
+ #include "esp_event.h"
+ #include "esp_log.h"
++#include "esp_mac.h"
+ #include "esp_netif.h"
+ #include "esp_now.h"
+ #include "esp_timer.h"
+ #include "esp_wifi.h"
+ #include "nvs_flash.h"
++#include "nvs.h"
+ 
++#include <stddef.h>
+ #include <string.h>
+ 
+ static const char *TAG = "radar_espnow";
+ 
+-// ESP-NOW 接收回调是 wifi_task 上下文,volatile 保证编译器不优化读取。
++// 固定工作信道(非扫盘期)
++#define RADAR_HOME_CHANNEL 1
++// 对端状态有效期:1s 未收到包判为离线
++#define PEER_TIMEOUT_US (1000 * 1000)
++// 对端扫盘标志有效期(广播 20Hz,留 3 个周期余量)
++#define PEER_SWEEP_HOLD_US (300 * 1000)
++// NVS 命名空间与标定键
++#define RADAR_NVS_NS   "radar"
++#define RADAR_NVS_KEY  "txref"
++
++// 接收回调是 wifi_task 上下文,volatile 保证编译器不优化读取。
+ static volatile float s_filtered_rssi = -90.0f;
+ static volatile int   s_raw_rssi      = -90;
+ static volatile bool  s_sweeping      = false;
+@@ -24,6 +43,23 @@ static radar_sample_t s_samples[RADAR_MAX_SAMPLES];
+ static volatile unsigned s_sample_count = 0;
+ static int64_t s_sweep_start_us = 0;
+ 
++// 对端状态(写者:ESP-NOW 回调)
++static volatile int     s_peer_rssi      = -127;   // 对端测得本机的 RSSI
++static volatile int64_t s_peer_seen_us   = 0;      // 最近收到对端包的时刻
++static volatile int64_t s_peer_sweep_us  = 0;      // 最近收到"对端扫盘中"标志
++static volatile float   s_peer_angle     = -1.0f;  // 对端最近扫盘角
++static volatile float   s_peer_dist      = -1.0f;  // 对端最近融合距离
++static uint8_t          s_peer_mac[6];
++static volatile bool    s_peer_mac_known = false;
++
++// 本端待广播的扫盘结果(写者:UI 任务;读者:广播定时器)
++static volatile float s_report_angle = -1.0f;
++static volatile float s_report_dist  = -1.0f;
++
++// 当前信道与跳频基准时刻
++static volatile uint8_t s_cur_channel   = RADAR_HOME_CHANNEL;
++static int64_t          s_hop_start_us  = 0;   // 跳频调度起点(发起或跟随)
++
+ // 卡尔曼滤波器实例(全局单例,回调里就地更新)。
+ static radar_kalman_t s_kalman;
+ 
+@@ -37,8 +73,6 @@ static bool s_initialized;
+ 
+ static void espnow_recv_cb(const esp_now_recv_info_t *recv_info,
+                            const uint8_t *data, int len) {
+-    (void)data; (void)len;
+-
+     int raw = recv_info->rx_ctrl->rssi;
+     s_raw_rssi = raw;
+ 
+@@ -46,13 +80,38 @@ static void espnow_recv_cb(const esp_now_recv_info_t *recv_info,
+     float filtered = radar_kalman_update(&s_kalman, (float)raw);
+     s_filtered_rssi = filtered;
+ 
+-    // 扫盘采样
++    int64_t now = esp_timer_get_time();
++
++    // 扫盘采样(携带当前信道标记)
+     if (s_sweeping && s_sample_count < RADAR_MAX_SAMPLES) {
+-        uint32_t elapsed_ms = (uint32_t)((esp_timer_get_time() - s_sweep_start_us) / 1000);
++        uint32_t elapsed_ms = (uint32_t)((now - s_sweep_start_us) / 1000);
+         s_samples[s_sample_count].timestamp_ms = elapsed_ms;
+         s_samples[s_sample_count].rssi = filtered;
++        s_samples[s_sample_count].channel = s_cur_channel;
+         s_sample_count++;
+     }
++
++    // 对端包解析(v1 兼容:长度 >= 16 即含名字+序号)
++    if (len >= (int)offsetof(radar_packet_t, sequence) + (int)sizeof(uint32_t)) {
++        const radar_packet_t *pkt = (const radar_packet_t *)data;
++        s_peer_seen_us = now;
++        if (!s_peer_mac_known) {
++            memcpy((void *)s_peer_mac, recv_info->src_addr, 6);
++            s_peer_mac_known = true;
++        }
++        // v2 扩展字段
++        if (len >= (int)sizeof(radar_packet_t) && pkt->proto_ver == RADAR_PROTO_VER) {
++            s_peer_rssi = pkt->rssi_to_peer;
++            if (pkt->flags & RADAR_PKT_FLAG_SWEEPING) {
++                // 对端扫盘中:以首个带标志的包对齐跳频调度
++                if (s_peer_sweep_us == 0) s_hop_start_us = now;
++                s_peer_sweep_us = now;
++            }
++            s_peer_angle = pkt->angle_deg10 >= 0 ? (float)pkt->angle_deg10 / 10.0f
++                                                 : -1.0f;
++            s_peer_dist  = pkt->dist_dm >= 0 ? (float)pkt->dist_dm / 10.0f : -1.0f;
++        }
++    }
+ }
+ 
+ // ---------- 初始化 ----------
+@@ -101,7 +160,8 @@ esp_err_t radar_espnow_init(void) {
+         return err;
+     }
+ 
+-    err = esp_wifi_set_mode(WIFI_MODE_STA);
++    // APSTA:STA 供 ESP-NOW/FTM 发起,AP 供 FTM responder(radar_ftm 配置)。
++    err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+     if (err != ESP_OK) return err;
+ 
+     // 最大功率发射(19.5dBm ≈ 78 in 0.25dBm units)
+@@ -113,6 +173,9 @@ esp_err_t radar_espnow_init(void) {
+         return err;
+     }
+ 
++    // 固定主信道,保证两端初始同信道
++    esp_wifi_set_channel(RADAR_HOME_CHANNEL, WIFI_SECOND_CHAN_NONE);
++
+     // ESP-NOW 初始化
+     err = esp_now_init();
+     if (err != ESP_OK) {
+@@ -138,9 +201,46 @@ static esp_timer_handle_t s_broadcast_timer;
+ static radar_packet_t s_tx_packet;
+ static volatile bool s_broadcasting;
+ 
++// 跳频调度:本端扫盘以 s_sweep_start_us 为基准,跟随对端以 s_hop_start_us 为基准
++static void hop_tick(int64_t now) {
++    uint8_t desired = RADAR_HOME_CHANNEL;
++
++    if (s_sweeping) {
++        uint32_t t = (uint32_t)((now - s_sweep_start_us) / 1000);
++        desired = radar_sweep_channel_at(t, RADAR_SWEEP_DURATION_MS);
++    } else if (s_peer_sweep_us != 0 &&
++               now - s_peer_sweep_us < PEER_SWEEP_HOLD_US) {
++        uint32_t t = (uint32_t)((now - s_hop_start_us) / 1000);
++        if (t < RADAR_SWEEP_DURATION_MS) {
++            desired = radar_sweep_channel_at(t, RADAR_SWEEP_DURATION_MS);
++        } else {
++            s_peer_sweep_us = 0;  // 对端扫盘结束
++        }
++    }
++
++    if (desired != s_cur_channel) {
++        if (esp_wifi_set_channel(desired, WIFI_SECOND_CHAN_NONE) == ESP_OK) {
++            s_cur_channel = desired;
++        }
++    }
++}
++
+ static void broadcast_tick(void *arg) {
+     (void)arg;
++    int64_t now = esp_timer_get_time();
++
++    // 填充 v2 扩展字段
+     s_tx_packet.sequence++;
++    s_tx_packet.proto_ver = RADAR_PROTO_VER;
++    s_tx_packet.flags = s_sweeping ? RADAR_PKT_FLAG_SWEEPING : 0;
++    float fr = s_filtered_rssi;
++    s_tx_packet.rssi_to_peer = fr < -127.0f ? -127 : (fr > 0.0f ? 0 : (int8_t)fr);
++    float ra = s_report_angle;
++    float rd = s_report_dist;
++    s_tx_packet.angle_deg10 = ra >= 0.0f ? (int16_t)(ra * 10.0f + 0.5f) : -1;
++    s_tx_packet.dist_dm     = rd >= 0.0f ? (int16_t)(rd * 10.0f + 0.5f) : -1;
++
++    hop_tick(now);
+     esp_now_send(BROADCAST_MAC, (const uint8_t *)&s_tx_packet, sizeof(s_tx_packet));
+ }
+ 
+@@ -160,6 +260,9 @@ esp_err_t radar_espnow_start_broadcast(const char *device_name) {
+     memset(&s_tx_packet, 0, sizeof(s_tx_packet));
+     strncpy(s_tx_packet.device_name, device_name, RADAR_PACKET_NAME_LEN - 1);
+     s_tx_packet.sequence = 0;
++    s_tx_packet.proto_ver = RADAR_PROTO_VER;
++    s_tx_packet.angle_deg10 = -1;
++    s_tx_packet.dist_dm = -1;
+ 
+     // 创建 50ms 周期定时器(20Hz)
+     esp_timer_create_args_t timer_args = {
+@@ -204,16 +307,57 @@ float radar_espnow_filtered_rssi(void) { return s_filtered_rssi; }
+ int   radar_espnow_raw_rssi(void)      { return s_raw_rssi; }
+ bool  radar_espnow_is_sweeping(void)   { return s_sweeping; }
+ 
++bool radar_espnow_peer_alive(void) {
++    return s_peer_seen_us != 0 &&
++           (esp_timer_get_time() - s_peer_seen_us) < PEER_TIMEOUT_US;
++}
++
++int radar_espnow_peer_rssi(void) {
++    return radar_espnow_peer_alive() ? s_peer_rssi : -127;
++}
++
++float radar_espnow_peer_angle(void) {
++    return radar_espnow_peer_alive() ? s_peer_angle : -1.0f;
++}
++
++float radar_espnow_peer_distance(void) {
++    return radar_espnow_peer_alive() ? s_peer_dist : -1.0f;
++}
++
++void radar_espnow_report_result(float angle_deg, float dist_m) {
++    s_report_angle = angle_deg;
++    s_report_dist  = dist_m;
++}
++
++bool radar_espnow_peer_mac(uint8_t out_mac[6]) {
++    if (!s_peer_mac_known || !out_mac) return false;
++    memcpy(out_mac, (const void *)s_peer_mac, 6);
++    return true;
++}
++
++bool radar_espnow_is_hopping(void) {
++    if (s_sweeping) return true;
++    return s_peer_sweep_us != 0 &&
++           (esp_timer_get_time() - s_peer_sweep_us) < PEER_SWEEP_HOLD_US;
++}
++
+ // ---------- 扫盘采样控制 ----------
+ 
+ void radar_espnow_start_sweep(void) {
+     s_sample_count = 0;
+     s_sweep_start_us = esp_timer_get_time();
++    s_hop_start_us = s_sweep_start_us;
+     s_sweeping = true;
+ }
+ 
+ unsigned radar_espnow_stop_sweep(void) {
+     s_sweeping = false;
++    // 恢复固定信道
++    if (s_cur_channel != RADAR_HOME_CHANNEL) {
++        if (esp_wifi_set_channel(RADAR_HOME_CHANNEL, WIFI_SECOND_CHAN_NONE) == ESP_OK) {
++            s_cur_channel = RADAR_HOME_CHANNEL;
++        }
++    }
+     return s_sample_count;
+ }
+ 
+@@ -223,3 +367,26 @@ unsigned radar_espnow_get_samples(radar_sample_t *out, unsigned max_count) {
+     memcpy(out, s_samples, n * sizeof(radar_sample_t));
+     return n;
+ }
++
++// ---------- 标定(NVS) ----------
++
++esp_err_t radar_espnow_calib_save(float tx_ref_sym) {
++    nvs_handle_t h;
++    esp_err_t err = nvs_open(RADAR_NVS_NS, NVS_READWRITE, &h);
++    if (err != ESP_OK) return err;
++    err = nvs_set_blob(h, RADAR_NVS_KEY, &tx_ref_sym, sizeof(tx_ref_sym));
++    if (err == ESP_OK) err = nvs_commit(h);
++    nvs_close(h);
++    return err;
++}
++
++esp_err_t radar_espnow_calib_load(float *tx_ref_sym) {
++    if (!tx_ref_sym) return ESP_ERR_INVALID_ARG;
++    nvs_handle_t h;
++    esp_err_t err = nvs_open(RADAR_NVS_NS, NVS_READONLY, &h);
++    if (err != ESP_OK) return err;
++    size_t len = sizeof(*tx_ref_sym);
++    err = nvs_get_blob(h, RADAR_NVS_KEY, tx_ref_sym, &len);
++    nvs_close(h);
++    return err;
++}
+diff --git a/main/radar_espnow.h b/main/radar_espnow.h
+index dd82bf9..6b965b0 100644
+--- a/main/radar_espnow.h
++++ b/main/radar_espnow.h
+@@ -1,7 +1,10 @@
+ #pragma once
+ 
+-// ESP-NOW 广播收发模块 —— 为雷达提供 RSSI 采集。
++// ESP-NOW 广播收发模块 —— 为雷达提供 RSSI 采集与对端状态交换。
+ // 接收回调运行于 Wi-Fi 任务上下文,不得触碰 LVGL。
++//
++// 协议 v2:数据包携带双向 RSSI 回传、扫盘同步标志与本端结果,
++// 支持扫盘期间 1/6/11 信道快跳分集(发起端与跟随端共用调度)。
+ 
+ #include "esp_err.h"
+ #include "radar_kalman.h"
+@@ -13,10 +16,21 @@
+ #define RADAR_SWEEP_DURATION_MS 4000
+ #define RADAR_PACKET_NAME_LEN  12
+ 
+-// 数据包结构(发射端发送,接收端解析)
++// 协议版本与标志位
++#define RADAR_PROTO_VER        2
++#define RADAR_PKT_FLAG_SWEEPING 0x01  // 本端正扫盘,对端应跟随跳频
++
++// 数据包结构(发射端发送,接收端解析)。v2 扩展了 v1 的 16 字节;
++// 接收端按长度兼容旧固件。
+ typedef struct __attribute__((packed)) {
+     char     device_name[12];
+     uint32_t sequence;
++    uint8_t  proto_ver;     // = RADAR_PROTO_VER
++    uint8_t  flags;         // RADAR_PKT_FLAG_*
++    int8_t   rssi_to_peer;  // 本端测得对端的滤波 RSSI(dBm)
++    int8_t   _reserved;
++    int16_t  angle_deg10;   // 本端最近扫盘角(0.1° 单位,-1 无效)
++    int16_t  dist_dm;       // 本端融合距离(分米,-1 无效)
+ } radar_packet_t;
+ 
+ // ESP-NOW 初始化(NVS/netif/event-loop/Wi-Fi/ESP-NOW 全链路)。
+@@ -34,12 +48,37 @@ void radar_espnow_stop_broadcast(void);
+ float radar_espnow_filtered_rssi(void);
+ 
+ // 获取最新原始 RSSI。
+-int radar_espnow_raw_rssi(void);
++int   radar_espnow_raw_rssi(void);
++
++// ---- 对端状态(协议 v2) ----
++
++// 最近 1s 内收到过对端包。
++bool  radar_espnow_peer_alive(void);
++
++// 对端回传的"对端测得本机"的滤波 RSSI(dBm)。无数据返回 -127。
++int   radar_espnow_peer_rssi(void);
++
++// 对端最近扫盘角(度)。无数据返回 -1.0f。
++float radar_espnow_peer_angle(void);
++
++// 对端最近融合距离(米)。无数据返回 -1.0f。
++float radar_espnow_peer_distance(void);
+ 
+-// 进入扫盘采样模式。清空采样缓冲区,记录起始时刻。
++// 本端扫盘结果写入后续广播包(angle < 0 或 dist < 0 表示无效)。
++void  radar_espnow_report_result(float angle_deg, float dist_m);
++
++// 对端 MAC(供 FTM 等模块使用)。未知时输出全零并返回 false。
++bool  radar_espnow_peer_mac(uint8_t out_mac[6]);
++
++// 是否处于扫盘跳频中(本端发起或对端跟随)。
++bool  radar_espnow_is_hopping(void);
++
++// ---- 扫盘采样 ----
++
++// 进入扫盘采样模式。清空采样缓冲区,记录起始时刻,启动信道快跳。
+ void radar_espnow_start_sweep(void);
+ 
+-// 退出扫盘采样模式。返回采样数量。
++// 退出扫盘采样模式。返回采样数量,并恢复固定信道。
+ unsigned radar_espnow_stop_sweep(void);
+ 
+ // 拷贝采样数据到调用者缓冲区。返回实际拷贝数量。
+@@ -48,5 +87,11 @@ unsigned radar_espnow_get_samples(radar_sample_t *out, unsigned max_count);
+ // 是否在扫盘采样中。
+ bool radar_espnow_is_sweeping(void);
+ 
++// ---- 标定(NVS) ----
++
++// 保存/读取 1m 对称参考 RSSI(tx_ref_sym)。
++esp_err_t radar_espnow_calib_save(float tx_ref_sym);
++esp_err_t radar_espnow_calib_load(float *tx_ref_sym);
++
+ // 释放 ESP-NOW 与 Wi-Fi 资源。
+ void radar_espnow_deinit(void);
+diff --git a/main/radar_ftm.c b/main/radar_ftm.c
+new file mode 100644
+index 0000000..650af38
+--- /dev/null
++++ b/main/radar_ftm.c
+@@ -0,0 +1,146 @@
++// radar_ftm.c —— Wi-Fi FTM(802.11mc)RTT 测距。
++#include "radar_ftm.h"
++#include "radar_espnow.h"
++#include "radar_fusion.h"
++
++#include "esp_event.h"
++#include "esp_log.h"
++#include "esp_mac.h"
++#include "esp_timer.h"
++#include "esp_wifi.h"
++
++#include <string.h>
++#include <stdlib.h>
++
++static const char *TAG = "radar_ftm";
++
++// SoftAP(FTM responder)参数
++#define FTM_AP_SSID      "passradar"
++#define FTM_AP_PASSWORD  "passradar123"
++#define FTM_AP_CHANNEL   1
++// 每轮 session 的 burst 帧数
++#define FTM_FRAMES_PER_SESSION 16
++// 发起节流(2s)与结果有效期(5s)
++#define FTM_PERIOD_US    (2 * 1000 * 1000)
++#define FTM_VALID_US     (5 * 1000 * 1000)
++// RTT 皮秒 → 米:c/2 = 1.49896e-4 m/ps
++#define FTM_PS_TO_M      (1.49896e-4f)
++
++static volatile bool  s_paused        = false;
++static volatile float s_distance_m    = -1.0f;
++static volatile float s_spread_m      = 0.0f;
++static volatile int   s_rssi          = -127;
++static volatile int64_t s_valid_until = 0;
++static int64_t        s_last_session  = 0;
++static bool           s_initialized   = false;
++
++// ---------- FTM 报告事件(Wi-Fi 任务上下文) ----------
++
++static void ftm_event_handler(void *arg, esp_event_base_t base,
++                              int32_t id, void *data) {
++    (void)arg; (void)base;
++    if (id != WIFI_EVENT_FTM_REPORT) return;
++
++    wifi_event_ftm_report_t *report = (wifi_event_ftm_report_t *)data;
++    if (report->status == FTM_STATUS_SUCCESS &&
++        report->ftm_report_num_entries > 0 && report->ftm_report_data) {
++        // 逐 burst RTT → 距离,交纯逻辑中值滤波;帧 RSSI 取平均
++        unsigned n = report->ftm_report_num_entries;
++        float raw[32];
++        if (n > 32) n = 32;
++        int rssi_sum = 0;
++        for (unsigned i = 0; i < n; i++) {
++            raw[i] = (float)report->ftm_report_data[i].rtt * FTM_PS_TO_M;
++            rssi_sum += report->ftm_report_data[i].rssi;
++        }
++        float spread = 0.0f;
++        float d = radar_fusion_ftm_filter(raw, n, &spread);
++        if (d > 0.0f) {
++            s_distance_m = d;
++            s_spread_m = spread;
++            s_rssi = rssi_sum / (int)n;
++            s_valid_until = esp_timer_get_time() + FTM_VALID_US;
++        }
++        ESP_LOGI(TAG, "FTM ok: %.2fm (spread %.2f, rssi %d)",
++                 (double)s_distance_m, (double)s_spread_m, s_rssi);
++    } else {
++        ESP_LOGW(TAG, "FTM session status=%d", (int)report->status);
++    }
++    if (report->ftm_report_data) {
++        free(report->ftm_report_data);
++        report->ftm_report_data = NULL;
++    }
++}
++
++// ---------- 初始化 ----------
++
++esp_err_t radar_ftm_init(void) {
++    if (s_initialized) return ESP_OK;
++
++    // SoftAP:对端(同为 APSTA)可对其发起 FTM
++    wifi_config_t ap = {
++        .ap = {
++            .ssid = FTM_AP_SSID,
++            .ssid_len = sizeof(FTM_AP_SSID) - 1,
++            .password = FTM_AP_PASSWORD,
++            .channel = FTM_AP_CHANNEL,
++            .authmode = WIFI_AUTH_WPA2_PSK,
++            .ssid_hidden = 1,
++            .max_connection = 1,
++            .ftm_responder = true,
++        },
++    };
++    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &ap);
++    if (err != ESP_OK) {
++        ESP_LOGE(TAG, "AP config: %s", esp_err_to_name(err));
++        return err;
++    }
++
++    err = esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_FTM_REPORT,
++                                     ftm_event_handler, NULL);
++    if (err != ESP_OK) return err;
++
++    s_initialized = true;
++    ESP_LOGI(TAG, "FTM responder 就绪(softAP hidden)");
++    return ESP_OK;
++}
++
++// ---------- 周期发起 ----------
++
++void radar_ftm_pause(bool paused) { s_paused = paused; }
++
++void radar_ftm_tick(void) {
++    if (!s_initialized || s_paused) return;
++    if (radar_espnow_is_hopping()) return;  // 跳频中不发 FTM
++
++    int64_t now = esp_timer_get_time();
++    if (now - s_last_session < FTM_PERIOD_US) return;
++
++    uint8_t mac[6];
++    if (!radar_espnow_peer_mac(mac)) return;
++
++    wifi_ftm_initiator_cfg_t cfg = {
++        .frm_count = FTM_FRAMES_PER_SESSION,
++        .burst_period = 0,
++        .channel = FTM_AP_CHANNEL,
++    };
++    memcpy(cfg.resp_mac, mac, 6);
++
++    if (esp_wifi_ftm_initiate_session(&cfg) == ESP_OK) {
++        s_last_session = now;
++    }
++}
++
++// ---------- 查询 ----------
++
++bool radar_ftm_valid(void) {
++    return s_valid_until != 0 && esp_timer_get_time() < s_valid_until;
++}
++
++float radar_ftm_distance_m(void) {
++    return radar_ftm_valid() ? s_distance_m : -1.0f;
++}
++
++int radar_ftm_rssi(void) {
++    return radar_ftm_valid() ? s_rssi : -127;
++}
+diff --git a/main/radar_ftm.h b/main/radar_ftm.h
+new file mode 100644
+index 0000000..2cc0284
+--- /dev/null
++++ b/main/radar_ftm.h
+@@ -0,0 +1,36 @@
++#pragma once
++
++// Wi-Fi FTM(802.11mc RTT)测距模块。
++//
++// 对称架构:双端均为 SoftAP + FTM Responder,同时作为 Initiator 周期性
++// 向对方发起 FTM session,各自得到本地 RTT 距离。滤波(中值 + IQR)
++// 在纯逻辑模块 radar_fusion 中完成。
++//
++// 约束:
++//   - ESP-IDF 中 FTM Responder 仅 AP 模式、Initiator 仅 STA 模式支持,
++//     故 Wi-Fi 需处于 APSTA(由 radar_espnow_init 设置);
++//   - FTM 与工作信道绑定:扫盘跳频期间须 radar_ftm_pause(true) 暂停发起;
++//   - RTT 精度与 RSSI 无关,但弱信号下失败率上升(实测 <-70dBm 明显)。
++
++#include "esp_err.h"
++#include <stdbool.h>
++#include <stdint.h>
++
++// 初始化:配置 SoftAP(FTM responder)并注册 FTM 事件。
++// 需在 radar_espnow_init() 之后调用。
++esp_err_t radar_ftm_init(void);
++
++// 扫盘期间暂停/恢复 FTM 发起(跳频会打断 session)。
++void radar_ftm_pause(bool paused);
++
++// 周期驱动(由 100ms 轮询调用;内部节流到每 2s 发起一次)。
++void radar_ftm_tick(void);
++
++// 最近一个有效窗口(5s)内是否有成功结果。
++bool radar_ftm_valid(void);
++
++// 最近一次滤波后距离(米)。无效时返回 -1。
++float radar_ftm_distance_m(void);
++
++// FTM 帧平均 RSSI(dBm)。无效时返回 -127。
++int radar_ftm_rssi(void);
+diff --git a/main/radar_fusion.c b/main/radar_fusion.c
+new file mode 100644
+index 0000000..586fbdb
+--- /dev/null
++++ b/main/radar_fusion.c
+@@ -0,0 +1,188 @@
++// radar_fusion.c —— 测距/定向融合引擎实现。纯 C,无 ESP-IDF 依赖。
++#include "radar_fusion.h"
++#include "radar_sweep.h"  // RADAR_RSSI_MIN_VALID
++#include <math.h>
++#include <stdlib.h>
++#include <string.h>
++
++// RSSI 是否"存在"(区分无数据与弱信号)
++#define RSSI_PRESENT_TH (-126.0f)
++// FTM 滤波单轮 burst 上限
++#define FTM_MAX_BURST 32
++// 严格 C11 下 math.h 不保证 M_PI
++#define FUSION_PI 3.14159265358979f
++
++float radar_env_path_loss_n(radar_env_t env) {
++    switch (env) {
++    case RADAR_ENV_INDOOR:     return 3.0f;
++    case RADAR_ENV_OBSTRUCTED: return 3.5f;
++    case RADAR_ENV_OUTDOOR:
++    default:                   return 2.2f;
++    }
++}
++
++// ---- 双向 RSSI ----
++
++bool radar_fusion_sym_valid(float rssi_ab, float rssi_ba) {
++    return rssi_ab > RSSI_PRESENT_TH && rssi_ba > RSSI_PRESENT_TH;
++}
++
++float radar_fusion_sym_rssi(float rssi_ab, float rssi_ba) {
++    return 0.5f * (rssi_ab + rssi_ba);
++}
++
++float radar_fusion_sym_distance(float rssi_sym, float tx_ref_sym, radar_env_t env) {
++    float n = radar_env_path_loss_n(env);
++    return powf(10.0f, (tx_ref_sym - rssi_sym) / (10.0f * n));
++}
++
++// ---- FTM 滤波 ----
++
++static int cmp_float(const void *a, const void *b) {
++    float fa = *(const float *)a, fb = *(const float *)b;
++    return (fa > fb) - (fa < fb);
++}
++
++float radar_fusion_ftm_filter(const float *raw_m, unsigned count, float *out_spread_m) {
++    if (!raw_m || count == 0) return RADAR_DIST_INVALID;
++
++    float buf[FTM_MAX_BURST];
++    unsigned n = count > FTM_MAX_BURST ? FTM_MAX_BURST : count;
++    memcpy(buf, raw_m, n * sizeof(float));
++    qsort(buf, n, sizeof(float), cmp_float);
++
++    float median = (n & 1u) ? buf[n / 2]
++                            : 0.5f * (buf[n / 2 - 1] + buf[n / 2]);
++    if (out_spread_m) {
++        unsigned q1 = n / 4;
++        unsigned q3 = (3 * n) / 4;
++        if (q3 >= n) q3 = n - 1;
++        *out_spread_m = buf[q3] - buf[q1];
++    }
++    return median;
++}
++
++bool radar_fusion_ftm_suspicious(float ftm_m, float rssi_m) {
++    return ftm_m > rssi_m * RADAR_FTM_SUSPICIOUS_RATIO &&
++           ftm_m > rssi_m + RADAR_FTM_SUSPICIOUS_MARGIN_M;
++}
++
++// ---- 融合主入口 ----
++
++radar_fusion_result_t radar_fusion_update(bool ftm_valid, float ftm_m,
++                                          float local_rssi_dbm, float peer_rssi_dbm,
++                                          float tx_ref_sym, radar_env_t env) {
++    radar_fusion_result_t r = {
++        .distance_m   = RADAR_DIST_INVALID,
++        .conf         = RADAR_CONF_OOR,
++        .sym_rssi_dbm = RADAR_RSSI_ABSENT,
++        .rssi_dist_m  = RADAR_DIST_INVALID,
++        .ftm_used     = false,
++    };
++
++    bool local_ok = local_rssi_dbm > RSSI_PRESENT_TH;
++    if (!local_ok) return r;
++
++    bool peer_ok = peer_rssi_dbm > RSSI_PRESENT_TH;
++    float sym = peer_ok ? radar_fusion_sym_rssi(local_rssi_dbm, peer_rssi_dbm)
++                        : local_rssi_dbm;
++    r.sym_rssi_dbm = sym;
++
++    float rssi_d = radar_fusion_sym_distance(sym, tx_ref_sym, env);
++    r.rssi_dist_m = rssi_d;
++
++    // 弱信号守卫:对称 RSSI 低于最小有效值 → 超界(保留距离供参考)
++    if (sym < RADAR_RSSI_MIN_VALID) {
++        r.distance_m = rssi_d;
++        r.conf = RADAR_CONF_OOR;
++        return r;
++    }
++
++    // FTM 主测距:可用且不可疑时加权融合;疑似反射径则降级纯 RSSI
++    if (ftm_valid && ftm_m > 0.0f) {
++        if (radar_fusion_ftm_suspicious(ftm_m, rssi_d)) {
++            r.distance_m = rssi_d;
++            r.conf = RADAR_CONF_MED;
++            r.ftm_used = false;
++        } else {
++            r.distance_m = RADAR_FTM_FUSION_WEIGHT * ftm_m +
++                           (1.0f - RADAR_FTM_FUSION_WEIGHT) * rssi_d;
++            r.ftm_used = true;
++            bool symmetric_link = peer_ok &&
++                fabsf(local_rssi_dbm - peer_rssi_dbm) <= RADAR_SYM_MAX_GAP_DB;
++            r.conf = symmetric_link ? RADAR_CONF_HIGH : RADAR_CONF_MED;
++        }
++        return r;
++    }
++
++    r.distance_m = rssi_d;
++    r.conf = peer_ok ? RADAR_CONF_MED : RADAR_CONF_LOW;
++    return r;
++}
++
++// ---- 角度工具 ----
++
++float radar_fusion_angle_diff(float a_deg, float b_deg) {
++    float d = fmodf(fabsf(a_deg - b_deg), 360.0f);
++    if (d > 180.0f) d = 360.0f - d;
++    return d;
++}
++
++float radar_fusion_circular_mean(const float *angles_deg, unsigned count) {
++    if (!angles_deg || count == 0) return RADAR_ANGLE_INVALID;
++    float sx = 0.0f, sy = 0.0f;
++    for (unsigned i = 0; i < count; i++) {
++        float rad = angles_deg[i] * FUSION_PI / 180.0f;
++        sx += cosf(rad);
++        sy += sinf(rad);
++    }
++    float ang = atan2f(sy, sx) * 180.0f / FUSION_PI;
++    if (ang < 0.0f) ang += 360.0f;
++    return ang;
++}
++
++float radar_fusion_angle_pair(float local_deg, float peer_deg) {
++    bool la = local_deg >= 0.0f;
++    bool pa = peer_deg >= 0.0f;
++    if (!la && !pa) return RADAR_ANGLE_INVALID;
++    if (!la) return peer_deg;
++    if (!pa) return local_deg;
++    float arr[2] = { local_deg, peer_deg };
++    return radar_fusion_circular_mean(arr, 2);
++}
++
++// ---- 环境自适应估计 ----
++
++void radar_env_est_init(radar_env_est_t *est) {
++    est->min_rssi = 0.0f;
++    est->max_rssi = -200.0f;
++    est->count = 0;
++    est->env = RADAR_ENV_OUTDOOR;
++}
++
++radar_env_t radar_env_est_update(radar_env_est_t *est, float rssi_dbm) {
++    if (!est || rssi_dbm <= RSSI_PRESENT_TH) return est ? est->env : RADAR_ENV_OUTDOOR;
++
++    if (est->count == 0 || rssi_dbm < est->min_rssi) est->min_rssi = rssi_dbm;
++    if (est->count == 0 || rssi_dbm > est->max_rssi) est->max_rssi = rssi_dbm;
++    est->count++;
++
++    // 窗口满:按峰峰抖动评估环境并重置窗口(周期性重估)
++    if (est->count >= RADAR_ENV_WINDOW) {
++        float p2p = est->max_rssi - est->min_rssi;
++        est->env = (p2p > RADAR_ENV_P2P_INDOOR_DB) ? RADAR_ENV_INDOOR
++                                                   : RADAR_ENV_OUTDOOR;
++        est->count = 0;
++        est->min_rssi = 0.0f;
++        est->max_rssi = -200.0f;
++    }
++    return est->env;
++}
++
++// ---- 1m 标定 ----
++
++float radar_fusion_calib_ref(float sym_rssi_at_1m) {
++    if (sym_rssi_at_1m > -30.0f) return -30.0f;
++    if (sym_rssi_at_1m < -60.0f) return -60.0f;
++    return sym_rssi_at_1m;
++}
+diff --git a/main/radar_fusion.h b/main/radar_fusion.h
+new file mode 100644
+index 0000000..0d8988b
+--- /dev/null
++++ b/main/radar_fusion.h
+@@ -0,0 +1,123 @@
++#pragma once
++
++// 测距/定向融合引擎 —— 纯数学模块,无 ESP-IDF 依赖,可 host test。
++//
++// 融合观测源:
++//   - 双向 RSSI(本端测对端 + 对端测本端,经 ESP-NOW 回传)
++//   - Wi-Fi FTM(802.11mc RTT 时间戳测距)
++//   - 双端扫盘角度(环形均值融合)
++//   - 环境自适应路径损耗指数
++//
++// 设计原则:观测量优先于滤波器;所有规则可单测。
++
++#include <stdbool.h>
++#include <stdint.h>
++
++// ---- 置信度等级 ----
++typedef enum {
++    RADAR_CONF_OOR = 0,  // 超界/无链路
++    RADAR_CONF_LOW,      // 单链路 RSSI(无可信对端数据)
++    RADAR_CONF_MED,      // 双向 RSSI 融合,或 FTM 存疑(疑似反射径)
++    RADAR_CONF_HIGH,     // FTM 有效且与双向 RSSI 一致
++} radar_confidence_t;
++
++// ---- 环境模型(路径损耗指数 n) ----
++typedef enum {
++    RADAR_ENV_OUTDOOR = 0,  // n = 2.2 室外开阔
++    RADAR_ENV_INDOOR,       // n = 3.0 室内多径
++    RADAR_ENV_OBSTRUCTED,   // n = 3.5 有明显遮挡
++} radar_env_t;
++
++// ---- 无效值约定 ----
++#define RADAR_RSSI_ABSENT   (-127.0f)  // 无对端数据
++#define RADAR_DIST_INVALID  (-1.0f)    // 距离不可用
++#define RADAR_ANGLE_INVALID (-1.0f)    // 角度不可用
++
++// FTM 与 RSSI 距离分歧超过该比例(且超出 2m 滞回)判为疑似反射径
++#define RADAR_FTM_SUSPICIOUS_RATIO 1.8f
++#define RADAR_FTM_SUSPICIOUS_MARGIN_M 2.0f
++// FTM/RSSI 加权融合中 FTM 的权重
++#define RADAR_FTM_FUSION_WEIGHT 0.7f
++// 双向 RSSI 差异超过该值(dB)说明链路不对称,不给 HIGH
++#define RADAR_SYM_MAX_GAP_DB 8.0f
++// 环境检测:RSSI 峰峰抖动超过该值(dB)判为室内
++#define RADAR_ENV_P2P_INDOOR_DB 8.0f
++// 环境估计窗口(样本数,100ms 喂一次 ≈ 8s)
++#define RADAR_ENV_WINDOW 80
++
++// 环境对应的路径损耗指数
++float radar_env_path_loss_n(radar_env_t env);
++
++// ---- 双向 RSSI ----
++
++// 双向 RSSI 是否都有效(均非 ABSENT)
++bool radar_fusion_sym_valid(float rssi_ab, float rssi_ba);
++
++// 双向 RSSI 对称平均(dB 域算术平均)。
++// 对置消除两端天线方向图与发射功率差异。
++float radar_fusion_sym_rssi(float rssi_ab, float rssi_ba);
++
++// 对称 RSSI → 距离(米)。tx_ref_sym 为 1m 处对称参考值。
++float radar_fusion_sym_distance(float rssi_sym, float tx_ref_sym, radar_env_t env);
++
++// ---- FTM 滤波 ----
++
++// 一轮 burst 的原始 RTT 距离(米)→ 中值滤波。
++// out_spread_m 输出四分位距(IQR),可为 NULL。
++// count==0 返回 RADAR_DIST_INVALID。
++float radar_fusion_ftm_filter(const float *raw_m, unsigned count, float *out_spread_m);
++
++// 反射径判别:ftm_m > rssi_m * ratio 且 ftm_m > rssi_m + margin 时存疑。
++bool radar_fusion_ftm_suspicious(float ftm_m, float rssi_m);
++
++// ---- 融合主入口 ----
++
++typedef struct {
++    float distance_m;        // 融合距离(无效时 RADAR_DIST_INVALID)
++    radar_confidence_t conf; // 置信度
++    float sym_rssi_dbm;      // 对称 RSSI(供显示)
++    float rssi_dist_m;       // 纯 RSSI 推算距离(供调试/降级)
++    bool  ftm_used;          // 本次是否采纳了 FTM
++} radar_fusion_result_t;
++
++// 距离融合。
++//   ftm_valid/ftm_m:       FTM 是否有有效结果及其距离
++//   local_rssi_dbm:        本端滤波后 RSSI(无信号传 RADAR_RSSI_ABSENT)
++//   peer_rssi_dbm:         对端回传的 RSSI(无数据传 RADAR_RSSI_ABSENT)
++//   tx_ref_sym:            1m 对称参考(标定值,默认 -42)
++//   env:                   环境模型
++radar_fusion_result_t radar_fusion_update(bool ftm_valid, float ftm_m,
++                                          float local_rssi_dbm, float peer_rssi_dbm,
++                                          float tx_ref_sym, radar_env_t env);
++
++// ---- 角度工具 ----
++
++// 环形角度差(0~180°)
++float radar_fusion_angle_diff(float a_deg, float b_deg);
++
++// 环形均值(向量平均),count==0 返回 RADAR_ANGLE_INVALID
++float radar_fusion_circular_mean(const float *angles_deg, unsigned count);
++
++// 双端角度融合:一端无效返回另一端;均无效返回 RADAR_ANGLE_INVALID;
++// 均有效返回环形均值(分歧大小由调用方用 radar_fusion_angle_diff 评估)。
++float radar_fusion_angle_pair(float local_deg, float peer_deg);
++
++// ---- 环境自适应估计 ----
++
++typedef struct {
++    float min_rssi;
++    float max_rssi;
++    unsigned count;      // 窗口内已计数
++    radar_env_t env;
++} radar_env_est_t;
++
++void radar_env_est_init(radar_env_est_t *est);
++
++// 每 100ms 喂一次滤波后 RSSI,返回当前环境判断。
++// 窗口满后按滑动窗口滚动估计。
++radar_env_t radar_env_est_update(radar_env_est_t *est, float rssi_dbm);
++
++// ---- 1m 标定 ----
++
++// 1m 处测得的对称 RSSI 即 tx_ref_sym(钳位到 -60~-30dBm 防止误标定)。
++float radar_fusion_calib_ref(float sym_rssi_at_1m);
+diff --git a/main/radar_sweep.c b/main/radar_sweep.c
+index ef3cb9c..33916f8 100644
+--- a/main/radar_sweep.c
++++ b/main/radar_sweep.c
+@@ -1,5 +1,16 @@
++// radar_sweep.c —— 扫盘峰值检测与距离估算。纯 C,无 ESP-IDF 依赖。
+ #include "radar_sweep.h"
++#include "radar_fusion.h"
+ #include <math.h>
++#include <stdlib.h>
++#include <string.h>
++
++// 单信道分组采样上限(快跳下每信道约 27 个样本,64 充裕)
++#define SWEEP_GROUP_CAP 64
++// 信道分组检测的最小样本数
++#define SWEEP_GROUP_MIN 6
++// 严格 C11 下 math.h 不保证 M_PI
++#define SWEEP_PI 3.14159265358979f
+ 
+ float radar_sweep_calc_distance(float rssi) {
+     // 自由空间路径损耗:distance = 10^((txPower - rssi) / (10 * n))
+@@ -36,3 +47,198 @@ float radar_sweep_peak_rssi(const radar_sample_t *samples, unsigned count) {
+     }
+     return max_rssi;
+ }
++
++// ---- v2 增强 ----
++
++float radar_sweep_peak_angle_interp(const radar_sample_t *samples, unsigned count,
++                                    uint32_t sweep_duration_ms) {
++    if (!samples || count == 0 || sweep_duration_ms == 0) return -1.0f;
++
++    unsigned mi = 0;
++    for (unsigned i = 1; i < count; i++) {
++        if (samples[i].rssi > samples[mi].rssi) mi = i;
++    }
++
++    float t = (float)samples[mi].timestamp_ms;
++
++    // 抛物线插值:峰不在边界且开口向下时,用相邻三点估计真实峰位
++    if (mi > 0 && mi < count - 1) {
++        float y0 = samples[mi - 1].rssi;
++        float y1 = samples[mi].rssi;
++        float y2 = samples[mi + 1].rssi;
++        float denom = y0 - 2.0f * y1 + y2;
++        if (denom < 0.0f) {
++            float delta = 0.5f * (y0 - y2) / denom;  // [-0.5, 0.5] 样本偏移
++            float dt = 0.5f * ((float)samples[mi + 1].timestamp_ms -
++                               (float)samples[mi - 1].timestamp_ms);
++            t += delta * dt;
++        }
++    }
++
++    float ratio = t / (float)sweep_duration_ms;
++    if (ratio < 0.0f) ratio = 0.0f;
++    if (ratio > 1.0f) ratio = 1.0f;
++    return ratio * 360.0f;
++}
++
++static int cmp_float(const void *a, const void *b) {
++    float fa = *(const float *)a, fb = *(const float *)b;
++    return (fa > fb) - (fa < fb);
++}
++
++float radar_sweep_peak_prominence(const radar_sample_t *samples, unsigned count) {
++    if (!samples || count == 0) return 0.0f;
++
++    float buf[RADAR_MAX_SAMPLES_CAP];
++    unsigned n = count > RADAR_MAX_SAMPLES_CAP ? RADAR_MAX_SAMPLES_CAP : count;
++    for (unsigned i = 0; i < n; i++) buf[i] = samples[i].rssi;
++    qsort(buf, n, sizeof(float), cmp_float);
++
++    float baseline = buf[n / 10];  // P10 分位
++    float peak = buf[n - 1];
++    return peak - baseline;
++}
++
++uint8_t radar_sweep_channel_at(uint32_t t_ms, uint32_t sweep_duration_ms) {
++    (void)sweep_duration_ms;
++    // 快跳轮询:每 RADAR_SWEEP_HOP_DWELL_MS 换一个信道,1/6/11 循环。
++    // 每个信道都能覆盖完整 360° 旋转,从而获得独立的方向图用于投票。
++    uint32_t slot = t_ms / RADAR_SWEEP_HOP_DWELL_MS;
++    switch (slot % 3u) {
++    case 0:  return RADAR_SWEEP_CH_A;
++    case 1:  return RADAR_SWEEP_CH_B;
++    default: return RADAR_SWEEP_CH_C;
++    }
++}
++
++// ---- 一次谐波最小二乘拟合 ----
++
++// 3×3 线性方程组求解(高斯消元 + 部分主元)。退化返回 false。
++static bool solve3(float a[3][3], float b[3], float x[3]) {
++    for (unsigned col = 0; col < 3; col++) {
++        unsigned piv = col;
++        for (unsigned row = col + 1; row < 3; row++) {
++            if (fabsf(a[row][col]) > fabsf(a[piv][col])) piv = row;
++        }
++        if (fabsf(a[piv][col]) < 1e-6f) return false;
++        if (piv != col) {
++            for (unsigned k = col; k < 3; k++) {
++                float tmp = a[col][k]; a[col][k] = a[piv][k]; a[piv][k] = tmp;
++            }
++            float tmp = b[col]; b[col] = b[piv]; b[piv] = tmp;
++        }
++        for (unsigned row = col + 1; row < 3; row++) {
++            float f = a[row][col] / a[col][col];
++            for (unsigned k = col; k < 3; k++) a[row][k] -= f * a[col][k];
++            b[row] -= f * b[col];
++        }
++    }
++    for (int row = 2; row >= 0; row--) {
++        float s = b[row];
++        for (unsigned k = (unsigned)row + 1; k < 3; k++) s -= a[row][k] * x[k];
++        x[row] = s / a[row][row];
++    }
++    return true;
++}
++
++float radar_sweep_harmonic_angle(const radar_sample_t *samples, unsigned count,
++                                 uint32_t sweep_duration_ms, float *out_amplitude_db) {
++    if (!samples || count < SWEEP_GROUP_MIN || sweep_duration_ms == 0) return -1.0f;
++
++    // 法方程:y = a + b·cosθ + c·sinθ,θ = 2π·t/duration
++    float s_c = 0.0f, s_s = 0.0f;             // Σcos, Σsin
++    float s_cc = 0.0f, s_ss = 0.0f, s_cs = 0.0f;
++    float s_y = 0.0f, s_yc = 0.0f, s_ys = 0.0f;
++    for (unsigned i = 0; i < count; i++) {
++        float th = 2.0f * SWEEP_PI * (float)samples[i].timestamp_ms /
++                   (float)sweep_duration_ms;
++        float c = cosf(th), sn = sinf(th), y = samples[i].rssi;
++        s_c += c;       s_s += sn;
++        s_cc += c * c;  s_ss += sn * sn;  s_cs += c * sn;
++        s_y += y;       s_yc += y * c;    s_ys += y * sn;
++    }
++
++    float n = (float)count;
++    float a[3][3] = {
++        { n,    s_c,  s_s  },
++        { s_c,  s_cc, s_cs },
++        { s_s,  s_cs, s_ss },
++    };
++    float b[3] = { s_y, s_yc, s_ys };
++    float x[3];
++    if (!solve3(a, b, x)) return -1.0f;
++
++    float amp = sqrtf(x[1] * x[1] + x[2] * x[2]);
++    if (out_amplitude_db) *out_amplitude_db = amp;
++
++    float ang = atan2f(x[2], x[1]) * 180.0f / SWEEP_PI;
++    if (ang < 0.0f) ang += 360.0f;
++    return ang;
++}
++
++unsigned radar_sweep_channel_angles(const radar_sample_t *samples, unsigned count,
++                                    uint32_t sweep_duration_ms,
++                                    float *out_angles, unsigned max_out) {
++    if (!samples || !out_angles || count == 0 ||
++        sweep_duration_ms == 0 || max_out == 0) return 0;
++
++    // 收集出现过的信道值(最多 4 种,含 0=未标记)
++    uint8_t chans[4];
++    unsigned nch = 0;
++    for (unsigned i = 0; i < count && nch < 4; i++) {
++        uint8_t ch = samples[i].channel;
++        bool seen = false;
++        for (unsigned j = 0; j < nch; j++) {
++            if (chans[j] == ch) { seen = true; break; }
++        }
++        if (!seen) chans[nch++] = ch;
++    }
++
++    unsigned n = 0;
++    for (unsigned c = 0; c < nch && n < max_out; c++) {
++        radar_sample_t sub[SWEEP_GROUP_CAP];
++        unsigned m = 0;
++        for (unsigned i = 0; i < count && m < SWEEP_GROUP_CAP; i++) {
++            if (samples[i].channel == chans[c]) sub[m++] = samples[i];
++        }
++        // 谐波拟合测角;峰-峰幅度(2×拟合幅度)不足视为该信道无有效峰
++        float amp = 0.0f;
++        float ang = radar_sweep_harmonic_angle(sub, m, sweep_duration_ms, &amp);
++        if (ang < 0.0f) continue;
++        if (2.0f * amp < RADAR_SWEEP_MIN_PROMINENCE_DB) continue;
++        out_angles[n++] = ang;
++    }
++    return n;
++}
++
++float radar_sweep_angle_vote(const float *angles, unsigned count, float *out_spread_deg) {
++    if (!angles || count == 0) return -1.0f;
++    if (count == 1) {
++        if (out_spread_deg) *out_spread_deg = 0.0f;
++        return angles[0];
++    }
++
++    // 环形中值:与其他角度环形差之和最小者获胜
++    unsigned best = 0;
++    float best_cost = 1e9f;
++    for (unsigned i = 0; i < count; i++) {
++        float cost = 0.0f;
++        for (unsigned j = 0; j < count; j++) {
++            cost += radar_fusion_angle_diff(angles[i], angles[j]);
++        }
++        if (cost < best_cost) {
++            best_cost = cost;
++            best = i;
++        }
++    }
++
++    if (out_spread_deg) {
++        float spread = 0.0f;
++        for (unsigned j = 0; j < count; j++) {
++            float d = radar_fusion_angle_diff(angles[best], angles[j]);
++            if (d > spread) spread = d;
++        }
++        *out_spread_deg = spread;
++    }
++    return angles[best];
++}
+diff --git a/main/radar_sweep.h b/main/radar_sweep.h
+index 7fe1691..12df7b0 100644
+--- a/main/radar_sweep.h
++++ b/main/radar_sweep.h
+@@ -1,6 +1,12 @@
+ #pragma once
+ 
+ // 旋转扫盘峰值检测与距离估算 —— 纯数学模块,无 ESP-IDF 依赖,可 host test。
++//
++// v2 增强:
++//   - 采样点携带信道标记,支持扫盘期间 1/6/11 信道分集;
++//   - 抛物线插值峰值角度(亚采样分辨率);
++//   - 峰显著性(峰-P10基线)用于低置信度识别;
++//   - 多信道角度投票(环形中值)抑制单频多径假峰。
+ 
+ #include <stdint.h>
+ 
+@@ -8,15 +14,30 @@
+ typedef struct {
+     uint32_t timestamp_ms;  // 相对扫盘起始时刻的毫秒偏移
+     float    rssi;          // 卡尔曼滤波后的信号强度
++    uint8_t  channel;       // 采样时所在 Wi-Fi 信道(0=未标记/旧逻辑)
+ } radar_sample_t;
+ 
+ // 信号阈值:低于此值视为信号微弱/超出范围,不报告方向。
+ #define RADAR_RSSI_MIN_VALID (-88.0f)
+ 
++// 峰显著性门限:峰值低于 (P10 基线 + 该值) 时认为没有可信方向峰
++#define RADAR_SWEEP_MIN_PROMINENCE_DB 6.0f
++
+ // 自由空间路径损耗模型参数(户外开阔地)
+ #define RADAR_TX_POWER_REF  (-42.0f)  // 1 米处参考 RSSI(dBm)
+ #define RADAR_PATH_LOSS_N   (2.2f)    // 户外衰减因子
+ 
++// 扫盘信道分集:快跳轮询,每个驻留窗口换一个信道(1/6/11 循环)。
++// 快跳使每个信道都能覆盖完整 360° 旋转,得到独立方向图用于投票;
++// 若改为分段(各管 1/3 时长),每信道只能看到 120° 扇区,无法独立测角。
++#define RADAR_SWEEP_CH_A 1
++#define RADAR_SWEEP_CH_B 6
++#define RADAR_SWEEP_CH_C 11
++#define RADAR_SWEEP_HOP_DWELL_MS 100
++
++// 峰显著性等统计算法的样本上限(大于实际最大采样数 100)
++#define RADAR_MAX_SAMPLES_CAP 128
++
+ // 由滤波后 RSSI 估算距离(米)。rssi 越小距离越远。
+ float radar_sweep_calc_distance(float rssi);
+ 
+@@ -28,3 +49,35 @@ int radar_sweep_peak_angle(const radar_sample_t *samples, unsigned count,
+ 
+ // 从采样数组中返回峰值 RSSI(供阈值判断用)。
+ float radar_sweep_peak_rssi(const radar_sample_t *samples, unsigned count);
++
++// ---- v2 增强 ----
++
++// 抛物线插值峰值角度(亚采样分辨率,返回 float)。
++// 对峰两侧样本做抛物线拟合,修正时间→角度映射的量化误差。
++// count==0 或 duration==0 返回 -1.0f。
++float radar_sweep_peak_angle_interp(const radar_sample_t *samples, unsigned count,
++                                    uint32_t sweep_duration_ms);
++
++// 峰显著性(dB):峰值与 P10 分位基线的差。count==0 返回 0。
++float radar_sweep_peak_prominence(const radar_sample_t *samples, unsigned count);
++
++// 扫盘信道调度:t_ms 时刻应处于的信道(快跳轮询:CH_A → CH_B → CH_C → CH_A …)。
++uint8_t radar_sweep_channel_at(uint32_t t_ms, uint32_t sweep_duration_ms);
++
++// 一次谐波最小二乘拟合角度:对 y = a + b·cosθ + c·sinθ 拟合方向图,
++// 峰角 = atan2(c, b)。相比原始峰检测,对快跳造成的稀疏/成簇采样鲁棒。
++// out_amplitude_db 输出拟合幅度(峰-基线,dB),可为 NULL。
++// 样本不足(<6)或法方程退化返回 -1.0f。
++float radar_sweep_harmonic_angle(const radar_sample_t *samples, unsigned count,
++                                 uint32_t sweep_duration_ms, float *out_amplitude_db);
++
++// 按信道分组分别做谐波拟合测角,仅保留拟合幅度达标的信道角度。
++// out_angles 最多写 max_out 个角度;返回有效角度个数。
++unsigned radar_sweep_channel_angles(const radar_sample_t *samples, unsigned count,
++                                    uint32_t sweep_duration_ms,
++                                    float *out_angles, unsigned max_out);
++
++// 多信道角度投票:环形中值(使环形差平方和最小的候选)。
++// out_spread_deg 输出入选角度间的最大环形差,可为 NULL。
++// count==0 返回 -1.0f。
++float radar_sweep_angle_vote(const float *angles, unsigned count, float *out_spread_deg);
+diff --git a/main/radar_ui.c b/main/radar_ui.c
+index 8e7c63b..ffd41b7 100644
+--- a/main/radar_ui.c
++++ b/main/radar_ui.c
+@@ -1,4 +1,4 @@
+-// radar_ui.c —— 极坐标雷达 UI:追踪 / 扫盘 / 结果三个子页面。
++// radar_ui.c —— 极坐标雷达 UI:追踪 / 扫盘 / 结果 / 标定 四个子页面。
+ // 使用 ui_pixel 基元 + lv_obj 定位块构建 240×320 雷达画面。
+ #include "radar_ui.h"
+ #include "ui_pixel.h"
+@@ -21,6 +21,7 @@
+ #define RADAR_TARGET 0xFF4500   // 目标橙红
+ #define RADAR_TEXT   0xE0F0FF   // 文字浅蓝白
+ #define RADAR_DIM    0x335580   // 暗色辅助
++#define RADAR_WARN   0xFFD700   // 低置信度黄
+ 
+ // ---------- 状态 ----------
+ static radar_page_t s_page = RADAR_PAGE_MAIN;
+@@ -43,6 +44,9 @@ static lv_obj_t *s_result_dot;
+ static lv_obj_t *s_result_angle;
+ static lv_obj_t *s_result_dist;
+ 
++// 标定页面对象
++static lv_obj_t *s_calib_bar;
++
+ // ---------- 坐标转换 ----------
+ 
+ // 极坐标 → 笛卡尔(角度 0°=正北,顺时针递增)
+@@ -87,26 +91,36 @@ static lv_obj_t *create_dot(lv_obj_t *parent, uint32_t color, int size) {
+     return dot;
+ }
+ 
+-// ---------- 页面构建/销毁 ----------
+-
+-static void build_main_page(void) {
+-    s_scr = ui_pixel_screen_create("RADAR");
+-
+-    // 雷达背景面板(深色)
++// 雷达面板 + 中心点(三个页面共用结构)
++static void build_radar_panel(void) {
+     s_radar_panel = ui_pixel_panel_create(s_scr, 10, 50, 220, 170, RADAR_BG);
+-
+-    // 画三个同心环
+     draw_ring(s_radar_panel, 25, RADAR_DIM);
+     draw_ring(s_radar_panel, 50, RADAR_DIM);
+     draw_ring(s_radar_panel, RADAR_RADIUS, RADAR_RING);
+ 
+-    // 中心 "YOU" 标记
+     lv_obj_t *center = lv_obj_create(s_radar_panel);
+     lv_obj_set_size(center, 6, 6);
+     lv_obj_set_pos(center, RADAR_CX - 3, RADAR_CY - 3);
+     lv_obj_set_style_bg_color(center, lv_color_hex(RADAR_TEXT), 0);
+     lv_obj_set_style_border_width(center, 0, 0);
+     lv_obj_set_style_radius(center, LV_RADIUS_CIRCLE, 0);
++}
++
++// 置信度短标记
++static const char *conf_tag(radar_confidence_t conf) {
++    switch (conf) {
++    case RADAR_CONF_HIGH: return "HI";
++    case RADAR_CONF_MED:  return "MED";
++    case RADAR_CONF_LOW:  return "LOW";
++    default:              return "--";
++    }
++}
++
++// ---------- 页面构建/销毁 ----------
++
++static void build_main_page(void) {
++    s_scr = ui_pixel_screen_create("RADAR");
++    build_radar_panel();
+ 
+     // 目标点(初始隐藏)
+     s_target_dot = create_dot(s_radar_panel, RADAR_TARGET, RADAR_DOT_SIZE);
+@@ -115,27 +129,14 @@ static void build_main_page(void) {
+     s_dist_label = add_info_label(s_scr, 232, &lv_font_montserrat_20);
+     s_rssi_label = add_info_label(s_scr, 258, &lv_font_montserrat_14);
+     s_hint_label = add_info_label(s_scr, 290, &lv_font_montserrat_14);
+-    lv_label_set_text(s_hint_label, "[OK] Start 360 sweep");
++    lv_label_set_text(s_hint_label, "[OK] Sweep  [LONG] Calib");
+ 
+     lv_screen_load(s_scr);
+ }
+ 
+ static void build_sweeping_page(void) {
+     s_scr = ui_pixel_screen_create("SWEEPING");
+-
+-    // 雷达背景(与主页面一致)
+-    s_radar_panel = ui_pixel_panel_create(s_scr, 10, 50, 220, 170, RADAR_BG);
+-    draw_ring(s_radar_panel, 25, RADAR_DIM);
+-    draw_ring(s_radar_panel, 50, RADAR_DIM);
+-    draw_ring(s_radar_panel, RADAR_RADIUS, RADAR_RING);
+-
+-    // 中心标记
+-    lv_obj_t *center = lv_obj_create(s_radar_panel);
+-    lv_obj_set_size(center, 6, 6);
+-    lv_obj_set_pos(center, RADAR_CX - 3, RADAR_CY - 3);
+-    lv_obj_set_style_bg_color(center, lv_color_hex(RADAR_TEXT), 0);
+-    lv_obj_set_style_border_width(center, 0, 0);
+-    lv_obj_set_style_radius(center, LV_RADIUS_CIRCLE, 0);
++    build_radar_panel();
+ 
+     s_sweep_msg = add_info_label(s_scr, 232, &lv_font_montserrat_14);
+     lv_label_set_text(s_sweep_msg, "Rotate clockwise!\nHold card at chest level");
+@@ -151,20 +152,7 @@ static void build_sweeping_page(void) {
+ 
+ static void build_result_page(void) {
+     s_scr = ui_pixel_screen_create("RESULT");
+-
+-    // 雷达背景
+-    s_radar_panel = ui_pixel_panel_create(s_scr, 10, 50, 220, 170, RADAR_BG);
+-    draw_ring(s_radar_panel, 25, RADAR_DIM);
+-    draw_ring(s_radar_panel, 50, RADAR_DIM);
+-    draw_ring(s_radar_panel, RADAR_RADIUS, RADAR_RING);
+-
+-    // 中心标记
+-    lv_obj_t *center = lv_obj_create(s_radar_panel);
+-    lv_obj_set_size(center, 6, 6);
+-    lv_obj_set_pos(center, RADAR_CX - 3, RADAR_CY - 3);
+-    lv_obj_set_style_bg_color(center, lv_color_hex(RADAR_TEXT), 0);
+-    lv_obj_set_style_border_width(center, 0, 0);
+-    lv_obj_set_style_radius(center, LV_RADIUS_CIRCLE, 0);
++    build_radar_panel();
+ 
+     // 结果点
+     s_result_dot = create_dot(s_radar_panel, RADAR_TARGET, RADAR_DOT_SIZE);
+@@ -178,6 +166,18 @@ static void build_result_page(void) {
+     lv_screen_load(s_scr);
+ }
+ 
++static void build_calib_page(void) {
++    s_scr = ui_pixel_screen_create("CALIBRATE");
++    build_radar_panel();
++
++    s_sweep_msg = add_info_label(s_scr, 232, &lv_font_montserrat_14);
++    lv_label_set_text(s_sweep_msg, "Hold two cards 1m apart\nKeep still...");
++
++    s_calib_bar = ui_pixel_panel_create(s_scr, 30, 280, 0, 8, RADAR_SWEEP);
++
++    lv_screen_load(s_scr);
++}
++
+ static void page_teardown(void) {
+     if (s_scr) {
+         lv_obj_delete(s_scr);
+@@ -193,6 +193,7 @@ static void page_teardown(void) {
+         s_sweep_msg = NULL;
+         s_result_angle = NULL;
+         s_result_dist = NULL;
++        s_calib_bar = NULL;
+     }
+ }
+ 
+@@ -203,22 +204,37 @@ void radar_ui_init(void) {
+     build_main_page();
+ }
+ 
+-void radar_ui_update_tracking(float filtered_rssi, int raw_rssi, float distance_m) {
+-    if (s_page != RADAR_PAGE_MAIN || !s_scr) return;
++void radar_ui_update_tracking(const radar_fusion_result_t *fr, int raw_rssi,
++                              bool ble_alive) {
++    if (s_page != RADAR_PAGE_MAIN || !s_scr || !fr) return;
+ 
+-    // 更新文字
++    // 距离行:超界时显示链路状态;非 HIGH 置信度加 ~ 前缀
+     if (s_dist_label) {
+-        int dm = (int)(distance_m * 10.0f + 0.5f);  // 分米(整数)
+-        lv_label_set_text_fmt(s_dist_label, "DIST: %d.%d m", dm / 10, dm % 10);
++        if (fr->conf == RADAR_CONF_OOR) {
++            lv_label_set_text(s_dist_label,
++                              ble_alive ? "FAR (BLE link)" : "OUT OF RANGE");
++        } else {
++            int dm = (int)(fr->distance_m * 10.0f + 0.5f);
++            lv_label_set_text_fmt(s_dist_label, "DIST: %s%d.%d m",
++                                  fr->conf == RADAR_CONF_HIGH ? "" : "~",
++                                  dm / 10, dm % 10);
++        }
+     }
++
++    // 信号行:原始 RSSI + 观测源/置信度标记
+     if (s_rssi_label) {
+-        lv_label_set_text_fmt(s_rssi_label, "RSSI: %d dBm", raw_rssi);
++        lv_label_set_text_fmt(s_rssi_label, "RSSI:%d %s%s [%s]",
++                              raw_rssi,
++                              fr->ftm_used ? "FTM " : "",
++                              fr->conf == RADAR_CONF_MED ||
++                              fr->conf == RADAR_CONF_HIGH ? "2way" : "1way",
++                              conf_tag(fr->conf));
+     }
+ 
+-    // 目标点:距离映射到半径(0~75px),显示在 12 点钟方向(暂无角度信息)
++    // 目标点:距离映射到半径(0~75px),显示在 12 点钟方向(追踪态无角度)
+     if (s_target_dot) {
+-        if (filtered_rssi > -88.0f) {
+-            int r = (int)(distance_m * 8.0f);
++        if (fr->conf != RADAR_CONF_OOR && fr->distance_m > 0.0f) {
++            int r = (int)(fr->distance_m * 8.0f);
+             if (r > RADAR_RADIUS) r = RADAR_RADIUS;
+             if (r < 5) r = 5;
+             int x, y;
+@@ -260,27 +276,36 @@ void radar_ui_update_sweep_progress(float progress) {
+     }
+ }
+ 
+-void radar_ui_show_result(int angle_deg, float distance_m, bool weak_signal) {
++void radar_ui_show_result(int angle_deg, float distance_m,
++                          radar_confidence_t conf, float spread_deg,
++                          bool weak_signal) {
+     page_teardown();
+     s_page = RADAR_PAGE_RESULT;
+     build_result_page();
+ 
+-    if (weak_signal || angle_deg < 0) {
++    if (weak_signal || angle_deg < 0 || conf == RADAR_CONF_OOR) {
+         if (s_result_angle) lv_label_set_text(s_result_angle, "OUT OF RANGE");
+-        if (s_result_dist)  lv_label_set_text(s_result_dist, "Signal too weak");
++        if (s_result_dist)  lv_label_set_text(s_result_dist,
++                                              weak_signal ? "Signal too weak"
++                                                          : "No clear direction");
+         return;
+     }
+ 
+-    // 显示角度
++    // 角度行:附信道投票分歧(±)与置信度颜色
+     if (s_result_angle) {
+-        lv_label_set_text_fmt(s_result_angle, "Angle: %d deg", angle_deg);
++        lv_label_set_text_fmt(s_result_angle, "Angle: %d+/-%d deg",
++                              angle_deg, (int)(spread_deg + 0.5f));
++        lv_obj_set_style_text_color(s_result_angle,
++            lv_color_hex(conf == RADAR_CONF_LOW ? RADAR_WARN : RADAR_TEXT), 0);
+     }
+     if (s_result_dist) {
+         int dm = (int)(distance_m * 10.0f + 0.5f);
+-        lv_label_set_text_fmt(s_result_dist, "Dist: %d.%d m", dm / 10, dm % 10);
++        lv_label_set_text_fmt(s_result_dist, "Dist: %s%d.%d m [%s]",
++                              conf == RADAR_CONF_HIGH ? "" : "~",
++                              dm / 10, dm % 10, conf_tag(conf));
+     }
+ 
+-    // 在雷达上画出目标方向
++    // 在雷达上画出目标方向(低置信度用警示色)
+     if (s_result_dot) {
+         int r = (int)(distance_m * 8.0f);
+         if (r > RADAR_RADIUS) r = RADAR_RADIUS;
+@@ -290,10 +315,26 @@ void radar_ui_show_result(int angle_deg, float distance_m, bool weak_signal) {
+         lv_obj_set_pos(s_result_dot,
+                        x - RADAR_DOT_SIZE / 2,
+                        y - RADAR_DOT_SIZE / 2);
++        lv_obj_set_style_bg_color(s_result_dot,
++            lv_color_hex(conf == RADAR_CONF_LOW ? RADAR_WARN : RADAR_TARGET), 0);
+         lv_obj_remove_flag(s_result_dot, LV_OBJ_FLAG_HIDDEN);
+     }
+ }
+ 
++void radar_ui_show_calib(void) {
++    page_teardown();
++    s_page = RADAR_PAGE_CALIB;
++    build_calib_page();
++}
++
++void radar_ui_update_calib(float progress) {
++    if (s_page != RADAR_PAGE_CALIB || !s_scr) return;
++    if (s_calib_bar) {
++        int w = (int)(180.0f * progress);
++        lv_obj_set_size(s_calib_bar, w > 0 ? w : 1, 8);
++    }
++}
++
+ void radar_ui_show_main(void) {
+     page_teardown();
+     s_page = RADAR_PAGE_MAIN;
+diff --git a/main/radar_ui.h b/main/radar_ui.h
+index 6c173b4..bce5179 100644
+--- a/main/radar_ui.h
++++ b/main/radar_ui.h
+@@ -1,23 +1,30 @@
+ #pragma once
+ 
+-// 雷达 UI 模块 —— 极坐标雷达显示 + 扫盘动画。
++// 雷达 UI 模块 —— 极坐标雷达显示 + 扫盘动画 + 置信度呈现。
+ // 所有 LVGL 操作必须在 LVGL 任务(lv_timer)或持有 bsp_lvgl_lock 的上下文中执行。
++//
++// v2:主页面显示融合距离与置信度标记(FTM/双向/单链路),
++//     结果页显示角度分歧(±)、距离置信度,新增 1m 标定页。
+ 
+ #include "bsp_button.h"
++#include "radar_fusion.h"
+ #include <stdbool.h>
+ 
+ // 页面状态
+ typedef enum {
+-    RADAR_PAGE_MAIN = 0,   // 实时追踪:显示距离 + 信号强度
++    RADAR_PAGE_MAIN = 0,   // 实时追踪:融合距离 + 置信度 + 链路状态
+     RADAR_PAGE_SWEEPING,   // 扫盘中:4s 倒计时 + 动画
+-    RADAR_PAGE_RESULT,     // 结果:显示检测角度 + 距离
++    RADAR_PAGE_RESULT,     // 结果:角度(±分歧) + 距离 + 置信度
++    RADAR_PAGE_CALIB,      // 1m 标定中
+ } radar_page_t;
+ 
+ // 初始化雷达 UI(创建主页面并载入)。
+ void radar_ui_init(void);
+ 
+-// 更新主页面上的 RSSI 与距离显示(每 100ms 由 lv_timer 调用)。
+-void radar_ui_update_tracking(float filtered_rssi, int raw_rssi, float distance_m);
++// 更新主页面(每 100ms 由 lv_timer 调用)。
++// fr:融合引擎输出;raw_rssi:原始信号;ble_alive:BLE 哨兵链路可达。
++void radar_ui_update_tracking(const radar_fusion_result_t *fr, int raw_rssi,
++                              bool ble_alive);
+ 
+ // 切换到扫盘页面(4s 倒计时动画)。
+ void radar_ui_show_sweeping(void);
+@@ -25,9 +32,16 @@ void radar_ui_show_sweeping(void);
+ // 更新扫盘倒计时进度(0~1)。
+ void radar_ui_update_sweep_progress(float progress);
+ 
+-// 切换到结果页面,显示检测到的角度与距离。
+-// angle < 0 或信号微弱时显示 "OUT OF RANGE"。
+-void radar_ui_show_result(int angle_deg, float distance_m, bool weak_signal);
++// 切换到结果页面。
++// angle_deg < 0 或 weak_signal 时显示 "OUT OF RANGE"。
++// spread_deg:信道投票最大分歧(角精度估计);conf:融合置信度。
++void radar_ui_show_result(int angle_deg, float distance_m,
++                          radar_confidence_t conf, float spread_deg,
++                          bool weak_signal);
++
++// 标定页面(3s 采样进度)。
++void radar_ui_show_calib(void);
++void radar_ui_update_calib(float progress);
+ 
+ // 返回主页面。
+ void radar_ui_show_main(void);
+diff --git a/sdkconfig.defaults b/sdkconfig.defaults
+index d78d19d..110c1c6 100644
+--- a/sdkconfig.defaults
++++ b/sdkconfig.defaults
+@@ -87,6 +87,17 @@ CONFIG_LV_BUILD_EXAMPLES=n
+ CONFIG_FREERTOS_HZ=1000
+ 
+ # --- Wi-Fi(ESP-NOW 依赖) ---
+-# ESP-NOW 需要 Wi-Fi 驱动初始化;不启用 BLE(协议栈占 ~150KB)。
+-# CONFIG_BT_ENABLED is not set
+-# CONFIG_BT_NIMBLE_ENABLED is not set
++# ESP-NOW 需要 Wi-Fi 驱动初始化。
++# BLE 已启用(Coded PHY 长距哨兵链路),见下。
++
++# --- BLE(NimBLE,测距增强:长距哨兵 + 异构校验) ---
++CONFIG_BT_ENABLED=y
++# CONFIG_BT_BLUEDROID_ENABLED is not set
++CONFIG_BT_NIMBLE_ENABLED=y
++# BLE 5.0 扩展广播(Coded PHY 依赖)
++CONFIG_BT_NIMBLE_EXT_ADV=y
++# 仅广播/扫描角色,无连接,控制内存占用
++CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
++# Wi-Fi/BLE 单射频软件共存(C3 无硬件共存)
++CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
++
+diff --git a/tests/test_radar_fusion.c b/tests/test_radar_fusion.c
+new file mode 100644
+index 0000000..78167db
+--- /dev/null
++++ b/tests/test_radar_fusion.c
+@@ -0,0 +1,218 @@
++// tests/test_radar_fusion.c —— 测距/定向融合引擎 host test。
++// 覆盖:双向 RSSI 对称、FTM 中值滤波、反射径判别、距离融合规则、
++//       置信度分级、环形角度工具、环境自适应、1m 标定。
++#include "../main/radar_fusion.h"
++#include <math.h>
++#include <stdio.h>
++
++static int s_failures = 0;
++
++#define CHECK(cond, ...)                                   \
++    do {                                                   \
++        if (!(cond)) {                                     \
++            fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
++            fprintf(stderr, __VA_ARGS__);                  \
++            fprintf(stderr, "\n");                         \
++            s_failures++;                                  \
++        }                                                  \
++    } while (0)
++
++static void test_sym_rssi(void) {
++    CHECK(!radar_fusion_sym_valid(RADAR_RSSI_ABSENT, -60.0f), "sym_valid: absent peer should be invalid");
++    CHECK(!radar_fusion_sym_valid(-60.0f, RADAR_RSSI_ABSENT), "sym_valid: absent local should be invalid");
++    CHECK(radar_fusion_sym_valid(-60.0f, -70.0f), "sym_valid: both present should be valid");
++
++    float sym = radar_fusion_sym_rssi(-60.0f, -70.0f);
++    CHECK(fabsf(sym - (-65.0f)) < 0.01f, "sym_rssi: got %.2f, expected -65.00", sym);
++
++    // 距离:对称参考 -42dBm@1m,室外 n=2.2
++    float d1 = radar_fusion_sym_distance(-42.0f, -42.0f, RADAR_ENV_OUTDOOR);
++    CHECK(fabsf(d1 - 1.0f) < 0.05f, "sym_distance at ref: %.2f, expected ~1.0", d1);
++    float d2 = radar_fusion_sym_distance(-64.0f, -42.0f, RADAR_ENV_OUTDOOR);
++    CHECK(d2 > 8.0f && d2 < 12.0f, "sym_distance -64dBm: %.2f, expected ~10", d2);
++
++    // 室内 n 更大 → 同样 RSSI 差对应更近距离
++    float d3 = radar_fusion_sym_distance(-64.0f, -42.0f, RADAR_ENV_INDOOR);
++    CHECK(d3 < d2, "indoor n should give shorter distance (%.2f vs %.2f)", d3, d2);
++
++    CHECK(fabsf(radar_env_path_loss_n(RADAR_ENV_OUTDOOR) - 2.2f) < 0.01f, "n outdoor");
++    CHECK(fabsf(radar_env_path_loss_n(RADAR_ENV_INDOOR) - 3.0f) < 0.01f, "n indoor");
++    CHECK(fabsf(radar_env_path_loss_n(RADAR_ENV_OBSTRUCTED) - 3.5f) < 0.01f, "n obstructed");
++
++    printf("  sym_rssi: PASS\n");
++}
++
++static void test_ftm_filter(void) {
++    // 含一个反射径离群值(12m)的 burst:中值应稳健
++    float raw[5] = {2.0f, 2.1f, 1.9f, 12.0f, 2.05f};
++    float spread = -1.0f;
++    float d = radar_fusion_ftm_filter(raw, 5, &spread);
++    CHECK(d > 1.9f && d < 2.2f, "ftm_filter median: %.2f, expected ~2.05", d);
++    CHECK(spread >= 0.0f && spread < 0.5f, "ftm_filter spread: %.2f, expected small", spread);
++
++    // 空输入
++    CHECK(radar_fusion_ftm_filter(NULL, 0, NULL) == RADAR_DIST_INVALID,
++          "ftm_filter empty should be invalid");
++
++    // 单样本
++    float one[1] = {3.3f};
++    CHECK(fabsf(radar_fusion_ftm_filter(one, 1, NULL) - 3.3f) < 0.01f,
++          "ftm_filter single sample");
++
++    // 一致性 burst:spread 应接近 0
++    float tight[6] = {5.0f, 5.1f, 4.9f, 5.05f, 4.95f, 5.0f};
++    d = radar_fusion_ftm_filter(tight, 6, &spread);
++    CHECK(fabsf(d - 5.0f) < 0.1f, "ftm_filter tight median: %.2f", d);
++    CHECK(spread < 0.3f, "ftm_filter tight spread: %.2f", spread);
++
++    printf("  ftm_filter: PASS\n");
++}
++
++static void test_ftm_suspicious(void) {
++    // FTM 10m vs RSSI 3m:10 > 3*1.8=5.4 且 10 > 3+2 → 存疑(反射径)
++    CHECK(radar_fusion_ftm_suspicious(10.0f, 3.0f), "ftm 10 vs rssi 3 should be suspicious");
++    // FTM 3m vs RSSI 3m:一致
++    CHECK(!radar_fusion_ftm_suspicious(3.0f, 3.0f), "ftm 3 vs rssi 3 should be consistent");
++    // 滞回带:5.5m vs 3m → 5.5 > 5.4 但 5.5 < 5.0+2? 否,5.5>5 → 存疑
++    CHECK(radar_fusion_ftm_suspicious(5.5f, 3.0f), "ftm 5.5 vs rssi 3 → suspicious");
++    // 5.3m vs 3m:超过比例但在滞回内 → 不存疑
++    CHECK(!radar_fusion_ftm_suspicious(5.3f, 3.0f), "ftm 5.3 vs rssi 3 within margin");
++    printf("  ftm_suspicious: PASS\n");
++}
++
++static void test_fusion_update(void) {
++    // 1) 无任何链路 → OOR
++    radar_fusion_result_t r = radar_fusion_update(false, 0.0f,
++                                                  RADAR_RSSI_ABSENT, RADAR_RSSI_ABSENT,
++                                                  -42.0f, RADAR_ENV_OUTDOOR);
++    CHECK(r.conf == RADAR_CONF_OOR, "no link should be OOR, got %d", r.conf);
++    CHECK(r.distance_m == RADAR_DIST_INVALID, "no link distance should be invalid");
++
++    // 2) 单链路 RSSI → LOW
++    r = radar_fusion_update(false, 0.0f, -60.0f, RADAR_RSSI_ABSENT,
++                            -42.0f, RADAR_ENV_OUTDOOR);
++    CHECK(r.conf == RADAR_CONF_LOW, "single-link should be LOW, got %d", r.conf);
++    CHECK(r.distance_m > 0.0f, "single-link should still give distance");
++
++    // 3) 双向 RSSI → MED,距离基于对称平均
++    r = radar_fusion_update(false, 0.0f, -60.0f, -66.0f,
++                            -42.0f, RADAR_ENV_OUTDOOR);
++    CHECK(r.conf == RADAR_CONF_MED, "dual-rssi should be MED, got %d", r.conf);
++    CHECK(fabsf(r.sym_rssi_dbm - (-63.0f)) < 0.01f, "sym rssi %.2f", r.sym_rssi_dbm);
++    float expect = radar_fusion_sym_distance(-63.0f, -42.0f, RADAR_ENV_OUTDOOR);
++    CHECK(fabsf(r.distance_m - expect) < 0.01f, "dual-rssi distance %.2f vs %.2f",
++          r.distance_m, expect);
++
++    // 4) FTM 有效且一致 → HIGH,0.7*ftm + 0.3*rssi
++    float rssi_d = radar_fusion_sym_distance(-63.0f, -42.0f, RADAR_ENV_OUTDOOR);
++    r = radar_fusion_update(true, 8.0f, -60.0f, -66.0f, -42.0f, RADAR_ENV_OUTDOOR);
++    CHECK(r.conf == RADAR_CONF_HIGH, "ftm+sym should be HIGH, got %d", r.conf);
++    CHECK(r.ftm_used, "ftm should be used");
++    float fused = 0.7f * 8.0f + 0.3f * rssi_d;
++    CHECK(fabsf(r.distance_m - fused) < 0.01f, "fused distance %.2f vs %.2f",
++          r.distance_m, fused);
++
++    // 5) FTM 疑似反射径 → 降级 RSSI,MED,ftm_used=false
++    r = radar_fusion_update(true, 30.0f, -60.0f, -66.0f, -42.0f, RADAR_ENV_OUTDOOR);
++    CHECK(r.conf == RADAR_CONF_MED, "suspicious ftm should degrade to MED, got %d", r.conf);
++    CHECK(!r.ftm_used, "suspicious ftm should not be used");
++    CHECK(fabsf(r.distance_m - rssi_d) < 0.01f, "degraded distance should be rssi-based");
++
++    // 6) 双向不对称(差 > 8dB)→ FTM 有效也只有 MED
++    r = radar_fusion_update(true, 8.0f, -55.0f, -75.0f, -42.0f, RADAR_ENV_OUTDOOR);
++    CHECK(r.conf == RADAR_CONF_MED, "asymmetric link should cap at MED, got %d", r.conf);
++
++    // 7) 信号低于最小有效值 → OOR
++    r = radar_fusion_update(false, 0.0f, -90.0f, -90.0f, -42.0f, RADAR_ENV_OUTDOOR);
++    CHECK(r.conf == RADAR_CONF_OOR, "weak signal should be OOR, got %d", r.conf);
++
++    printf("  fusion_update: PASS\n");
++}
++
++static void test_angles(void) {
++    // 环形差
++    CHECK(fabsf(radar_fusion_angle_diff(10.0f, 350.0f) - 20.0f) < 0.01f,
++          "diff 10 vs 350 should be 20");
++    CHECK(fabsf(radar_fusion_angle_diff(180.0f, 0.0f) - 180.0f) < 0.01f,
++          "diff 180 vs 0 should be 180");
++
++    // 环形均值:10° 与 350° 的均值应为 0°(而非 180°)
++    float a2[2] = {10.0f, 350.0f};
++    float m = radar_fusion_circular_mean(a2, 2);
++    float err = radar_fusion_angle_diff(m, 0.0f);
++    CHECK(err < 1.0f, "circular mean of 10/350 should be ~0, got %.2f", m);
++
++    // 三个角度 90/100/110 → ~100
++    float a3[3] = {90.0f, 100.0f, 110.0f};
++    m = radar_fusion_circular_mean(a3, 3);
++    CHECK(radar_fusion_angle_diff(m, 100.0f) < 1.0f, "mean of 90/100/110 → %.2f", m);
++
++    // 空 → 无效
++    CHECK(radar_fusion_circular_mean(NULL, 0) == RADAR_ANGLE_INVALID, "empty mean invalid");
++
++    // 双端融合:一端无效
++    CHECK(fabsf(radar_fusion_angle_pair(120.0f, RADAR_ANGLE_INVALID) - 120.0f) < 0.01f,
++          "pair with invalid peer returns local");
++    CHECK(fabsf(radar_fusion_angle_pair(RADAR_ANGLE_INVALID, 45.0f) - 45.0f) < 0.01f,
++          "pair with invalid local returns peer");
++    CHECK(radar_fusion_angle_pair(RADAR_ANGLE_INVALID, RADAR_ANGLE_INVALID) == RADAR_ANGLE_INVALID,
++          "both invalid");
++
++    // 双端均有效:环形均值
++    float p = radar_fusion_angle_pair(80.0f, 100.0f);
++    CHECK(radar_fusion_angle_diff(p, 90.0f) < 1.0f, "pair 80/100 → %.2f", p);
++
++    printf("  angles: PASS\n");
++}
++
++static void test_env_est(void) {
++    radar_env_est_t est;
++    radar_env_est_init(&est);
++    CHECK(est.env == RADAR_ENV_OUTDOOR, "env init should be outdoor");
++
++    // 喂 80 个稳定样本(抖动 ±2dB)→ 保持室外
++    for (int i = 0; i < RADAR_ENV_WINDOW; i++) {
++        radar_env_est_update(&est, -60.0f + (float)(i % 5) - 2.0f);
++    }
++    CHECK(est.env == RADAR_ENV_OUTDOOR, "stable signal should stay outdoor");
++
++    // 喂 80 个强抖动样本(±8dB)→ 判室内
++    radar_env_est_init(&est);
++    radar_env_t env = RADAR_ENV_OUTDOOR;
++    for (int i = 0; i < RADAR_ENV_WINDOW; i++) {
++        env = radar_env_est_update(&est, -60.0f + ((i % 2) ? 8.0f : -8.0f));
++    }
++    CHECK(env == RADAR_ENV_INDOOR, "jittery signal should detect indoor, got %d", env);
++
++    printf("  env_est: PASS\n");
++}
++
++static void test_calib(void) {
++    // 1m 处对称 RSSI -45 → 参考值 -45;同样 RSSI 距离应为 1m
++    float ref = radar_fusion_calib_ref(-45.0f);
++    CHECK(fabsf(ref - (-45.0f)) < 0.01f, "calib ref %.2f", ref);
++    float d = radar_fusion_sym_distance(-45.0f, ref, RADAR_ENV_OUTDOOR);
++    CHECK(fabsf(d - 1.0f) < 0.05f, "calibrated distance at ref should be 1m, got %.2f", d);
++
++    // 钳位:异常值不超界
++    CHECK(fabsf(radar_fusion_calib_ref(-10.0f) - (-30.0f)) < 0.01f, "calib clamp high");
++    CHECK(fabsf(radar_fusion_calib_ref(-90.0f) - (-60.0f)) < 0.01f, "calib clamp low");
++
++    printf("  calib: PASS\n");
++}
++
++int main(void) {
++    test_sym_rssi();
++    test_ftm_filter();
++    test_ftm_suspicious();
++    test_fusion_update();
++    test_angles();
++    test_env_est();
++    test_calib();
++    if (s_failures != 0) {
++        fprintf(stderr, "FAILED: %d check(s)\n", s_failures);
++        return 1;
++    }
++    printf("PASS: radar fusion engine verified\n");
++    return 0;
++}
+diff --git a/tests/test_radar_sweep.c b/tests/test_radar_sweep.c
+index 6369002..13a74cc 100644
+--- a/tests/test_radar_sweep.c
++++ b/tests/test_radar_sweep.c
+@@ -1,105 +1,231 @@
+ // tests/test_radar_sweep.c —— 扫盘峰值检测与距离估算 host test。
++// v2:抛物线插值、峰显著性、信道调度、多信道投票。
+ #include "../main/radar_sweep.h"
++#include "../main/radar_fusion.h"
+ #include <math.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ 
+ #define SWEEP_MS 4000
+ 
+-static int test_distance(void) {
++static int s_failures = 0;
++
++#define CHECK(cond, ...)                                   \
++    do {                                                   \
++        if (!(cond)) {                                     \
++            fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
++            fprintf(stderr, __VA_ARGS__);                  \
++            fprintf(stderr, "\n");                         \
++            s_failures++;                                  \
++        }                                                  \
++    } while (0)
++
++static void test_distance(void) {
+     // 1m 参考点
+     float d1 = radar_sweep_calc_distance(-42.0f);
+-    if (fabsf(d1 - 1.0f) > 0.2f) {
+-        fprintf(stderr, "FAIL: distance at -42dBm = %.2f, expected ~1.0\n", d1);
+-        return 1;
+-    }
++    CHECK(fabsf(d1 - 1.0f) <= 0.2f, "distance at -42dBm = %.2f, expected ~1.0", d1);
+ 
+     // 距离应随 RSSI 降低而增大
+     float d2 = radar_sweep_calc_distance(-64.0f);
+-    if (d2 < 5.0f || d2 > 15.0f) {
+-        fprintf(stderr, "FAIL: distance at -64dBm = %.2f, expected ~8.5\n", d2);
+-        return 1;
+-    }
++    CHECK(d2 >= 5.0f && d2 <= 15.0f, "distance at -64dBm = %.2f, expected ~8.5", d2);
+ 
+     // 信号越弱距离越远
+     float d3 = radar_sweep_calc_distance(-80.0f);
+-    if (d3 <= d2) {
+-        fprintf(stderr, "FAIL: distance should increase with weaker signal\n");
+-        return 1;
+-    }
++    CHECK(d3 > d2, "distance should increase with weaker signal");
+ 
+-    printf("  distance: PASS (-42→%.1fm, -64→%.1fm, -80→%.1fm)\n", d1, d2, d3);
+-    return 0;
++    printf("  distance: PASS (-42->%.1fm, -64->%.1fm, -80->%.1fm)\n", d1, d2, d3);
+ }
+ 
+-static int test_peak_angle(void) {
++static void test_peak_angle(void) {
+     // 构造 80 个采样,峰值在 t=2000ms(扫盘中点)
+     radar_sample_t samples[80];
+     for (int i = 0; i < 80; i++) {
+         samples[i].timestamp_ms = (uint32_t)(i * 50);  // 50ms 间隔
+         samples[i].rssi = -80.0f + (float)(rand() % 5);  // 基础噪声
++        samples[i].channel = 0;
+     }
+     // 在 t=2000ms 处插入峰值(第 40 个采样)
+     samples[40].rssi = -55.0f;
+ 
+     int angle = radar_sweep_peak_angle(samples, 80, SWEEP_MS);
+     // t=2000 / 4000 = 0.5 → 180°
+-    if (angle < 175 || angle > 185) {
+-        fprintf(stderr, "FAIL: peak at t=2000/4000 → angle %d, expected ~180\n", angle);
+-        return 1;
+-    }
++    CHECK(angle >= 175 && angle <= 185, "peak at t=2000/4000 -> angle %d, expected ~180", angle);
+ 
+     // 峰值在起点
+     radar_sample_t start_peak[4] = {
+-        { .timestamp_ms = 0,    .rssi = -50.0f },
+-        { .timestamp_ms = 1000, .rssi = -80.0f },
+-        { .timestamp_ms = 2000, .rssi = -80.0f },
+-        { .timestamp_ms = 3000, .rssi = -80.0f },
++        { .timestamp_ms = 0,    .rssi = -50.0f, .channel = 0 },
++        { .timestamp_ms = 1000, .rssi = -80.0f, .channel = 0 },
++        { .timestamp_ms = 2000, .rssi = -80.0f, .channel = 0 },
++        { .timestamp_ms = 3000, .rssi = -80.0f, .channel = 0 },
+     };
+     angle = radar_sweep_peak_angle(start_peak, 4, SWEEP_MS);
+-    if (angle != 0) {
+-        fprintf(stderr, "FAIL: peak at t=0 → angle %d, expected 0\n", angle);
+-        return 1;
+-    }
++    CHECK(angle == 0, "peak at t=0 -> angle %d, expected 0", angle);
+ 
+     // 无采样 → -1
+     angle = radar_sweep_peak_angle(NULL, 0, SWEEP_MS);
+-    if (angle != -1) {
+-        fprintf(stderr, "FAIL: zero samples → angle %d, expected -1\n", angle);
+-        return 1;
+-    }
++    CHECK(angle == -1, "zero samples -> angle %d, expected -1", angle);
+ 
+-    printf("  peak_angle: PASS (mid→%d°, start→%d°, empty→%d)\n", 180, 0, -1);
+-    return 0;
++    printf("  peak_angle: PASS\n");
+ }
+ 
+-static int test_peak_rssi(void) {
++static void test_peak_rssi(void) {
+     radar_sample_t samples[3] = {
+-        { .timestamp_ms = 0,    .rssi = -70.0f },
+-        { .timestamp_ms = 1000, .rssi = -55.0f },
+-        { .timestamp_ms = 2000, .rssi = -80.0f },
++        { .timestamp_ms = 0,    .rssi = -70.0f, .channel = 0 },
++        { .timestamp_ms = 1000, .rssi = -55.0f, .channel = 0 },
++        { .timestamp_ms = 2000, .rssi = -80.0f, .channel = 0 },
+     };
+     float peak = radar_sweep_peak_rssi(samples, 3);
+-    if (fabsf(peak - (-55.0f)) > 0.1f) {
+-        fprintf(stderr, "FAIL: peak_rssi = %.1f, expected -55.0\n", peak);
+-        return 1;
+-    }
++    CHECK(fabsf(peak - (-55.0f)) <= 0.1f, "peak_rssi = %.1f, expected -55.0", peak);
+ 
+     // 空数组
+     peak = radar_sweep_peak_rssi(NULL, 0);
+-    if (peak != -999.0f) {
+-        fprintf(stderr, "FAIL: empty peak_rssi = %.1f, expected -999\n", peak);
+-        return 1;
++    CHECK(peak == -999.0f, "empty peak_rssi = %.1f, expected -999", peak);
++
++    printf("  peak_rssi: PASS\n");
++}
++
++// ---- v2 增强 ----
++
++// 构造余弦形人体遮挡方向图:peak_time_ms 处最亮,遮挡深度 depth_db。
++static unsigned build_pattern(radar_sample_t *out, unsigned max,
++                              uint32_t sweep_ms, float peak_time_ms, float depth_db,
++                              uint8_t channel) {
++    unsigned n = 0;
++    for (uint32_t t = 0; t < sweep_ms && n < max; t += 50) {
++        float phase = ((float)t - peak_time_ms) / (float)sweep_ms * 2.0f * 3.14159265f;
++        out[n].timestamp_ms = t;
++        out[n].rssi = -70.0f + depth_db * 0.5f * (1.0f + cosf(phase));
++        out[n].channel = channel;
++        n++;
+     }
++    return n;
++}
+ 
+-    printf("  peak_rssi: PASS (max=%.1f, empty=%.1f)\n", -55.0f, -999.0f);
+-    return 0;
++static void test_peak_angle_interp(void) {
++    radar_sample_t samples[80];
++    // 峰值精确落在两个采样点之间(t=2025ms,采样间隔 50ms)
++    unsigned n = build_pattern(samples, 80, SWEEP_MS, 2025.0f, 12.0f, 0);
++    float angle = radar_sweep_peak_angle_interp(samples, n, SWEEP_MS);
++    // 2025/4000*360 = 182.25°;亚采样插值应显著优于取整样本(180° 或 184.5°)
++    CHECK(fabsf(angle - 182.25f) < 2.0f, "interp angle %.2f, expected ~182.25", angle);
++
++    // 空输入
++    CHECK(radar_sweep_peak_angle_interp(NULL, 0, SWEEP_MS) == -1.0f, "interp empty -> -1");
++    CHECK(radar_sweep_peak_angle_interp(samples, n, 0) == -1.0f, "interp dur=0 -> -1");
++
++    // 与整数版本一致性(峰在采样点上时两者接近)
++    n = build_pattern(samples, 80, SWEEP_MS, 2000.0f, 12.0f, 0);
++    float fi = radar_sweep_peak_angle_interp(samples, n, SWEEP_MS);
++    int   ii = radar_sweep_peak_angle(samples, n, SWEEP_MS);
++    CHECK(fabsf(fi - (float)ii) < 5.0f, "interp %.1f vs int %d should be close", fi, ii);
++
++    printf("  peak_angle_interp: PASS (half-sample peak -> %.2f deg)\n", 182.25f);
++}
++
++static void test_peak_prominence(void) {
++    radar_sample_t samples[80];
++
++    // 12dB 遮挡深度 → 显著性应 > 10dB
++    unsigned n = build_pattern(samples, 80, SWEEP_MS, 2000.0f, 12.0f, 0);
++    float p = radar_sweep_peak_prominence(samples, n);
++    CHECK(p > 10.0f, "prominence of 12dB pattern = %.1f, expected > 10", p);
++
++    // 纯噪声(无方向峰)→ 显著性应 < 6dB 门限
++    for (unsigned i = 0; i < 80; i++) {
++        samples[i].timestamp_ms = i * 50;
++        samples[i].rssi = -70.0f + (float)(rand() % 20) / 10.0f;  // ±1dB
++        samples[i].channel = 0;
++    }
++    p = radar_sweep_peak_prominence(samples, 80);
++    CHECK(p < RADAR_SWEEP_MIN_PROMINENCE_DB,
++          "prominence of flat noise = %.1f, expected < %.1f", p, RADAR_SWEEP_MIN_PROMINENCE_DB);
++
++    // 空输入
++    CHECK(radar_sweep_peak_prominence(NULL, 0) == 0.0f, "empty prominence -> 0");
++
++    printf("  peak_prominence: PASS\n");
++}
++
++static void test_channel_schedule(void) {
++    // 快跳轮询:100ms 驻留,1 → 6 → 11 → 1 …
++    CHECK(radar_sweep_channel_at(0, SWEEP_MS) == RADAR_SWEEP_CH_A, "t=0 -> ch1");
++    CHECK(radar_sweep_channel_at(150, SWEEP_MS) == RADAR_SWEEP_CH_B, "t=150 -> ch6");
++    CHECK(radar_sweep_channel_at(250, SWEEP_MS) == RADAR_SWEEP_CH_C, "t=250 -> ch11");
++    CHECK(radar_sweep_channel_at(350, SWEEP_MS) == RADAR_SWEEP_CH_A, "t=350 -> ch1(循环)");
++    CHECK(radar_sweep_channel_at(3999, SWEEP_MS) == RADAR_SWEEP_CH_A, "t=3999 -> ch1");
++    printf("  channel_schedule: PASS\n");
++}
++
++// 构造快跳交织采样:每信道独立方向图,真峰在 true_peak_ms;
++// fake_ch 指定的信道被多径污染,峰在 fake_peak_ms。
++static unsigned build_interleaved(radar_sample_t *out, unsigned max,
++                                  float true_peak_ms, uint8_t fake_ch, float fake_peak_ms,
++                                  bool fake_flat) {
++    unsigned n = 0;
++    for (uint32_t t = 0; t < SWEEP_MS && n < max; t += 50) {
++        uint8_t ch = radar_sweep_channel_at(t, SWEEP_MS);
++        out[n].timestamp_ms = t;
++        out[n].channel = ch;
++        if (fake_flat && ch == fake_ch) {
++            out[n].rssi = -70.0f + (float)(n % 3) * 0.5f;  // 平坦无峰
++        } else {
++            float peak_t = (ch == fake_ch) ? fake_peak_ms : true_peak_ms;
++            float phase = ((float)t - peak_t) / (float)SWEEP_MS * 2.0f * 3.14159265f;
++            out[n].rssi = -70.0f + 12.0f * 0.5f * (1.0f + cosf(phase));
++        }
++        n++;
++    }
++    return n;
++}
++
++static void test_channel_angles_vote(void) {
++    radar_sample_t samples[240];
++
++    // ch1/ch11 真峰 180°(t=2000),ch6 假峰 90°(t=1000)
++    unsigned n = build_interleaved(samples, 240, 2000.0f, RADAR_SWEEP_CH_B, 1000.0f, false);
++
++    float angles[4];
++    unsigned cnt = radar_sweep_channel_angles(samples, n, SWEEP_MS, angles, 4);
++    CHECK(cnt == 3, "should detect 3 channel angles, got %u", cnt);
++
++    // 投票(环形中值)应选中 180° 附近,抑制 ch6 假峰
++    float spread = -1.0f;
++    float voted = radar_sweep_angle_vote(angles, cnt, &spread);
++    CHECK(radar_fusion_angle_diff(voted, 180.0f) < 10.0f,
++          "voted angle %.1f, expected ~180 (ch6 outlier rejected)", voted);
++    CHECK(spread > 45.0f, "spread should reflect the 90-deg outlier, got %.1f", spread);
++
++    // 全部一致时 spread 小
++    float good[3] = {178.0f, 182.0f, 180.0f};
++    voted = radar_sweep_angle_vote(good, 3, &spread);
++    CHECK(radar_fusion_angle_diff(voted, 180.0f) < 3.0f, "good vote %.1f", voted);
++    CHECK(spread < 6.0f, "good spread %.1f", spread);
++
++    // 单角度与空输入
++    float one[1] = {42.0f};
++    CHECK(fabsf(radar_sweep_angle_vote(one, 1, NULL) - 42.0f) < 0.01f, "single vote");
++    CHECK(radar_sweep_angle_vote(NULL, 0, NULL) == -1.0f, "empty vote");
++
++    // 显著性不足的信道应被剔除:ch6 平坦无峰
++    n = build_interleaved(samples, 240, 2000.0f, RADAR_SWEEP_CH_B, 0.0f, true);
++    cnt = radar_sweep_channel_angles(samples, n, SWEEP_MS, angles, 4);
++    CHECK(cnt == 2, "flat channel should be rejected, got %u angles", cnt);
++
++    printf("  channel_angles_vote: PASS\n");
+ }
+ 
+ int main(void) {
+-    if (test_distance() != 0) return 1;
+-    if (test_peak_angle() != 0) return 1;
+-    if (test_peak_rssi() != 0) return 1;
++    test_distance();
++    test_peak_angle();
++    test_peak_rssi();
++    test_peak_angle_interp();
++    test_peak_prominence();
++    test_channel_schedule();
++    test_channel_angles_vote();
++    if (s_failures != 0) {
++        fprintf(stderr, "FAILED: %d check(s)\n", s_failures);
++        return 1;
++    }
+     printf("PASS: radar sweep algorithms verified\n");
+     return 0;
+ }
+diff --git a/tools/validate.sh b/tools/validate.sh
+index 867a729..6ef2f24 100755
+--- a/tools/validate.sh
++++ b/tools/validate.sh
+@@ -34,9 +34,13 @@ run_static_checks() {
+         -o "${test_dir}/test_radar_kalman" -lm
+     "${test_dir}/test_radar_kalman"
+     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+-        tests/test_radar_sweep.c main/radar_sweep.c \
++        tests/test_radar_sweep.c main/radar_sweep.c main/radar_fusion.c \
+         -o "${test_dir}/test_radar_sweep" -lm
+     "${test_dir}/test_radar_sweep"
++    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
++        tests/test_radar_fusion.c main/radar_fusion.c main/radar_sweep.c \
++        -o "${test_dir}/test_radar_fusion" -lm
++    "${test_dir}/test_radar_fusion"
+     python3 tests/test_verify_firmware.py
+     rm -rf "${test_dir}"
+     echo "Host tests: PASS"
+-- 
+2.39.5
+
