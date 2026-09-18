@@ -3,7 +3,10 @@
 // 按键语义:
 //   确定  短按   主页面=启动 360° 扫盘;结果页=返回主页面
 //   确定  长按   主页面=1m 标定(两卡相距 1m 静止 3s);扫盘中=取消;结果页=返回
-//   上    长按   主页面↔诊断页(v1/v2 管线 A/B 回归 + 现场诊断)
+//   确定  LONG2  按住 3s 回 meta-pass 启动器(子固件适配约定,非系统策略)
+//   上    双击   主页面↔诊断页(v1/v2 管线 A/B 回归 + 现场诊断)
+//                实测长按 UP 曾误回启动器(疑为 ADC 梯度键长按电压漂移被
+//                读成 OK),故诊断页入口用双击,避开一切长按
 //   上/下 短按   (保留,暂不分配)
 //
 // 数据流:
@@ -35,6 +38,10 @@ static const char *TAG = "pass-radar";
 // 标定采样时长
 #define CALIB_DURATION_MS 3000
 
+// 追踪页距离显示平滑系数(IIR,0~1,越大越跟手)。真机实测室内 RSSI 距离
+// 在 1~5m 间跳动,把瞬时融合距离压平到可读。
+#define TRACK_DIST_SMOOTH 0.35f
+
 // ---------- 状态 ----------
 static lv_timer_t *s_poll_timer;    // 100ms 轮询融合并更新 UI
 static lv_timer_t *s_sweep_timer;   // 4s 扫盘一次性定时器
@@ -53,6 +60,9 @@ static float   s_calib_max_gap_db = 0.0f;
 // 双端扫盘跟随与最近投票分歧(结果页/主页面置信度用)。
 static uint32_t s_followed_sweep_id = 0;
 static float    s_last_vote_spread = 0.0f;
+
+// 追踪页平滑距离(INVALID 表示未初始化)。
+static float s_track_dist_m = RADAR_DIST_INVALID;
 
 // ---------- 前置声明 ----------
 static void start_sweep(void);
@@ -113,7 +123,17 @@ static void poll_tick(lv_timer_t *t) {
     if (page == RADAR_PAGE_MAIN) {
         radar_fusion_result_t fr = run_fusion();
         int raw = radar_espnow_raw_rssi();
-        radar_ui_update_tracking(&fr, raw, radar_ble_peer_alive(),
+        // 追踪页距离 IIR 平滑;结果失效(OOR)时立即复位,避免旧值回显。
+        if (fr.conf == RADAR_CONF_OOR || fr.distance_m <= 0.0f) {
+            s_track_dist_m = RADAR_DIST_INVALID;
+        } else if (s_track_dist_m == RADAR_DIST_INVALID) {
+            s_track_dist_m = fr.distance_m;
+        } else {
+            s_track_dist_m += TRACK_DIST_SMOOTH * (fr.distance_m - s_track_dist_m);
+        }
+        radar_fusion_result_t shown = fr;
+        shown.distance_m = s_track_dist_m;
+        radar_ui_update_tracking(&shown, raw, radar_ble_peer_alive(),
                                  s_last_vote_spread);
     } else if (page == RADAR_PAGE_DEBUG) {
         // 诊断页:同速率复用融合管线(环境估计每 100ms 仍只喂一次),
@@ -141,6 +161,9 @@ static void poll_tick(lv_timer_t *t) {
             di.ftm_dist_m = snap.distance_m;
             di.ftm_spread_m = snap.spread_m;
             di.ftm_bursts = snap.valid_bursts;
+        } else {
+            // 无有效快照时显示最近一次失败原因(status 编码),现场定位共存/对端问题。
+            di.ftm_last_status = (int)radar_ftm_last_status();
         }
         radar_ui_update_debug(&di);
     } else if (page == RADAR_PAGE_SWEEPING) {
@@ -170,9 +193,10 @@ static void sweep_done(lv_timer_t *t) {
     (void)t;
     if (radar_ui_current_page() != RADAR_PAGE_SWEEPING) return;
 
-    // 停止采样并取回数据(恢复固定信道),恢复 FTM
+    // 停止采样并取回数据(恢复固定信道),恢复 FTM 与 BLE 扫描
     unsigned count = radar_espnow_stop_sweep();
     radar_ftm_pause(false);
+    radar_ble_pause(false);
     radar_sample_t samples[RADAR_MAX_SAMPLES];
     count = radar_espnow_get_samples(samples, RADAR_MAX_SAMPLES);
 
@@ -301,6 +325,7 @@ static void calib_done(lv_timer_t *t) {
 
 static void start_sweep(void) {
     radar_ftm_pause(true);   // 跳频期间暂停 FTM
+    radar_ble_pause(true);   // 让出射频:跳频 + 扫描无法同时进行
     s_sweep_start_ms = esp_timer_get_time() / 1000;
     radar_espnow_start_sweep();
     radar_ui_show_sweeping();
@@ -310,6 +335,8 @@ static void start_sweep(void) {
 }
 
 static void start_calib(void) {
+    radar_ftm_pause(true);   // 标定期间稳定信道,暂停 FTM 会话
+    radar_ble_pause(true);   // 标定采样不受扫描干扰
     memset(s_calib_samples, 0, sizeof(s_calib_samples));
     s_calib_cnt = 0;
     s_calib_max_gap_db = 0.0f;
@@ -341,8 +368,8 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
             start_sweep();
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
             start_calib();
-        } else if (btn == BSP_BTN_UP && ev == BSP_BTN_LONG) {
-            // 诊断/回归页(RSSI-only A/B 基线 + 现场诊断)。
+        } else if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
+            // 诊断/回归页:meta-pass 占用任意键长按(回启动器),改用双击。
             radar_ui_show_debug();
         }
         break;
@@ -352,23 +379,27 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
             radar_espnow_stop_sweep();
             radar_ftm_pause(false);
-            if (s_sweep_timer) {
-                lv_timer_delete(s_sweep_timer);
-                s_sweep_timer = NULL;
-            }
-            radar_ui_show_main();
-        }
+    if (s_sweep_timer) {
+        lv_timer_delete(s_sweep_timer);
+        s_sweep_timer = NULL;
+    }
+    radar_ftm_pause(false);
+    radar_ble_pause(false);
+    radar_ui_show_main();
+}
         break;
 
     case RADAR_PAGE_CALIB:
         // 长按或短按取消标定
         if (btn == BSP_BTN_OK && (ev == BSP_BTN_LONG || ev == BSP_BTN_CLICK)) {
-            if (s_calib_timer) {
-                lv_timer_delete(s_calib_timer);
-                s_calib_timer = NULL;
-            }
-            radar_ui_show_main();
+        if (s_calib_timer) {
+            lv_timer_delete(s_calib_timer);
+            s_calib_timer = NULL;
         }
+        radar_ftm_pause(false);
+        radar_ble_pause(false);
+        radar_ui_show_main();
+    }
         break;
 
     case RADAR_PAGE_RESULT:
@@ -380,9 +411,9 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         break;
 
     case RADAR_PAGE_DEBUG:
-        // 任意 OK 键返回追踪页;UP 长按再次切换(页面向)。
+        // OK 返回追踪页;UP 双击再次切换(页面向)。
         if (btn == BSP_BTN_OK ||
-            (btn == BSP_BTN_UP && ev == BSP_BTN_LONG)) {
+            (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE)) {
             radar_ui_show_main();
         }
         break;

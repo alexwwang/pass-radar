@@ -157,11 +157,15 @@ static void test_peak_prominence(void) {
 }
 
 static void test_channel_schedule(void) {
-    // 快跳轮询:100ms 驻留,1 → 6 → 11 → 1 …
+    // 快跳轮询:RADAR_SWEEP_HOP_DWELL_MS 驻留,1 → 6 → 11 → 1 …
+    uint32_t dwell = RADAR_SWEEP_HOP_DWELL_MS;
     CHECK(radar_sweep_channel_at(0, SWEEP_MS) == RADAR_SWEEP_CH_A, "t=0 -> ch1");
-    CHECK(radar_sweep_channel_at(150, SWEEP_MS) == RADAR_SWEEP_CH_B, "t=150 -> ch6");
-    CHECK(radar_sweep_channel_at(250, SWEEP_MS) == RADAR_SWEEP_CH_C, "t=250 -> ch11");
-    CHECK(radar_sweep_channel_at(350, SWEEP_MS) == RADAR_SWEEP_CH_A, "t=350 -> ch1(循环)");
+    CHECK(radar_sweep_channel_at(dwell + dwell / 2, SWEEP_MS) == RADAR_SWEEP_CH_B,
+          "t=1.5 dwell -> ch6");
+    CHECK(radar_sweep_channel_at(2 * dwell + dwell / 2, SWEEP_MS) == RADAR_SWEEP_CH_C,
+          "t=2.5 dwell -> ch11");
+    CHECK(radar_sweep_channel_at(3 * dwell + dwell / 2, SWEEP_MS) == RADAR_SWEEP_CH_A,
+          "t=3.5 dwell -> ch1(循环)");
     CHECK(radar_sweep_channel_at(3999, SWEEP_MS) == RADAR_SWEEP_CH_A, "t=3999 -> ch1");
     printf("  channel_schedule: PASS\n");
 }

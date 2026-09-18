@@ -1,5 +1,6 @@
 // radar_ftm.c —— Wi-Fi FTM(802.11mc) RTT 测距。
 #include "radar_ftm.h"
+#include "radar_ble.h"
 #include "radar_espnow.h"
 #include "radar_fusion.h"
 
@@ -32,6 +33,17 @@ static int64_t s_last_session_us;
 static int64_t s_session_deadline_us;
 static int64_t s_backoff_until_us;
 static radar_ftm_snapshot_t s_snapshot;
+static int s_coex_kick_count;
+static bool s_coex_active;
+static int64_t s_coex_start_us;
+static volatile int s_last_status;
+
+int radar_ftm_last_status(void) { return s_last_status; }
+
+// 与 BLE 扫描共存:Coded PHY 扫描窗口会挤压 FTM 会话帧。连续 initiate
+// 失败时暂停扫描几秒让 FTM 建立,超时后恢复扫描(若仍失败会再次触发)。
+#define FTM_COEX_KICK_LIMIT 3
+#define FTM_COEX_HOLD_US (5 * 1000 * 1000)
 
 static bool valid_mac(const uint8_t mac[6]) {
     uint8_t zero[6] = {0};
@@ -43,6 +55,7 @@ static void clear_snapshot(wifi_ftm_status_t status) {
     s_snapshot.status = status;
     s_snapshot.distance_m = RADAR_DIST_INVALID;
     s_snapshot.rssi = -127;
+    s_last_status = (int)status;
 }
 
 static void ftm_event_handler(void *arg, esp_event_base_t base,
@@ -116,11 +129,15 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
 esp_err_t radar_ftm_init(void) {
     if (s_initialized) return ESP_OK;
     clear_snapshot(FTM_STATUS_FAIL);
+    s_last_status = 0;
     s_paused = false;
     s_session_busy = false;
     s_last_session_us = 0;
     s_session_deadline_us = 0;
     s_backoff_until_us = 0;
+    s_coex_kick_count = 0;
+    s_coex_active = false;
+    s_coex_start_us = 0;
 
     wifi_config_t ap = {
         .ap = {
@@ -172,6 +189,13 @@ void radar_ftm_tick(void) {
     if (!s_initialized || s_paused || !radar_espnow_is_ftm_initiator()) return;
     int64_t now = esp_timer_get_time();
 
+    // 共存保持超时:恢复扫描,允许下一轮按需再次触发。
+    if (s_coex_active && now - s_coex_start_us > FTM_COEX_HOLD_US) {
+        s_coex_active = false;
+        radar_ble_pause(false);
+        ESP_LOGI(TAG, "coex: BLE scan resumed (timeout)");
+    }
+
     if (s_session_busy) {
         if (now >= s_session_deadline_us) {
             (void)esp_wifi_ftm_end_session();
@@ -202,9 +226,23 @@ void radar_ftm_tick(void) {
         s_last_session_us = now;
         s_session_deadline_us = now + FTM_SESSION_TIMEOUT_US;
         s_session_busy = true;
+        // 会话成功建立:恢复此前为建立会话而暂停的扫描。
+        if (s_coex_active) {
+            s_coex_active = false;
+            radar_ble_pause(false);
+            ESP_LOGI(TAG, "coex: BLE scan resumed");
+        }
     } else {
         s_backoff_until_us = now + FTM_BACKOFF_US;
+        s_last_status = -(int)err;  // 负值 = initiate 阶段 esp_err_t
         ESP_LOGW(TAG, "FTM initiate failed: %s", esp_err_to_name(err));
+        if (++s_coex_kick_count >= FTM_COEX_KICK_LIMIT && !s_coex_active) {
+            radar_ble_pause(true);
+            s_coex_active = true;
+            s_coex_start_us = now;
+            s_coex_kick_count = 0;
+            ESP_LOGW(TAG, "coex: pausing BLE scan to let FTM through");
+        }
     }
 }
 

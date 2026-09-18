@@ -30,10 +30,12 @@ typedef struct {
 // 扫盘信道分集:快跳轮询,每个驻留窗口换一个信道(1/6/11 循环)。
 // 快跳使每个信道都能覆盖完整 360° 旋转,得到独立方向图用于投票;
 // 若改为分段(各管 1/3 时长),每信道只能看到 120° 扇区,无法独立测角。
+// 驻留 250ms(而非 100ms):切换信道后的首个收包空洞可达 50~100ms,
+// 真机实测 100ms 驻留下有效样本过少导致扫盘 OUT OF RANGE。
 #define RADAR_SWEEP_CH_A 1
 #define RADAR_SWEEP_CH_B 6
 #define RADAR_SWEEP_CH_C 11
-#define RADAR_SWEEP_HOP_DWELL_MS 100
+#define RADAR_SWEEP_HOP_DWELL_MS 250
 
 // 峰显著性等统计算法的样本上限(大于实际最大采样数 100)
 #define RADAR_MAX_SAMPLES_CAP 128

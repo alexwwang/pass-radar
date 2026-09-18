@@ -4,6 +4,16 @@ English | [简体中文](CHANGELOG.zh_CN.md)
 
 ## Unreleased
 
+### Fixed
+- Device-test round 1 findings: sweeps reporting OUT OF RANGE within 10 m
+  (radio starvation during 100ms channel hops + BLE scan) — hop dwell raised
+  to 250 ms and BLE scanning paused during sweeps/calibration
+- FTM never establishing: coexistence back-off now pauses BLE scan for 5 s
+  after repeated initiate failures, resumes on success/timeout
+- Debug page unreachable via UP long-press (misread as OK on the ADC keypad):
+  entry changed to UP double-click; distance display now IIR-smoothed;
+  debug page shows the last FTM failure status code
+
 ### Added
 - `tools/build-firmware.sh`: one-command delivery build producing the single
   release file `pass-radar_<版本>.bin` (bootable body + 44B MPUPV2 footer,

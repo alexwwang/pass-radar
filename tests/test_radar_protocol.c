@@ -63,16 +63,17 @@ static void test_sequence_freshness(void) {
 }
 
 static void test_sweep_resync(void) {
+    const uint32_t dwell = RADAR_SWEEP_HOP_DWELL_MS;
     uint32_t elapsed = 0;
     CHECK(radar_sweep_channel_at(elapsed, TEST_SWEEP_DURATION_MS) == 1,
           "hop 0 should use channel 1");
-    elapsed = 100;
+    elapsed = dwell;
     CHECK(radar_sweep_channel_at(elapsed, TEST_SWEEP_DURATION_MS) == 6,
           "hop 1 should use channel 6");
-    elapsed = 200;
+    elapsed = 2 * dwell;
     CHECK(radar_sweep_channel_at(elapsed, TEST_SWEEP_DURATION_MS) == 11,
           "hop 2 should use channel 11");
-    elapsed = 400;
+    elapsed = 4 * dwell;
     CHECK(radar_sweep_channel_at(elapsed, TEST_SWEEP_DURATION_MS) == 6,
           "hop 4 should resync to channel 6");
     elapsed = TEST_SWEEP_DURATION_MS - 1;

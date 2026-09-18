@@ -40,6 +40,7 @@ static volatile bool     s_expected_identity_known;
 static volatile bool     s_peer_identity_known;
 static volatile bool     s_ready;
 static volatile bool     s_sync_seen;
+static volatile bool     s_scan_paused;
 static volatile bool     s_adv_started;
 static volatile bool     s_scan_started;
 static bool              s_initialized;
@@ -251,6 +252,23 @@ void radar_ble_deinit(void) {
 }
 
 bool radar_ble_ready(void) { return s_ready && s_sync_seen; }
+
+void radar_ble_pause(bool paused) {
+    if (paused == s_scan_paused) return;
+    s_scan_paused = paused;
+    if (paused) {
+        if (s_scan_started) {
+            int rc = ble_gap_disc_cancel();
+            if (rc == 0 || rc == BLE_HS_EALREADY) s_scan_started = false;
+            else ESP_LOGW(TAG, "BLE scan pause rc=%d", rc);
+        }
+    } else if (s_ready && !s_scan_started) {
+        // 恢复扫描;失败不致命,下一轮 on_reset/on_sync 之外无自动重试,
+        // 记录日志供诊断。
+        int rc = start_scanning();
+        if (rc != 0) ESP_LOGW(TAG, "BLE scan resume rc=%d", rc);
+    }
+}
 
 void radar_ble_set_expected_identity(const uint8_t identity[6]) {
     if (!identity) {

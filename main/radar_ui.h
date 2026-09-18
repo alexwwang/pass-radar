@@ -29,6 +29,7 @@ typedef struct {
     float ftm_dist_m;
     float ftm_spread_m;
     unsigned ftm_bursts;
+    int   ftm_last_status;  // 无有效快照时的失败原因(status 或 -esp_err_t)
     bool  ble_alive;
     int   ble_rssi;
     radar_env_t env;

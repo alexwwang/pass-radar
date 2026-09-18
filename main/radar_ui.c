@@ -398,19 +398,28 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
     if (s_page != RADAR_PAGE_DEBUG || !s_scr || !s_debug_label || !info) return;
 
     // 行1:v1 基线(纯 RSSI 路径损耗)vs v2 融合(A/B 回归,调研 5.9)
-    // 行2:FTM 质量 / BLE 哨兵
+    // 行2:FTM 质量(失败时带原因码)/ BLE 哨兵
     // 行3:环境与标定参数 / 最近投票分歧
+    char ftm[40];
+    if (info->ftm_valid) {
+        snprintf(ftm, sizeof(ftm), "FTM ok %.1f m ±%.1f b%u",
+                 (double)info->ftm_dist_m, (double)info->ftm_spread_m,
+                 info->ftm_bursts);
+    } else if (info->ftm_last_status != 0) {
+        snprintf(ftm, sizeof(ftm), "FTM fail s%d", info->ftm_last_status);
+    } else {
+        snprintf(ftm, sizeof(ftm), "FTM --");
+    }
     if (info->fr && info->fr->conf != RADAR_CONF_OOR && info->fr->distance_m > 0.0f) {
         int v2dm = (int)(info->fr->distance_m * 10.0f + 0.5f);
         lv_label_set_text_fmt(s_debug_label,
             "v1 %d.%d m | v2 %s%d.%d m [%s]\n"
-            "FTM %s %.1f m ±%.1f b%u | BLE %s\n"
+            "%s | BLE %s\n"
             "env %d n%.1f tx %.0f spread %.0f",
             (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
             info->fr->conf == RADAR_CONF_HIGH ? "" : "~",
             v2dm / 10, v2dm % 10, conf_tag(info->fr->conf),
-            info->ftm_valid ? "ok" : "--",
-            (double)info->ftm_dist_m, (double)info->ftm_spread_m, info->ftm_bursts,
+            ftm,
             info->ble_alive ? "yes" : "no",
             (int)info->env,
             (double)radar_env_path_loss_n(info->env),
@@ -418,11 +427,10 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
     } else {
         lv_label_set_text_fmt(s_debug_label,
             "v1 %d.%d m | v2 OUT OF RANGE\n"
-            "FTM %s %.1f m ±%.1f b%u | BLE %s\n"
+            "%s | BLE %s\n"
             "env %d n%.1f tx %.0f spread %.0f",
             (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
-            info->ftm_valid ? "ok" : "--",
-            (double)info->ftm_dist_m, (double)info->ftm_spread_m, info->ftm_bursts,
+            ftm,
             info->ble_alive ? "yes" : "no",
             (int)info->env,
             (double)radar_env_path_loss_n(info->env),

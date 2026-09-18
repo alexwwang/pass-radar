@@ -77,6 +77,8 @@ still 20 s and read the screen.
 **Do:** Have a friend hold the other card in some direction. Press OK on
 yours, rotate your whole body once over 4 s, read the result page.
 Repeat for 8 directions × 2 rounds.
+The other card will **auto-start its own sweep** (expected — ignore it); for
+solo testing just put it on a table.
 **Pass:** `Angle:` within ±15° of the true direction, every round.
 **Note:** every `Angle: x+/-y deg` pair.
 
@@ -111,14 +113,16 @@ NEAR/FAR threshold.
 ### T9 — Hidden card (5 min, new in v2.1)
 
 **Do:** Put one card in a pocket / behind your back for 20–30 s at ~5 m.
-Open the **Debug page** on the other (main page: **hold UP**).
+Open the **Debug page** on the other (main page: **double-click UP**;
+do not long-press, it misreads).
 **Pass:** The `env` number in the third line becomes `2` (obstructed); back in
 the open it returns to `0`/`1` within a minute.
 **Note:** how long the change took.
 
 ### T10 — Same spot, two pages (5 min, new in v2.1)
 
-**Do:** Stand anywhere. Compare the Debug page with the main page.
+**Do:** Stand anywhere. Open the Debug page (main page: **double-click UP**)
+and compare with the main page.
 **Pass:** Debug page shows `v1 <x> m | v2 <y> m` — the old simple method vs.
 the new fused one. The `v2` number should match the main page.
 **Note:** write down both numbers at 2–3 spots. This is our A/B evidence that

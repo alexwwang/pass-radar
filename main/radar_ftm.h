@@ -38,6 +38,10 @@ void radar_ftm_tick(void);
 // 获取完整快照；返回 false 表示无快照或快照已过期。
 bool radar_ftm_get_snapshot(radar_ftm_snapshot_t *out);
 
+// 最近一次会话结束/发起失败的 wifi_ftm_status_t(0=无记录)。
+// 无有效快照时用于诊断:3=NO_RESPONSE(对端未就位/被挤占)、4=REJECTED 等。
+int radar_ftm_last_status(void);
+
 // 兼容查询接口。
 bool radar_ftm_valid(void);
 float radar_ftm_distance_m(void);

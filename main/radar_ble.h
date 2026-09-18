@@ -17,6 +17,10 @@ esp_err_t radar_ble_init(void);
 // 停止扫描/广播并释放 NimBLE host/controller 资源。可重复调用。
 void radar_ble_deinit(void);
 
+// 暂停/恢复哨兵扫描(保留广播):扫盘跳频与标定期间让出射频时间片,
+// 避免 Coded PHY 长窗口扫描挤压 ESP-NOW/FTM 收包。幂等。
+void radar_ble_pause(bool paused);
+
 // NimBLE sync callback 已完成且广播/扫描已成功提交。
 bool radar_ble_ready(void);
 
