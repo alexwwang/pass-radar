@@ -22,9 +22,11 @@ typedef enum {
 void radar_ui_init(void);
 
 // 更新主页面(每 100ms 由 lv_timer 调用)。
-// fr:融合引擎输出;raw_rssi:原始信号;ble_alive:BLE 哨兵链路可达。
+// fr:融合引擎输出;raw_rssi:原始信号;ble_alive:BLE 哨兵链路可达;
+// vote_spread_deg:最近一次扫盘的信道投票/双端融合分歧(无数据传 0)。
+// vote_spread_deg > 20 时 HIGH 封顶为 MED(方向不可信档)。
 void radar_ui_update_tracking(const radar_fusion_result_t *fr, int raw_rssi,
-                              bool ble_alive);
+                              bool ble_alive, float vote_spread_deg);
 
 // 切换到扫盘页面(4s 倒计时动画)。
 void radar_ui_show_sweeping(void);

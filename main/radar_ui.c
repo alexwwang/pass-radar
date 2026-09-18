@@ -2,6 +2,7 @@
 // 使用 ui_pixel 基元 + lv_obj 定位块构建 240×320 雷达画面。
 #include "radar_ui.h"
 #include "ui_pixel.h"
+#include "radar_ble.h"
 #include "lvgl.h"
 #include <math.h>
 #include <stdio.h>
@@ -43,6 +44,7 @@ static lv_obj_t *s_sweep_msg;
 static lv_obj_t *s_result_dot;
 static lv_obj_t *s_result_angle;
 static lv_obj_t *s_result_dist;
+static lv_obj_t *s_result_sector;
 
 // 标定页面对象
 static lv_obj_t *s_calib_bar;
@@ -116,6 +118,11 @@ static const char *conf_tag(radar_confidence_t conf) {
     }
 }
 
+// 置信度对应距离误差(调研 5.6:HIGH ±0.5m / MED ±2m)。
+static const char *conf_dist_err(radar_confidence_t conf) {
+    return conf == RADAR_CONF_HIGH ? "±0.5" : "±2";
+}
+
 // ---------- 页面构建/销毁 ----------
 
 static void build_main_page(void) {
@@ -153,6 +160,16 @@ static void build_sweeping_page(void) {
 static void build_result_page(void) {
     s_scr = ui_pixel_screen_create("RESULT");
     build_radar_panel();
+
+    // 低置信度扇形(±spread 方向不确定区域,show_result 按需显示)。
+    s_result_sector = lv_arc_create(s_radar_panel);
+    lv_obj_set_size(s_result_sector, RADAR_RADIUS * 2, RADAR_RADIUS * 2);
+    lv_obj_set_pos(s_result_sector, RADAR_CX - RADAR_RADIUS, RADAR_CY - RADAR_RADIUS);
+    lv_obj_remove_style_all(s_result_sector);
+    lv_obj_set_style_arc_color(s_result_sector, lv_color_hex(RADAR_WARN), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(s_result_sector, 14, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(s_result_sector, LV_OPA_40, LV_PART_INDICATOR);
+    lv_obj_add_flag(s_result_sector, LV_OBJ_FLAG_HIDDEN);
 
     // 结果点
     s_result_dot = create_dot(s_radar_panel, RADAR_TARGET, RADAR_DOT_SIZE);
@@ -193,6 +210,7 @@ static void page_teardown(void) {
         s_sweep_msg = NULL;
         s_result_angle = NULL;
         s_result_dist = NULL;
+        s_result_sector = NULL;
         s_calib_bar = NULL;
     }
 }
@@ -205,19 +223,31 @@ void radar_ui_init(void) {
 }
 
 void radar_ui_update_tracking(const radar_fusion_result_t *fr, int raw_rssi,
-                              bool ble_alive) {
+                              bool ble_alive, float vote_spread_deg) {
     if (s_page != RADAR_PAGE_MAIN || !s_scr || !fr) return;
+
+    // 主页面方向可信度门控:最近投票分歧 > 20° 时 HIGH 封顶为 MED
+    // (调研 5.6 HIGH 条件含"信道投票一致")。
+    radar_confidence_t conf = fr->conf;
+    if (conf == RADAR_CONF_HIGH && vote_spread_deg > 20.0f) {
+        conf = RADAR_CONF_MED;
+    }
 
     // 距离行:超界时显示链路状态;非 HIGH 置信度加 ~ 前缀
     if (s_dist_label) {
         if (fr->conf == RADAR_CONF_OOR) {
+            // BLE 哨兵远/近两档(调研 5.5):RSSI > -75dBm 判近档。
+            // 阈值待真机标定,预计开阔场 Coded PHY 链路 50~100m 对应该分界。
             lv_label_set_text(s_dist_label,
-                              ble_alive ? "FAR (BLE link)" : "OUT OF RANGE");
+                              ble_alive ? (radar_ble_peer_rssi() > -75
+                                               ? "FAR NEAR (BLE)"
+                                               : "FAR (BLE link)")
+                                        : "OUT OF RANGE");
         } else {
             int dm = (int)(fr->distance_m * 10.0f + 0.5f);
-            lv_label_set_text_fmt(s_dist_label, "DIST: %s%d.%d m",
-                                  fr->conf == RADAR_CONF_HIGH ? "" : "~",
-                                  dm / 10, dm % 10);
+            lv_label_set_text_fmt(s_dist_label, "DIST: %s%d.%d %s m",
+                                  conf == RADAR_CONF_HIGH ? "" : "~",
+                                  dm / 10, dm % 10, conf_dist_err(conf));
         }
     }
 
@@ -228,7 +258,7 @@ void radar_ui_update_tracking(const radar_fusion_result_t *fr, int raw_rssi,
                               fr->ftm_used ? "FTM " : "",
                               fr->conf == RADAR_CONF_MED ||
                               fr->conf == RADAR_CONF_HIGH ? "2way" : "1way",
-                              conf_tag(fr->conf));
+                              conf_tag(conf));
     }
 
     // 目标点:距离映射到半径(0~75px),显示在 12 点钟方向(追踪态无角度)
@@ -283,6 +313,19 @@ void radar_ui_show_result(int angle_deg, float distance_m,
     s_page = RADAR_PAGE_RESULT;
     build_result_page();
 
+    // 低置信度扇形(调研 5.6):±spread 的方向不确定区域,
+    // 张角下限 20° 保证可见,上限 120° 避免整圈无意义。
+    if (s_result_sector) {
+        float half = spread_deg;
+        if (half < 10.0f) half = 10.0f;
+        if (half > 60.0f) half = 60.0f;
+        if (!weak_signal && angle_deg >= 0 && conf != RADAR_CONF_OOR) {
+            lv_arc_set_bg_angles(s_result_sector, (int)(angle_deg - half),
+                                 (int)(angle_deg + half));
+            lv_obj_remove_flag(s_result_sector, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
     if (weak_signal || angle_deg < 0 || conf == RADAR_CONF_OOR) {
         if (s_result_angle) lv_label_set_text(s_result_angle, "OUT OF RANGE");
         if (s_result_dist)  lv_label_set_text(s_result_dist,
@@ -300,9 +343,9 @@ void radar_ui_show_result(int angle_deg, float distance_m,
     }
     if (s_result_dist) {
         int dm = (int)(distance_m * 10.0f + 0.5f);
-        lv_label_set_text_fmt(s_result_dist, "Dist: %s%d.%d m [%s]",
+        lv_label_set_text_fmt(s_result_dist, "Dist: %s%d.%d %s m [%s]",
                               conf == RADAR_CONF_HIGH ? "" : "~",
-                              dm / 10, dm % 10, conf_tag(conf));
+                              dm / 10, dm % 10, conf_dist_err(conf), conf_tag(conf));
     }
 
     // 在雷达上画出目标方向(低置信度用警示色)

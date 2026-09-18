@@ -197,7 +197,9 @@ float radar_fusion_angle_pair(float local_deg, float peer_deg) {
 void radar_env_est_init(radar_env_est_t *est) {
     est->min_rssi = 0.0f;
     est->max_rssi = -200.0f;
+    est->mean_rssi = 0.0f;
     est->count = 0;
+    est->total = 0;
     est->env = RADAR_ENV_OUTDOOR;
 }
 
@@ -208,11 +210,21 @@ radar_env_t radar_env_est_update(radar_env_est_t *est, float rssi_dbm) {
     if (est->count == 0 || rssi_dbm > est->max_rssi) est->max_rssi = rssi_dbm;
     est->count++;
 
-    // 窗口满:按峰峰抖动评估环境并重置窗口(周期性重估)
+    // 长期累计均值:支撑遮挡判据(室内弱信号抖动也大,单靠峰峰会误判)。
+    est->total++;
+    est->mean_rssi += (rssi_dbm - est->mean_rssi) / (float)est->total;
+
+    // 窗口满:评估环境并重置窗口(周期性重估)。
     if (est->count >= RADAR_ENV_WINDOW) {
         float p2p = est->max_rssi - est->min_rssi;
-        est->env = (p2p > RADAR_ENV_P2P_INDOOR_DB) ? RADAR_ENV_INDOOR
-                                                   : RADAR_ENV_OUTDOOR;
+        if (est->total >= RADAR_ENV_MIN_TOTAL &&
+            est->mean_rssi < RADAR_ENV_OBSTRUCTED_MEAN_DB) {
+            est->env = RADAR_ENV_OBSTRUCTED;
+        } else if (p2p > RADAR_ENV_P2P_INDOOR_DB) {
+            est->env = RADAR_ENV_INDOOR;
+        } else {
+            est->env = RADAR_ENV_OUTDOOR;
+        }
         est->count = 0;
         est->min_rssi = 0.0f;
         est->max_rssi = -200.0f;

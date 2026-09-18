@@ -44,6 +44,10 @@ typedef enum {
 #define RADAR_ENV_P2P_INDOOR_DB 8.0f
 // 环境估计窗口(样本数,100ms 喂一次 ≈ 8s)
 #define RADAR_ENV_WINDOW 80
+// 遮挡判据:长期均值低于该值(dBm)且样本数达标 → 判为有遮挡(n=3.5)
+#define RADAR_ENV_OBSTRUCTED_MEAN_DB (-80.0f)
+// 遮挡判据最小样本数(累计,2 个窗口 ≈ 16s)
+#define RADAR_ENV_MIN_TOTAL 160
 
 // 环境对应的路径损耗指数
 float radar_env_path_loss_n(radar_env_t env);
@@ -116,7 +120,9 @@ float radar_fusion_angle_pair(float local_deg, float peer_deg);
 typedef struct {
     float min_rssi;
     float max_rssi;
-    unsigned count;      // 窗口内已计数
+    float mean_rssi;     // 长期累计均值(遮挡判据,全历史)
+    unsigned count;      // 当前窗口内已计数
+    unsigned total;      // 累计样本数(mean_rssi 分母)
     radar_env_t env;
 } radar_env_est_t;
 

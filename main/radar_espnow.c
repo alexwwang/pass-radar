@@ -383,6 +383,13 @@ bool radar_espnow_is_hopping(void) {
                           esp_timer_get_time() - s_peer_sweep_us < PEER_SWEEP_HOLD_US);
 }
 
+bool radar_espnow_peer_sweep(uint32_t *out_sweep_id, uint32_t *out_elapsed_ms) {
+    if (!radar_espnow_peer_alive() || !s_peer_sweep_known) return false;
+    if (out_sweep_id) *out_sweep_id = s_peer_sweep_id;
+    if (out_elapsed_ms) *out_elapsed_ms = s_peer_sweep_elapsed_ms;
+    return true;
+}
+
 void radar_espnow_start_sweep(void) {
     s_sample_count = 0;
     s_channel_fault = false;

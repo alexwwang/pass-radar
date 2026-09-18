@@ -5,6 +5,18 @@ English | [简体中文](CHANGELOG.zh_CN.md)
 ## Unreleased
 
 ### Added
+- Dual-end simultaneous sweep: the idle card auto-starts a sweep when the peer
+  begins one (per sweep-id, ≤1s late), and the result fuses both angles via
+  circular mean with the pair disagreement folded into the reported spread
+- Result page low-confidence sector: a ±spread wedge marks direction
+  uncertainty; distance error bands (±0.5m HIGH / ±2m MED) shown on the
+  result and tracking pages
+- Tracking page gates HIGH confidence to MED when the last channel-vote
+  spread exceeds 20°
+- BLE sentinel near/far grading: "FAR NEAR (BLE)" when sentinel RSSI >
+  -75dBm, otherwise "FAR (BLE link)" (threshold pending device calibration)
+- Environment estimator: sustained weak signal (long-term mean < -80dBm)
+  selects the obstructed class (n=3.5) in addition to the indoor jitter rule
 - Wi-Fi FTM (802.11mc RTT) ranging: symmetric SoftAP responder + periodic
   initiator sessions (every 2s, 16 bursts), median-filtered per-burst distances
 - BLE 5.0 Coded PHY long-range sentinel link (NimBLE, 1s extended advertising +

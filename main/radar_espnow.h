@@ -37,6 +37,10 @@ unsigned radar_espnow_stop_sweep(void);
 unsigned radar_espnow_get_samples(radar_sample_t *out, unsigned max_count);
 bool radar_espnow_is_sweeping(void);
 
+// 对端扫盘状态(由协议 v2 SWEEPING 标记驱动,短暂保持)。
+// 返回 true 时写出对端 sweep_id 与已进行毫秒数,供跟随启动判断。
+bool radar_espnow_peer_sweep(uint32_t *out_sweep_id, uint32_t *out_elapsed_ms);
+
 esp_err_t radar_espnow_calib_save(float tx_ref_sym);
 esp_err_t radar_espnow_calib_load(float *tx_ref_sym);
 void radar_espnow_deinit(void);

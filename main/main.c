@@ -49,6 +49,13 @@ static float   s_calib_samples[CALIB_MAX_SAMPLES];
 static unsigned s_calib_cnt = 0;
 static float   s_calib_max_gap_db = 0.0f;
 
+// 双端扫盘跟随与最近投票分歧(结果页/主页面置信度用)。
+static uint32_t s_followed_sweep_id = 0;
+static float    s_last_vote_spread = 0.0f;
+
+// ---------- 前置声明 ----------
+static void start_sweep(void);
+
 // ---------- 融合(供追踪页与扫盘结果共用) ----------
 
 static radar_fusion_result_t run_fusion(void) {
@@ -59,6 +66,7 @@ static radar_fusion_result_t run_fusion(void) {
     if (radar_espnow_peer_ble_identity(peer_identity)) {
         radar_ble_set_expected_identity(peer_identity);
     } else {
+        // 链路丢失即解除 BLE 哨兵绑定,避免锁死旧目标。
         radar_ble_set_expected_identity(NULL);
     }
 
@@ -87,10 +95,25 @@ static void poll_tick(lv_timer_t *t) {
     // FTM 周期驱动(任何页面都需要;跳频期内部自动跳过)
     radar_ftm_tick();
 
+    // 双端同扫跟随(调研 5.4 P0):对端开始扫盘且本端空闲时自动进入扫盘,
+    // 按 sweep_id 一次性触发,错过 1s 以上不补扫(中途加入同步无意义)。
+    if (page == RADAR_PAGE_MAIN || page == RADAR_PAGE_RESULT) {
+        uint32_t peer_sweep_id = 0, peer_elapsed = 0;
+        if (radar_espnow_peer_sweep(&peer_sweep_id, &peer_elapsed) &&
+            peer_sweep_id != s_followed_sweep_id) {
+            s_followed_sweep_id = peer_sweep_id;
+            if (peer_elapsed <= 1000) {
+                start_sweep();
+                return;  // 已切换到扫盘页,本轮轮询结束
+            }
+        }
+    }
+
     if (page == RADAR_PAGE_MAIN) {
         radar_fusion_result_t fr = run_fusion();
         int raw = radar_espnow_raw_rssi();
-        radar_ui_update_tracking(&fr, raw, radar_ble_peer_alive());
+        radar_ui_update_tracking(&fr, raw, radar_ble_peer_alive(),
+                                 s_last_vote_spread);
     } else if (page == RADAR_PAGE_SWEEPING) {
         int64_t elapsed = (esp_timer_get_time() / 1000) - s_sweep_start_ms;
         float progress = (float)elapsed / (float)RADAR_SWEEP_DURATION_MS;
@@ -147,6 +170,22 @@ static void sweep_done(lv_timer_t *t) {
         spread = 45.0f;  // 单源估计,给保守分歧
     }
 
+    // 双端角度融合(调研 5.4 P0):对端结果随协议 v2 持续广播,扫盘结束时
+    // 仍有效;双观测独立误差减半,环形均值融合,分歧计入 spread。
+    float peer_angle = radar_espnow_peer_angle();
+    if (angle >= 0.0f && peer_angle >= 0.0f) {
+        float fused = radar_fusion_angle_pair(angle, peer_angle);
+        if (fused >= 0.0f) {
+            float d = radar_fusion_angle_diff(angle, peer_angle);
+            angle = fused;
+            if (d > spread) spread = d;
+        }
+    } else if (angle < 0.0f && peer_angle >= 0.0f) {
+        // 本端无方向但对端有效:沿用对端结果,标保守分歧。
+        angle = peer_angle;
+        spread = 45.0f;
+    }
+
     // 距离:走融合管线(FTM 在扫盘期间暂停,用最近有效值)
     radar_fusion_result_t fr = run_fusion();
     float peak_rssi = radar_sweep_peak_rssi(samples, count);
@@ -161,6 +200,7 @@ static void sweep_done(lv_timer_t *t) {
 
     // 广播本端结果(供对端参考显示)
     radar_espnow_report_result(angle, fr.distance_m);
+    s_last_vote_spread = spread;
 
     radar_ui_show_result(angle >= 0.0f ? (int)(angle + 0.5f) : -1,
                          fr.distance_m, conf, spread, weak);

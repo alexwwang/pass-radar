@@ -217,6 +217,23 @@ static void test_env_est(void) {
     }
     CHECK(env == RADAR_ENV_INDOOR, "jittery signal should detect indoor, got %d", env);
 
+    // 长期弱信号(均值 < -80dBm,抖动中等)→ 遮挡档(n=3.5)
+    radar_env_est_init(&est);
+    env = RADAR_ENV_OUTDOOR;
+    for (int i = 0; i < RADAR_ENV_MIN_TOTAL + RADAR_ENV_WINDOW; i++) {
+        env = radar_env_est_update(&est, -85.0f + ((i % 2) ? 3.0f : -3.0f));
+    }
+    CHECK(env == RADAR_ENV_OBSTRUCTED, "weak sustained signal should detect obstructed, got %d", env);
+    CHECK(fabsf(radar_env_path_loss_n(env) - 3.5f) < 0.01f, "obstructed n should be 3.5");
+
+    // 室内强信号不应误判遮挡(均值远高于门限)
+    radar_env_est_init(&est);
+    env = RADAR_ENV_OBSTRUCTED;
+    for (int i = 0; i < RADAR_ENV_MIN_TOTAL + RADAR_ENV_WINDOW; i++) {
+        env = radar_env_est_update(&est, -55.0f + ((i % 2) ? 6.0f : -6.0f));
+    }
+    CHECK(env == RADAR_ENV_INDOOR, "strong jittery signal should stay indoor, got %d", env);
+
     printf("  env_est: PASS\n");
 }
 
