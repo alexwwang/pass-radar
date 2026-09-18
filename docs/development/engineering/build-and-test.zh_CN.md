@@ -7,11 +7,11 @@
 使用 ESP-IDF 5.5.3。全新机器或缺少工具链时，先按
 [环境引导](environment-setup.zh_CN.md)完成安装。
 
-> 固件编译优先运行 `./tools/validate.sh --firmware`，烧录优先把验证通过的
-> `build/pass-radar-full.bin` 写入空白设备；对已有身份的设备，只有合并文件
-> 在保护区 `cardid` 之前结束时才可从 `0x0` 直刷，其余情况使用分段
-> `idf.py flash`。`idf.py build` 和
-> `idf.py flash` 只作为增量开发命令，不作为默认交付方式。
+> 固件交付构建优先运行 `tools/build-firmware.sh`:它产出唯一发布单文件
+> `build/pass-radar_<版本>.bin`(可引导本体 + 44B MPUPV2 指纹尾段,与
+> meta-pass 同一契约)并校验保护布局。这个文件从 `0x0` 原样烧入——设备实测、
+> 安装页、升级通道用的都是同一个文件。`idf.py build` 和
+> `idf.py flash` 只作为增量开发命令，不作为交付方式。
 
 ```bash
 source <ESP-IDF-v5.5.3-路径>/export.sh
@@ -29,7 +29,7 @@ target 或已跟踪 defaults 时，先保留有意的本地设置，再运行
 
 仓库提交 `dependencies.lock` 以固定 ESP-IDF Managed Components 的解析结果。修改 `idf_component.yml` 后必须使用 ESP-IDF 5.5.3 重新生成锁文件、review 版本变化并与 manifest 一起提交；普通构建不应产生未提交的锁文件差异。
 
-固件门禁使用全新的临时构建目录，并从仓库 `sdkconfig.defaults` 生成隔离的 `sdkconfig`。它不会读取或覆盖开发者根目录的 `sdkconfig`，只把验证通过的合并镜像复制到 `build/pass-radar-full.bin`。门禁同时强制检查[受保护的 Flash 布局](protected-flash-layout.zh_CN.md)：受保护的 `cardid` 地址、应用大小、分区表 MD5 以及单机身份数据不入包。
+固件门禁（`tools/validate.sh --firmware`）使用全新的临时构建目录，并从仓库 `sdkconfig.defaults` 生成隔离的 `sdkconfig`。它不会读取或覆盖开发者根目录的 `sdkconfig`，只把验证通过的合并镜像复制到 `build/pass-radar-full.bin`。门禁同时强制检查[受保护的 Flash 布局](protected-flash-layout.zh_CN.md)：受保护的 `cardid` 地址、应用大小、分区表 MD5 以及单机身份数据不入包。
 
 当前基线含一个可独立运行的纯逻辑测试：
 
@@ -60,5 +60,6 @@ source <ESP-IDF-v5.5.3-路径>/export.sh
 
 涉及物理外设的改动必须在真机运行硬件指南验收清单，并把“编译通过”与“硬件验证通过”分开记录。
 
-社区只能上传验证通过的 `build/pass-radar-full.bin`，不得上传应用单镜像
-`build/pass-radar.bin`，后者不包含完整且经校验的固件布局。
+社区不能上传中间产物（`build/pass-radar.bin`、`build/pass-radar-full.bin`）。
+唯一发布文件是 `tools/build-firmware.sh` 产出的 `build/pass-radar_<版本>.bin`
+——一种固件兼顾所有场景，与 meta-pass 保持一致。

@@ -5,6 +5,9 @@ English | [简体中文](CHANGELOG.zh_CN.md)
 ## Unreleased
 
 ### Added
+- `tools/build-firmware.sh`: one-command delivery build producing the single
+  release file `pass-radar_<版本>.bin` (bootable body + 44B MPUPV2 footer,
+  same contract as meta-pass) with protected-layout verification
 - Rotation-speed self-correction: harmonic-fit period search estimates the
   actual sweep completion time, trims post-stop samples and rescales the
   time→angle mapping when the user finishes the 360° rotation early

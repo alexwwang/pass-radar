@@ -7,12 +7,12 @@
 Use ESP-IDF 5.5.3. On a clean machine or when the toolchain is missing, follow
 the [environment bootstrap](environment-setup.md) first.
 
-> Prefer `./tools/validate.sh --firmware` for firmware builds and flash its
-> verified `build/pass-radar-full.bin` at offset `0x0` only when the
-> target is blank or the merged byte range ends before protected `cardid`.
-> On a provisioned device, use segmented `idf.py flash`. Treat
-> `idf.py build` and `idf.py flash` as incremental development commands, not the
-> default delivery path.
+> Prefer `tools/build-firmware.sh` for delivery builds: it produces the single
+> release file `build/pass-radar_<版本>.bin` (bootable body + 44B MPUPV2
+> footer, same contract as meta-pass) and verifies the protected layout. Flash
+> that one file at offset `0x0` — it serves device testing, install, and the
+> upgrade channel alike. `idf.py build` and `idf.py flash` remain incremental
+> development commands, not the delivery path.
 
 ```bash
 source <path-to-esp-idf-v5.5.3>/export.sh
@@ -31,7 +31,7 @@ regenerated.
 
 The tracked `dependencies.lock` pins Managed Component resolution. After changing an `idf_component.yml`, regenerate the lock with ESP-IDF 5.5.3, review version changes, and commit it with the manifest. An ordinary build must not leave an unexplained lock-file diff.
 
-Firmware validation uses a fresh temporary build directory and an isolated `sdkconfig` generated from the tracked defaults. It does not consume or overwrite a developer's root `sdkconfig`, and it copies only the verified merged image to `build/pass-radar-full.bin`. The gate also enforces the [protected Flash layout](protected-flash-layout.md): the protected `cardid` address, application size, partition-table MD5, and absence of device-specific identity data.
+Firmware validation (`tools/validate.sh --firmware`) uses a fresh temporary build directory and an isolated `sdkconfig` generated from the tracked defaults. It does not consume or overwrite a developer's root `sdkconfig`, and it copies only the verified merged image to `build/pass-radar-full.bin`. The gate also enforces the [protected Flash layout](protected-flash-layout.md): the protected `cardid` address, application size, partition-table MD5, and absence of device-specific identity data.
 
 The baseline also has a hardware-independent logic test:
 
@@ -64,6 +64,7 @@ behavior differs; do not duplicate command sequences in workflows.
 
 Hardware-affecting changes must also run the applicable on-device checklist in the hardware guide. Report compilation separately from physical-device validation.
 
-Never upload the app-only `build/pass-radar.bin` to the community. Only
-the validated `build/pass-radar-full.bin` contains the complete checked
-firmware layout.
+Never upload intermediate artifacts (`build/pass-radar.bin`,
+`build/pass-radar-full.bin`) to the community. The only release file is
+`build/pass-radar_<版本>.bin` from `tools/build-firmware.sh` — one firmware
+file for all scenarios, mirroring meta-pass.
