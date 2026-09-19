@@ -85,6 +85,7 @@ radar_env_t radar_fusion_env_of_level(radar_level_t level);
 
 // 环境对应的路径损耗指数
 float radar_env_path_loss_n(radar_env_t env);
+void radar_fusion_set_breakpoint_m(float d_break);
 
 // ---- 双向 RSSI ----
 

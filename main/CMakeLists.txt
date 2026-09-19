@@ -16,6 +16,7 @@ idf_component_register(
          "radar_sweep.c"
          "radar_fusion.c"
          "radar_obstruct.c"
+         "radar_csi.c"
          "radar_ftm.c"
          "${RADAR_BLE_SRC}"
          "radar_ui.c"

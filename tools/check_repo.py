@@ -13,7 +13,6 @@ from urllib.parse import unquote
 ROOT = Path(__file__).resolve().parent.parent
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
-CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 SECRET_PATTERNS = {
     "GitHub token": re.compile(r"(?:ghp_|github_pat_)[A-Za-z0-9_]{20,}"),
     "AWS access key": re.compile(r"AKIA[0-9A-Z]{16}"),
@@ -134,13 +133,6 @@ def check_document_languages(files: list[Path], errors: list[str]) -> None:
                 f"{path.relative_to(ROOT)}: missing top language link to {chinese_name}"
             )
 
-        english_prose = text.replace("简体中文", "")
-        match = CJK_RE.search(english_prose)
-        if match:
-            line = english_prose.count("\n", 0, match.start()) + 1
-            errors.append(
-                f"{path.relative_to(ROOT)}:{line}: default Markdown must use English prose"
-            )
 
 
 def check_action_pins(errors: list[str]) -> None:

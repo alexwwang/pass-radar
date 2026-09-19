@@ -29,6 +29,8 @@ typedef struct {
     float ftm_dist_m;
     float ftm_spread_m;
     unsigned ftm_bursts;
+    unsigned ftm_probe_attempts;
+    unsigned ftm_probe_successes;
     int   ftm_last_status;  // 无有效快照时的失败原因(status 或 -esp_err_t)
     bool  ble_alive;
     int   ble_rssi;
@@ -65,6 +67,7 @@ void radar_ui_update_sweep_progress(float progress);
 void radar_ui_show_result(int angle_deg, float distance_m,
                           radar_confidence_t conf, float spread_deg,
                           bool weak_signal);
+void radar_ui_set_result_hint(const char *hint_label);
 
 // 标定页面(3s 采样进度)。
 void radar_ui_show_calib(void);

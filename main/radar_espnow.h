@@ -45,6 +45,12 @@ bool radar_espnow_is_sweeping(void);
 // 返回 true 时写出对端 sweep_id 与已进行毫秒数,供跟随启动判断。
 bool radar_espnow_peer_sweep(uint32_t *out_sweep_id, uint32_t *out_elapsed_ms);
 
+// 对端请求保持静止（HOMING/扫盘期间，短时有效）。
+void radar_espnow_set_homing(bool active);
+bool radar_espnow_peer_wants_still(void);
+
 esp_err_t radar_espnow_calib_save(float tx_ref_sym);
 esp_err_t radar_espnow_calib_load(float *tx_ref_sym);
+esp_err_t radar_espnow_ftm_offset_save(float offset_m);
+esp_err_t radar_espnow_ftm_offset_load(float *offset_m);
 void radar_espnow_deinit(void);

@@ -403,6 +403,12 @@ void radar_ui_show_result(int angle_deg, float distance_m,
     }
 }
 
+void radar_ui_set_result_hint(const char *hint_label) {
+    if (s_page == RADAR_PAGE_RESULT && s_hint_label) {
+        lv_label_set_text(s_hint_label, hint_label ? hint_label : "");
+    }
+}
+
 void radar_ui_show_calib(void) {
     page_teardown();
     s_page = RADAR_PAGE_CALIB;
@@ -423,11 +429,13 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
     // 行3:环境与标定参数 / 最近投票分歧
     char ftm[40];
     if (info->ftm_valid) {
-        snprintf(ftm, sizeof(ftm), "FTM ok %.1f m ±%.1f b%u",
+        snprintf(ftm, sizeof(ftm), "FTM ok %.1f m +/-%.1f b%u p%u/%u",
                  (double)info->ftm_dist_m, (double)info->ftm_spread_m,
-                 info->ftm_bursts);
+                 info->ftm_bursts, info->ftm_probe_successes,
+                 info->ftm_probe_attempts);
     } else if (info->ftm_last_status != 0) {
-        snprintf(ftm, sizeof(ftm), "FTM fail s%d", info->ftm_last_status);
+        snprintf(ftm, sizeof(ftm), "FTM fail s%d p%u/%u", info->ftm_last_status,
+                 info->ftm_probe_successes, info->ftm_probe_attempts);
     } else {
         snprintf(ftm, sizeof(ftm), "FTM --");
     }

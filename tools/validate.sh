@@ -86,6 +86,10 @@ run_static_checks() {
         main/radar_sweep.c -o "${test_dir}/test_radar_obstruct" -lm
     "${test_dir}/test_radar_obstruct"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_radar_csi.c main/radar_csi.c \
+        -o "${test_dir}/test_radar_csi" -lm
+    "${test_dir}/test_radar_csi"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_radar_protocol.c main/radar_protocol.c main/radar_sweep.c \
         main/radar_fusion.c -o "${test_dir}/test_radar_protocol" -lm
     "${test_dir}/test_radar_protocol"

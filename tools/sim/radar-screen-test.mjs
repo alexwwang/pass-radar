@@ -118,7 +118,7 @@ function asciiFine(frame, name) {
 }
 
 let lastHash = "";
-const snap = async (name) => {
+const snap = async (name, mustChange = true) => {
   const f = lastFrame();
   if (!f) {
     console.error(`[${name}] 没有任何帧!`);
@@ -128,6 +128,9 @@ const snap = async (name) => {
   await asciiFine(f, name);
   const h = frameHash(f);
   const changed = h !== lastHash ? "changed" : "UNCHANGED!";
+  if (mustChange && lastHash && h === lastHash) {
+    throw new Error(`[${name}] expected a page transition, but the frame did not change`);
+  }
   lastHash = h;
   console.log(`[${name}] hash=${h} ${changed} frames=${frames.length} -> ${path} + ${name}.txt`);
 };
@@ -181,7 +184,10 @@ console.log(`[long-press] 长按期间新帧: ${frames.length - framesBeforeLong
 await snap("5b-calib-countdown");
 board.setButton("OK", false);
 await runCycles(600_000_000);   // 等标定采样(3s)完成
-await snap("5c-calib-done");
+await snap("5c-calib-done", false);
+if (lastHash !== frameHash(lastFrame())) {
+  throw new Error("calibration completion frame bookkeeping failed");
+}
 
 console.log(`\npc=${emulator.pc()} cycles=${emulator.cycles()}(模拟器存活)`);
 emulator.free();

@@ -30,6 +30,7 @@
 #include "radar_ftm.h"
 #include "radar_fusion.h"
 #include "radar_obstruct.h"
+#include "radar_csi.h"
 #include "radar_sweep.h"
 #include "radar_ui.h"
 #include <math.h>
@@ -61,6 +62,9 @@ static float s_tx_ref_sym = RADAR_TX_POWER_REF;  // 1m 对称参考(可标定)
 static float   s_calib_samples[CALIB_MAX_SAMPLES];
 static unsigned s_calib_cnt = 0;
 static float   s_calib_max_gap_db = 0.0f;
+static float   s_calib_ftm_samples[CALIB_MAX_SAMPLES];
+static unsigned s_calib_ftm_cnt;
+static float   s_calib_old_ftm_offset;
 
 // 双端扫盘跟随与最近投票分歧(结果页/主页面置信度用)。
 static uint32_t s_followed_sweep_id = 0;
@@ -68,6 +72,17 @@ static float    s_last_vote_spread = 0.0f;
 
 // 追踪页平滑距离(INVALID 表示未初始化)。
 static float s_track_dist_m = RADAR_DIST_INVALID;
+static float s_last_mean_rssi = NAN;
+static int64_t s_raised_until_ms;
+static float s_prev_sweep_angle = RADAR_ANGLE_INVALID;
+static int64_t s_prev_sweep_ms;
+static unsigned s_walk_state;
+static float s_walk_reference = NAN;
+static int64_t s_walk_cap_until_ms;
+static int64_t s_walk_armed_ms;
+#define WALK_ARMED 1u
+#define WALK_DONE 2u
+#define WALK_CAP_M 25.0f
 
 // ---------- 前置声明 ----------
 static void start_sweep(void);
@@ -111,12 +126,22 @@ static radar_fusion_result_t run_fusion(void) {
     ftm_success_rate = 0.1f;
 #endif
 #endif
+#if CONFIG_RADAR_SIM_BUILD && CONFIG_RADAR_SIM_SCENARIO == 2
+    float sim_csi[16];
+    for (unsigned i = 0; i < 16; ++i) sim_csi[i] = i < 8 ? 1.0f : 4.0f;
+    (void)radar_csi_push_amplitudes(sim_csi, 16);
+#endif
+    uint8_t csi_peer_mac[RADAR_MAC_LEN];
+    if (radar_espnow_peer_ap_mac(csi_peer_mac)) {
+        radar_csi_set_peer_mac(csi_peer_mac);
+    }
+    float csi_selectivity = radar_csi_recent_selectivity_db();
     radar_level_features_t level_features = {
         .ftm_success_rate = ftm_success_rate,
         .ftm_iqr_m = ftm.valid ? ftm.spread_m : NAN,
         .rssi_p2p_db = isfinite(p2p_1s) ? p2p_1s : 0.0f,
         .sym_gap_db = radar_fusion_sym_valid(local, peer) ? fabsf(local - peer) : NAN,
-        .csi_selectivity_db = NAN,
+        .csi_selectivity_db = csi_selectivity,
         .mean_rssi_dbm = s_env_est.mean_rssi,
         .peer_alive = alive,
     };
@@ -133,17 +158,29 @@ static radar_fusion_result_t run_fusion(void) {
         .kfactor_db = radar_obstruct_kfactor_db(raw_history, raw_count),
         .p2p_1s_db = p2p_1s,
         .p2p_10s_db = p2p_10s,
-        .csi_sel_db = NAN,
+        .csi_sel_db = level_features.csi_selectivity_db,
         .mirror_err_deg = NAN,
         .mean_rssi_dbm = radar_obstruct_mean_recent(raw_history, raw_timestamps,
                                                      raw_count, now_ms, 8000),
         .level = level,
     };
+    s_last_mean_rssi = features.mean_rssi_dbm;
     radar_obstruct_class_t observed = radar_obstruct_classify(&features);
     s_obstruct_class = radar_obstruct_hold_update(&s_obstruct_hold, observed, 20);
     s_obstruct_hint = radar_obstruct_apply(
         s_obstruct_class, &features, raw_history, raw_count, s_tx_ref_sym,
         radar_fusion_env_of_level(level), &result, &s_last_vote_spread);
+    if (radar_espnow_peer_wants_still() && !radar_espnow_is_sweeping()) {
+        s_obstruct_hint = HINT_PEER_STAND_STILL;
+    }
+    if (s_walk_state == WALK_ARMED &&
+        now_ms - (uint32_t)s_walk_armed_ms > 60000u) {
+        s_walk_state = 0;
+    }
+    if (s_walk_cap_until_ms > 0 && now_ms < s_walk_cap_until_ms) {
+        if (result.distance_m > WALK_CAP_M) result.distance_m = WALK_CAP_M;
+        if (result.dist_hi_m > WALK_CAP_M) result.dist_hi_m = WALK_CAP_M;
+    }
     return result;
 }
 
@@ -153,6 +190,14 @@ static radar_fusion_result_t run_fusion(void) {
 static void poll_tick(lv_timer_t *t) {
     (void)t;
     radar_page_t page = radar_ui_current_page();
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    radar_fusion_set_breakpoint_m(now_ms < s_raised_until_ms
+                                  ? RADAR_TWO_RAY_BREAK_RAISED_M
+                                  : RADAR_TWO_RAY_BREAK_M);
+    if (now_ms >= s_raised_until_ms && s_raised_until_ms != 0) {
+        s_raised_until_ms = 0;
+        s_track_dist_m = RADAR_DIST_INVALID;
+    }
 
     // FTM 周期驱动(任何页面都需要;跳频期内部自动跳过)
     radar_ftm_tick();
@@ -201,6 +246,8 @@ static void poll_tick(lv_timer_t *t) {
             .ftm_dist_m = RADAR_DIST_INVALID,
             .ftm_spread_m = 0.0f,
             .ftm_bursts = 0,
+            .ftm_probe_attempts = radar_ftm_probe_attempts(),
+            .ftm_probe_successes = radar_ftm_probe_successes(),
             .ble_alive = radar_ble_peer_alive(),
             .ble_rssi = radar_ble_peer_rssi(),
             .env = s_env_est.env,
@@ -232,6 +279,11 @@ static void poll_tick(lv_timer_t *t) {
             s_calib_samples[s_calib_cnt++] = radar_fusion_sym_rssi(local, peer);
             float gap = fabsf(local - peer);
             if (gap > s_calib_max_gap_db) s_calib_max_gap_db = gap;
+        }
+        radar_ftm_snapshot_t calib_ftm;
+        if (radar_ftm_get_snapshot(&calib_ftm) &&
+            s_calib_ftm_cnt < CALIB_MAX_SAMPLES) {
+            s_calib_ftm_samples[s_calib_ftm_cnt++] = calib_ftm.distance_m;
         }
         // 进度条复用扫盘计时基
         int64_t elapsed = (esp_timer_get_time() / 1000) - s_sweep_start_ms;
@@ -317,9 +369,28 @@ static void sweep_done(lv_timer_t *t) {
     // 广播本端结果(供对端参考显示)
     radar_espnow_report_result(angle, fr.distance_m);
     s_last_vote_spread = spread;
+    radar_espnow_set_homing(false);
+    bool need_consensus = s_obstruct_class == OBS_FOLIAGE_DYNAMIC ||
+                          s_obstruct_class == OBS_REFLECTION ||
+                          fr.level == RADAR_LEVEL_L2_NLOS;
+    if (need_consensus && angle >= 0.0f) {
+        bool recent = s_prev_sweep_angle >= 0.0f &&
+                      (esp_timer_get_time() / 1000 - s_prev_sweep_ms) < 60000;
+        if (recent && radar_fusion_angle_diff(angle, s_prev_sweep_angle) <= 30.0f) {
+            float pair[2] = { angle, s_prev_sweep_angle };
+            angle = radar_fusion_circular_mean(pair, 2);
+            if (spread < 30.0f) spread = 30.0f;
+        } else {
+            spread = 90.0f;
+            s_obstruct_hint = HINT_SWEEP_AGAIN;
+        }
+        s_prev_sweep_angle = angle;
+        s_prev_sweep_ms = esp_timer_get_time() / 1000;
+    }
 
     radar_ui_show_result(angle >= 0.0f ? (int)(angle + 0.5f) : -1,
                          fr.distance_m, conf, spread, weak);
+    radar_ui_set_result_hint(radar_hint_label(s_obstruct_hint));
 
     if (s_sweep_timer) {
         lv_timer_delete(s_sweep_timer);
@@ -367,6 +438,19 @@ static void calib_done(lv_timer_t *t) {
                  s_calib_cnt, (double)s_calib_max_gap_db);
     }
 
+    if (s_calib_ftm_cnt >= 3) {
+        float offset = radar_fusion_ftm_offset_from_calib(s_calib_ftm_samples,
+                                                          s_calib_ftm_cnt);
+        if (isfinite(offset)) {
+            radar_ftm_set_offset_m(offset);
+            (void)radar_espnow_ftm_offset_save(offset);
+            ESP_LOGI(TAG, "FTM 标定偏移=%.2f m (%u samples)",
+                     (double)offset, s_calib_ftm_cnt);
+        }
+    } else {
+        radar_ftm_set_offset_m(s_calib_old_ftm_offset);
+    }
+
     if (s_calib_timer) {
         lv_timer_delete(s_calib_timer);
         s_calib_timer = NULL;
@@ -380,6 +464,7 @@ static void start_sweep(void) {
     radar_ftm_pause(true);   // 跳频期间暂停 FTM
     radar_ble_pause(true);   // 让出射频:跳频 + 扫描无法同时进行
     s_sweep_start_ms = esp_timer_get_time() / 1000;
+    radar_espnow_set_homing(true);
     radar_espnow_start_sweep();
     radar_ui_show_sweeping();
 
@@ -392,7 +477,10 @@ static void start_calib(void) {
     radar_ble_pause(true);   // 标定采样不受扫描干扰
     memset(s_calib_samples, 0, sizeof(s_calib_samples));
     s_calib_cnt = 0;
+    s_calib_ftm_cnt = 0;
     s_calib_max_gap_db = 0.0f;
+    s_calib_old_ftm_offset = radar_ftm_offset_m();
+    radar_ftm_set_offset_m(0.0f);
     s_sweep_start_ms = esp_timer_get_time() / 1000;  // 复用计时基
     radar_ui_show_calib();
 
@@ -417,7 +505,25 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
 
     switch (page) {
     case RADAR_PAGE_MAIN:
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+        if (btn == BSP_BTN_UP && ev == BSP_BTN_CLICK) {
+            s_raised_until_ms = esp_timer_get_time() / 1000 + 5000;
+            s_track_dist_m = RADAR_DIST_INVALID;
+        } else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_CLICK &&
+                   (s_obstruct_hint == HINT_WALK_TEST || s_walk_state != 0)) {
+            int64_t now = esp_timer_get_time() / 1000;
+            if (s_walk_state == 0) {
+                s_walk_reference = s_last_mean_rssi;
+                s_walk_state = WALK_ARMED;
+                s_walk_armed_ms = now;
+                s_obstruct_hint = HINT_WALK_TEST;
+            } else if (s_walk_state == WALK_ARMED) {
+                float delta = s_last_mean_rssi - s_walk_reference;
+                if (delta > 3.0f) {
+                    s_walk_cap_until_ms = now + 60000;
+                }
+                s_walk_state = WALK_DONE;
+            }
+        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
             start_sweep();
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
             start_calib();
@@ -431,6 +537,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         // 长按取消扫盘
         if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
             radar_espnow_stop_sweep();
+            radar_espnow_set_homing(false);
             radar_ftm_pause(false);
     if (s_sweep_timer) {
         lv_timer_delete(s_sweep_timer);
@@ -534,6 +641,12 @@ void app_main(void) {
         if (radar_ftm_init() != ESP_OK) {
             ESP_LOGW(TAG, "FTM 初始化失败,距离将仅基于 RSSI");
         }
+        float ftm_offset;
+        if (radar_espnow_ftm_offset_load(&ftm_offset) == ESP_OK && isfinite(ftm_offset)) {
+            radar_ftm_set_offset_m(ftm_offset);
+        }
+        (void)radar_csi_init();
+        radar_csi_start_window(esp_timer_get_time());
 
         // BLE 哨兵链路(软依赖:失败无超界提示)
         if (radar_ble_init() != ESP_OK) {

@@ -25,6 +25,10 @@ static const char *TAG = "radar_ftm";
 #define FTM_BACKOFF_US (2 * 1000 * 1000)
 #define FTM_PS_TO_M (1.49896e-4f)
 #define FTM_MAX_REPORT 64
+#define FTM_MIN_PEER_RSSI (-72)
+#define FTM_PROBE_MIN_RSSI (-82)
+#define FTM_PROBE_PERIOD_US (5 * 1000 * 1000)
+#define FTM_PROBE_FRAMES 4
 
 static volatile bool s_paused;
 static volatile bool s_session_busy;
@@ -38,8 +42,19 @@ static int s_coex_kick_count;
 static bool s_coex_active;
 static int64_t s_coex_start_us;
 static volatile int s_last_status;
+static bool s_probe_session;
+static int64_t s_last_probe_us;
+static unsigned s_probe_attempts;
+static unsigned s_probe_successes;
+static float s_offset_m;
 
 int radar_ftm_last_status(void) { return s_last_status; }
+unsigned radar_ftm_probe_attempts(void) { return s_probe_attempts; }
+unsigned radar_ftm_probe_successes(void) { return s_probe_successes; }
+void radar_ftm_set_offset_m(float offset_m) {
+    if (isfinite(offset_m) && offset_m >= -2.0f && offset_m <= 15.0f) s_offset_m = offset_m;
+}
+float radar_ftm_offset_m(void) { return s_offset_m; }
 
 #ifdef CONFIG_RADAR_SIM_BUILD
 // ==== passport-sim 专用:合成 FTM 快照注入 ====
@@ -124,11 +139,13 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
             }
             if (valid > 0) {
                 next.distance_m = radar_fusion_ftm_filter(raw, valid, &next.spread_m);
+                next.distance_m = radar_fusion_ftm_apply_offset(next.distance_m, s_offset_m);
                 next.valid_bursts = (uint8_t)valid;
                 next.rssi = rssi_sum / (int)valid;
                 next.valid = next.distance_m > 0.0f && isfinite(next.distance_m);
                 next.calibrated = false; // populated from NVS calibration state in the next phase
                 next.timestamp_us = esp_timer_get_time();
+                if (s_probe_session) s_probe_successes++;
                 if (next.valid) {
                     s_snapshot = next;
                     ESP_LOGI(TAG, "FTM ok: %.2fm spread %.2f bursts %u rssi %d",
@@ -142,6 +159,7 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
             // release it through the IDF API, never with free().
             (void)esp_wifi_ftm_get_report(NULL, 0);
         }
+        s_probe_session = false;
         clear_snapshot(FTM_STATUS_NO_VALID_MSMT);
         s_snapshot.timestamp_us = esp_timer_get_time();
         return;
@@ -152,6 +170,7 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
     // event-owned memory directly.
     (void)esp_wifi_ftm_get_report(NULL, 0);
     clear_snapshot(report->status);
+    s_probe_session = false;
     s_snapshot.timestamp_us = esp_timer_get_time();
     s_backoff_until_us = s_snapshot.timestamp_us + FTM_BACKOFF_US;
     ESP_LOGW(TAG, "FTM session status=%d", (int)report->status);
@@ -209,6 +228,7 @@ void radar_ftm_deinit(void) {
     s_handler_registered = false;
     s_session_busy = false;
     s_session_deadline_us = 0;
+    s_probe_session = false;
     s_initialized = false;
     clear_snapshot(FTM_STATUS_USER_TERM);
 }
@@ -243,6 +263,7 @@ void radar_ftm_tick(void) {
             s_session_busy = false;
             s_backoff_until_us = now + FTM_BACKOFF_US;
             clear_snapshot(FTM_STATUS_USER_TERM);
+            s_probe_session = false;
         }
         return;
     }
@@ -254,8 +275,14 @@ void radar_ftm_tick(void) {
     uint8_t mac[RADAR_FTM_MAC_LEN];
     if (!radar_espnow_peer_ap_mac(mac) || !valid_mac(mac)) return;
 
+    int peer_rssi = radar_espnow_peer_rssi();
+    bool regular = peer_rssi >= FTM_MIN_PEER_RSSI;
+    bool probe = !regular && peer_rssi >= FTM_PROBE_MIN_RSSI &&
+                 now - s_last_probe_us >= FTM_PROBE_PERIOD_US;
+    if (!regular && !probe) return;
+
     wifi_ftm_initiator_cfg_t cfg = {
-        .frm_count = FTM_FRAMES_PER_SESSION,
+        .frm_count = probe ? FTM_PROBE_FRAMES : FTM_FRAMES_PER_SESSION,
         .burst_period = 0,
         .channel = FTM_AP_CHANNEL,
         .use_get_report_api = true,
@@ -264,6 +291,11 @@ void radar_ftm_tick(void) {
 
     esp_err_t err = esp_wifi_ftm_initiate_session(&cfg);
     if (err == ESP_OK) {
+        s_probe_session = probe;
+        if (probe) {
+            s_last_probe_us = now;
+            s_probe_attempts++;
+        }
         s_last_session_us = now;
         s_session_deadline_us = now + FTM_SESSION_TIMEOUT_US;
         s_session_busy = true;
@@ -274,6 +306,7 @@ void radar_ftm_tick(void) {
             ESP_LOGI(TAG, "coex: BLE scan resumed");
         }
     } else {
+        s_probe_session = false;
         s_backoff_until_us = now + FTM_BACKOFF_US;
         s_last_status = -(int)err;  // 负值 = initiate 阶段 esp_err_t
         ESP_LOGW(TAG, "FTM initiate failed: %s", esp_err_to_name(err));

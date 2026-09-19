@@ -12,6 +12,14 @@
 // 严格 C11 下 math.h 不保证 M_PI
 #define FUSION_PI 3.14159265358979f
 
+static float s_two_ray_break_m = RADAR_TWO_RAY_BREAK_M;
+
+void radar_fusion_set_breakpoint_m(float d_break) {
+    if (isfinite(d_break) && d_break >= 10.0f && d_break <= 300.0f) {
+        s_two_ray_break_m = d_break;
+    }
+}
+
 float radar_env_path_loss_n(radar_env_t env) {
     switch (env) {
     case RADAR_ENV_INDOOR:     return 3.0f;
@@ -45,12 +53,12 @@ float radar_fusion_sym_distance(float rssi_sym, float tx_ref_sym, radar_env_t en
 
     // 地面反射的远场只在室外开阔场景启用；室内/遮挡场景没有可靠的
     // 两射线几何，保持原单一指数模型，避免把多径误当成远距折点。
-    if (env != RADAR_ENV_OUTDOOR || near_distance <= RADAR_TWO_RAY_BREAK_M) {
+    if (env != RADAR_ENV_OUTDOOR || near_distance <= s_two_ray_break_m) {
         return near_distance;
     }
     float rssi_break = tx_ref_sym -
-        10.0f * n * log10f(RADAR_TWO_RAY_BREAK_M);
-    float far_distance = RADAR_TWO_RAY_BREAK_M *
+        10.0f * n * log10f(s_two_ray_break_m);
+    float far_distance = s_two_ray_break_m *
         powf(10.0f, (rssi_break - rssi_sym) / (10.0f * RADAR_FAR_N));
     return isfinite(far_distance) && far_distance > 0.0f
                ? far_distance : RADAR_DIST_INVALID;

@@ -23,6 +23,7 @@ static const char *TAG = "radar_espnow";
 #define PEER_SWEEP_HOLD_US (300 * 1000)
 #define RADAR_NVS_NS "radar"
 #define RADAR_NVS_KEY "txref"
+#define RADAR_NVS_FTM_KEY "ftmoff"
 
 static volatile float s_filtered_rssi = -90.0f;
 static volatile int s_raw_rssi = -90;
@@ -56,6 +57,8 @@ static uint32_t s_peer_sweep_elapsed_ms;
 static uint8_t s_peer_hop_index;
 static uint8_t s_peer_channel;
 static bool s_peer_sweep_known;
+static volatile int64_t s_peer_wants_still_us;
+static volatile bool s_homing;
 
 static uint8_t s_sta_mac[RADAR_MAC_LEN];
 static uint8_t s_ap_mac[RADAR_MAC_LEN];
@@ -105,6 +108,10 @@ static void sim_feed_peer(void) {
 #endif
     pkt.angle_deg10 = (int16_t)(315 * 10);
     pkt.dist_dm = (int16_t)(38 * 10);
+#if CONFIG_RADAR_SIM_SCENARIO == 2
+    // 用现有 passport-sim 注入 HOMING，验证对端静止提示优先级。
+    pkt.v3_flags = RADAR_V3_FLAG_HOMING;
+#endif
     pkt.payload_len = sizeof(radar_packet_t);
     const uint8_t ap[RADAR_MAC_LEN] = {0x42, 0x00, 0x00, 0x00, 0x00, 0x01};
     memcpy(pkt.ap_mac, ap, RADAR_MAC_LEN);
@@ -189,6 +196,9 @@ static void parse_v2_packet(const radar_packet_t *pkt, int64_t now) {
     s_peer_sequence_known = true;
     update_role();
 
+    if ((pkt->v3_flags & RADAR_V3_FLAG_HOMING) != 0) {
+        s_peer_wants_still_us = now;
+    }
     if ((pkt->flags & RADAR_PKT_FLAG_SWEEPING) != 0) {
         if (!s_peer_sweep_known || pkt->sweep_id != s_peer_sweep_id) {
             s_peer_sweep_id = pkt->sweep_id;
@@ -345,6 +355,7 @@ static void broadcast_tick(void *arg) {
     s_tx_packet.flags = RADAR_PKT_FLAG_VALID_AP_MAC | RADAR_PKT_FLAG_VALID_BLE_ID;
     if (s_sweeping) s_tx_packet.flags |= RADAR_PKT_FLAG_SWEEPING;
     if (s_ftm_initiator) s_tx_packet.flags |= RADAR_PKT_FLAG_FTM_INITIATOR;
+    s_tx_packet.v3_flags = s_homing ? RADAR_V3_FLAG_HOMING : 0;
     float fr = s_filtered_rssi;
     s_tx_packet.rssi_to_peer = fr < -127.0f ? -127 : (fr > 0.0f ? 0 : (int8_t)fr);
     float ra = s_report_angle;
@@ -480,6 +491,13 @@ bool radar_espnow_peer_sweep(uint32_t *out_sweep_id, uint32_t *out_elapsed_ms) {
     return true;
 }
 
+void radar_espnow_set_homing(bool active) { s_homing = active; }
+
+bool radar_espnow_peer_wants_still(void) {
+    return radar_espnow_peer_alive() &&
+           esp_timer_get_time() - s_peer_wants_still_us < 1000000;
+}
+
 void radar_espnow_start_sweep(void) {
     s_sample_count = 0;
     s_channel_fault = false;
@@ -529,6 +547,27 @@ esp_err_t radar_espnow_calib_load(float *tx_ref_sym) {
     if (err != ESP_OK) return err;
     size_t len = sizeof(*tx_ref_sym);
     err = nvs_get_blob(h, RADAR_NVS_KEY, tx_ref_sym, &len);
+    nvs_close(h);
+    return err;
+}
+
+esp_err_t radar_espnow_ftm_offset_save(float offset_m) {
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(RADAR_NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_blob(h, RADAR_NVS_FTM_KEY, &offset_m, sizeof(offset_m));
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+esp_err_t radar_espnow_ftm_offset_load(float *offset_m) {
+    if (!offset_m) return ESP_ERR_INVALID_ARG;
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(RADAR_NVS_NS, NVS_READONLY, &h);
+    if (err != ESP_OK) return err;
+    size_t len = sizeof(*offset_m);
+    err = nvs_get_blob(h, RADAR_NVS_FTM_KEY, offset_m, &len);
     nvs_close(h);
     return err;
 }

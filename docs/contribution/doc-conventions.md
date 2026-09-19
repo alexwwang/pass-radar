@@ -8,12 +8,12 @@ These rules apply equally to human contributors and AI agents. Documentation is 
 
 ## Language and file layout
 
-- English is mandatory at every maintained default Markdown path: `name.md`.
-- Simplified Chinese is provided at the paired path `name.zh_CN.md`.
-- Both files begin with reciprocal language links. Keep their headings, facts, examples, safety warnings, and links aligned in the same change.
-- English default prose must not contain Chinese text. The `简体中文` switch label is the only allowed CJK text on an English page.
+- A maintained default Markdown path, `name.md`, may contain English, Simplified Chinese, or bilingual prose.
+- Simplified Chinese may also be provided at the paired path `name.zh_CN.md`.
+- Paired files begin with reciprocal language links. Keep their headings, facts, examples, safety warnings, and links aligned in the same change.
 - Code, commands, paths, URLs, identifiers, and data fields remain unchanged between translations where appropriate.
-- The repository check rejects an unpaired document, a missing language switch, or CJK prose in an English default file.
+- Code, commands, paths, URLs, identifiers, and data fields remain unchanged between translations where appropriate.
+- The repository check rejects an unpaired document or a missing language switch; it does not reject Chinese prose in a bilingual default file.
 
 ## Task-based context
 

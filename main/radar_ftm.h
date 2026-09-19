@@ -43,6 +43,12 @@ bool radar_ftm_get_snapshot(radar_ftm_snapshot_t *out);
 // 无有效快照时用于诊断:3=NO_RESPONSE(对端未就位/被挤占)、4=REJECTED 等。
 int radar_ftm_last_status(void);
 
+// 探针诊断计数（不计入常规 FTM 成功率）。
+unsigned radar_ftm_probe_attempts(void);
+unsigned radar_ftm_probe_successes(void);
+void radar_ftm_set_offset_m(float offset_m);
+float radar_ftm_offset_m(void);
+
 // 兼容查询接口。
 bool radar_ftm_valid(void);
 float radar_ftm_distance_m(void);

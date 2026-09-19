@@ -88,8 +88,9 @@ CONFIG_LV_USE_ARC=y
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
 
-# --- Wi-Fi(ESP-NOW 依赖) ---
-# ESP-NOW 需要 Wi-Fi 驱动初始化。
+# --- Wi-Fi(ESP-NOW/CSI 依赖) ---
+# ESP-NOW 需要 Wi-Fi 驱动初始化；CSI 用于子载波幅度选择性统计。
+CONFIG_ESP_WIFI_CSI_ENABLED=y
 # BLE 已启用(Coded PHY 长距哨兵链路),见下。
 
 # --- BLE(NimBLE,测距增强:长距哨兵 + 异构校验) ---
