@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #define RADAR_MAX_SAMPLES 100
+#define RADAR_RAW_RING 256
 #define RADAR_SWEEP_DURATION_MS 4000
 
 esp_err_t radar_espnow_init(void);
@@ -18,6 +19,9 @@ esp_err_t radar_espnow_start_broadcast(const char *device_name);
 void radar_espnow_stop_broadcast(void);
 float radar_espnow_filtered_rssi(void);
 int radar_espnow_raw_rssi(void);
+// Copy recent unfiltered RSSI samples in chronological order. This API is
+// intended for the LVGL polling task; the Wi-Fi callback performs lock-free writes.
+unsigned radar_espnow_raw_history(float *out_dbm, uint32_t *out_ts_ms, unsigned max);
 
 bool radar_espnow_peer_alive(void);
 int radar_espnow_peer_rssi(void);

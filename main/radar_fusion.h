@@ -28,6 +28,37 @@ typedef enum {
     RADAR_ENV_OBSTRUCTED,   // n = 3.5 有明显遮挡
 } radar_env_t;
 
+typedef enum {
+    RADAR_LEVEL_L0_LOS = 0,
+    RADAR_LEVEL_L1_INDOOR,
+    RADAR_LEVEL_L2_NLOS,
+    RADAR_LEVEL_L3_LOST,
+} radar_level_t;
+
+typedef struct {
+    float ftm_success_rate;
+    float ftm_iqr_m;
+    float rssi_p2p_db;
+    float sym_gap_db;
+    float csi_selectivity_db;
+    float mean_rssi_dbm;
+    bool peer_alive;
+} radar_level_features_t;
+
+typedef struct {
+    radar_level_t level;
+    int64_t since_ms;
+    radar_level_t pending_level;
+    unsigned pending_count;
+} radar_level_est_t;
+
+radar_level_t radar_level_classify(const radar_level_features_t *f);
+void radar_level_init(radar_level_est_t *est, int64_t now_ms);
+radar_level_t radar_level_update(radar_level_est_t *est,
+                                 const radar_level_features_t *f,
+                                 int64_t now_ms);
+radar_env_t radar_fusion_env_of_level(radar_level_t level);
+
 // ---- 无效值约定 ----
 #define RADAR_RSSI_ABSENT   (-127.0f)  // 无对端数据
 #define RADAR_DIST_INVALID  (-1.0f)    // 距离不可用
@@ -48,6 +79,9 @@ typedef enum {
 #define RADAR_ENV_OBSTRUCTED_MEAN_DB (-80.0f)
 // 遮挡判据最小样本数(累计,2 个窗口 ≈ 16s)
 #define RADAR_ENV_MIN_TOTAL 160
+#define RADAR_TWO_RAY_BREAK_M 45.0f
+#define RADAR_TWO_RAY_BREAK_RAISED_M 130.0f
+#define RADAR_FAR_N 4.0f
 
 // 环境对应的路径损耗指数
 float radar_env_path_loss_n(radar_env_t env);
@@ -79,6 +113,7 @@ bool radar_fusion_ftm_suspicious(float ftm_m, float rssi_m);
 typedef struct {
     bool valid;
     bool fresh;
+    bool calibrated;
     float distance_m;
     float spread_m;
     unsigned valid_bursts;
@@ -86,11 +121,22 @@ typedef struct {
 
 typedef struct {
     float distance_m;        // 融合距离(无效时 RADAR_DIST_INVALID)
+    float dist_lo_m;
+    float dist_hi_m;
     radar_confidence_t conf; // 置信度
+    radar_level_t level;
     float sym_rssi_dbm;      // 对称 RSSI(供显示)
     float rssi_dist_m;       // 纯 RSSI 推算距离(供调试/降级)
-    bool  ftm_used;          // 本次是否采纳了 FTM
+    float ftm_dist_m;
+    bool ftm_used;           // 本次是否采纳了 FTM
+    bool obstructed;
+    bool upper_bound_only;
 } radar_fusion_result_t;
+
+radar_fusion_result_t radar_fusion_update_v3(
+    const radar_fusion_ftm_observation_t *ftm,
+    float local_rssi_dbm, float peer_rssi_dbm,
+    float tx_ref_sym, radar_level_t level, bool peer_alive);
 
 // FTM 质量门控：有效 burst 不足或 spread 超阈值时禁止 HIGH。
 radar_fusion_result_t radar_fusion_update_ftm(
@@ -136,3 +182,6 @@ radar_env_t radar_env_est_update(radar_env_est_t *est, float rssi_dbm);
 
 // 1m 处测得的对称 RSSI 即 tx_ref_sym(钳位到 -60~-30dBm 防止误标定)。
 float radar_fusion_calib_ref(float sym_rssi_at_1m);
+float radar_fusion_ftm_offset_from_calib(const float *session_medians_m, unsigned count);
+float radar_fusion_ftm_apply_offset(float raw_m, float offset_m);
+float radar_fusion_ftm_low_quantile(const float *hist_m, unsigned count);

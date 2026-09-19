@@ -10,7 +10,9 @@
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "sdkconfig.h"
 
+#include <math.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -24,6 +26,10 @@ static const char *TAG = "radar_espnow";
 
 static volatile float s_filtered_rssi = -90.0f;
 static volatile int s_raw_rssi = -90;
+static volatile int8_t s_raw_ring[RADAR_RAW_RING];
+static volatile uint32_t s_raw_ts[RADAR_RAW_RING];
+static volatile unsigned s_raw_head;
+static volatile unsigned s_raw_total;
 static volatile bool s_sweeping;
 static volatile bool s_channel_fault;
 
@@ -73,6 +79,70 @@ static radar_packet_t s_tx_packet;
 static volatile bool s_broadcasting;
 static const uint8_t BROADCAST_MAC[RADAR_MAC_LEN] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
+#ifdef CONFIG_RADAR_SIM_BUILD
+// ==== passport-sim 专用:合成对端注入(QEMU 无射频) ====
+// TX 路径已裁剪(esp_now_send 在 QEMU 里死循环),改为在广播 tick 里
+// 周期性喂入一个稳定的合成对端包,驱动接收/融合/UI 管线,验证页面布局。
+static void parse_v2_packet(const radar_packet_t *pkt, int64_t now);
+static uint32_t s_sim_seq;
+
+static void sim_feed_peer(void) {
+    if (!s_initialized) return;
+    int64_t now = esp_timer_get_time();
+    s_sim_seq++;
+    radar_packet_t pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    strncpy(pkt.device_name, "sim-peer", RADAR_PACKET_NAME_LEN - 1);
+    pkt.sequence = s_sim_seq;
+    pkt.proto_ver = RADAR_PROTO_VER;
+    pkt.flags = RADAR_PKT_FLAG_VALID_AP_MAC | RADAR_PKT_FLAG_VALID_BLE_ID;
+#if CONFIG_RADAR_SIM_SCENARIO == 1
+    pkt.rssi_to_peer = -82;
+#elif CONFIG_RADAR_SIM_SCENARIO == 2
+    pkt.rssi_to_peer = (s_sim_seq % 2u) ? -70 : -82;
+#else
+    pkt.rssi_to_peer = -58;
+#endif
+    pkt.angle_deg10 = (int16_t)(315 * 10);
+    pkt.dist_dm = (int16_t)(38 * 10);
+    pkt.payload_len = sizeof(radar_packet_t);
+    const uint8_t ap[RADAR_MAC_LEN] = {0x42, 0x00, 0x00, 0x00, 0x00, 0x01};
+    memcpy(pkt.ap_mac, ap, RADAR_MAC_LEN);
+    memset(pkt.ble_identity, 0xAB, RADAR_BLE_ID_LEN);
+
+    // 对端链路信号:让追踪页显示一个"中等距离"的稳定读数。
+#if CONFIG_RADAR_SIM_SCENARIO == 1
+    s_raw_rssi = -82;
+    s_filtered_rssi = -82.0f;
+#elif CONFIG_RADAR_SIM_SCENARIO == 2
+    s_raw_rssi = (s_sim_seq % 2u) ? -70 : -82;
+    s_filtered_rssi = (float)s_raw_rssi;
+#else
+    s_raw_rssi = -55;
+    s_filtered_rssi = -55.0f;
+#endif
+    unsigned raw_head = s_raw_head;
+    s_raw_ring[raw_head] = (int8_t)s_raw_rssi;
+    s_raw_ts[raw_head] = (uint32_t)(now / 1000);
+    s_raw_head = (raw_head + 1u) % RADAR_RAW_RING;
+    s_raw_total++;
+    parse_v2_packet(&pkt, now);
+
+    // 扫盘期:用 4s 周期余弦方向图注入采样(真实 RX 回调在 QEMU 不触发),
+    // 激励"卡尔曼→谐波拟合→信道投票"整条定向管线,验证结果页数值布局。
+    if (s_sweeping && !s_channel_fault && s_sample_count < RADAR_MAX_SAMPLES) {
+        uint32_t elapsed = (uint32_t)((now - s_sweep_start_us) / 1000);
+        // 峰值固定在 3500ms(= 315/360*4000),与合成对端报告的 315° 一致。
+        float phase = (float)(((int32_t)elapsed - 3500) % 4000) / 4000.0f * 2.0f * (float)M_PI;
+        float pattern = -49.0f + 6.0f * cosf(phase);  // 峰-谷 12dB
+        s_samples[s_sample_count].timestamp_ms = elapsed;
+        s_samples[s_sample_count].rssi = pattern;
+        s_samples[s_sample_count].channel = s_cur_channel;
+        s_sample_count++;
+    }
+}
+#endif
+
 static bool valid_mac(const uint8_t mac[RADAR_MAC_LEN]) {
     return radar_protocol_valid_mac(mac);
 }
@@ -82,14 +152,6 @@ static bool seq_is_newer(uint32_t seq, uint32_t previous) {
 }
 
 static bool valid_rssi(int rssi) { return radar_protocol_valid_rssi(rssi); }
-
-static bool valid_angle10(int16_t angle) {
-    return radar_protocol_valid_angle10(angle);
-}
-
-static bool valid_distance_dm(int16_t distance) {
-    return radar_protocol_valid_distance_dm(distance);
-}
 
 static void update_role(void) {
     if (!s_peer_ap_mac_known || !valid_mac(s_ap_mac)) {
@@ -150,6 +212,11 @@ static void espnow_recv_cb(const esp_now_recv_info_t *recv_info,
     s_raw_rssi = raw;
     s_filtered_rssi = radar_kalman_update(&s_kalman, (float)raw);
     int64_t now = esp_timer_get_time();
+    unsigned raw_head = s_raw_head;
+    s_raw_ring[raw_head] = (int8_t)raw;
+    s_raw_ts[raw_head] = (uint32_t)(now / 1000);
+    s_raw_head = (raw_head + 1u) % RADAR_RAW_RING;
+    s_raw_total++;
 
     if (s_sweeping && !s_channel_fault && s_sample_count < RADAR_MAX_SAMPLES) {
         s_samples[s_sample_count].timestamp_ms = (uint32_t)((now - s_sweep_start_us) / 1000);
@@ -269,6 +336,9 @@ static void broadcast_tick(void *arg) {
     (void)arg;
     int64_t now = esp_timer_get_time();
     hop_tick(now);
+#ifdef CONFIG_RADAR_SIM_BUILD
+    sim_feed_peer();
+#endif
     s_tx_packet.sequence++;
     s_tx_packet.proto_ver = RADAR_PROTO_VER;
     s_tx_packet.payload_len = sizeof(radar_packet_t);
@@ -287,7 +357,11 @@ static void broadcast_tick(void *arg) {
     s_tx_packet.sweep_elapsed_ms = s_sweeping ? (uint32_t)((now - s_sweep_start_us) / 1000) : 0;
     s_tx_packet.hop_index = (uint8_t)(s_tx_packet.sweep_elapsed_ms / RADAR_SWEEP_HOP_DWELL_MS);
     s_tx_packet.channel = s_cur_channel;
+#ifndef CONFIG_RADAR_SIM_BUILD
+    // QEMU-wasm 没有射频发送模型:esp_now_send 内部自旋等待发送完成,
+    // 在模拟器里会永久卡死(实测冻结点),故 sim 构建裁剪发送。
     (void)esp_now_send(BROADCAST_MAC, (const uint8_t *)&s_tx_packet, sizeof(s_tx_packet));
+#endif
 }
 
 esp_err_t radar_espnow_start_broadcast(const char *device_name) {
@@ -343,6 +417,22 @@ void radar_espnow_deinit(void) {
 
 float radar_espnow_filtered_rssi(void) { return s_filtered_rssi; }
 int radar_espnow_raw_rssi(void) { return s_raw_rssi; }
+
+unsigned radar_espnow_raw_history(float *out_dbm, uint32_t *out_ts_ms, unsigned max) {
+    if (!out_dbm || !out_ts_ms || max == 0) return 0;
+    unsigned total = s_raw_total;
+    unsigned head = s_raw_head;
+    unsigned count = total < RADAR_RAW_RING ? total : RADAR_RAW_RING;
+    if (count > max) count = max;
+    unsigned start = (head + RADAR_RAW_RING - count) % RADAR_RAW_RING;
+    for (unsigned i = 0; i < count; ++i) {
+        unsigned index = (start + i) % RADAR_RAW_RING;
+        out_dbm[i] = (float)s_raw_ring[index];
+        out_ts_ms[i] = s_raw_ts[index];
+    }
+    return count;
+}
+
 bool radar_espnow_is_sweeping(void) { return s_sweeping; }
 
 bool radar_espnow_peer_alive(void) {

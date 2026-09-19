@@ -25,7 +25,8 @@ bool radar_protocol_valid_mac(const uint8_t mac[RADAR_MAC_LEN]) {
 
 bool radar_protocol_valid_v2(const radar_packet_t *packet, unsigned length) {
     return packet && length >= sizeof(*packet) &&
-           packet->proto_ver == RADAR_PROTO_VER &&
+           packet->proto_ver >= RADAR_PROTO_MIN_VER &&
+           packet->proto_ver <= RADAR_PROTO_VER &&
            packet->payload_len == sizeof(*packet) &&
            radar_protocol_valid_rssi(packet->rssi_to_peer) &&
            radar_protocol_valid_angle10(packet->angle_deg10) &&

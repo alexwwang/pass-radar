@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "sdkconfig.h"
 
 #include <math.h>
 #include <string.h>
@@ -39,6 +40,35 @@ static int64_t s_coex_start_us;
 static volatile int s_last_status;
 
 int radar_ftm_last_status(void) { return s_last_status; }
+
+#ifdef CONFIG_RADAR_SIM_BUILD
+// ==== passport-sim 专用:合成 FTM 快照注入 ====
+// QEMU 没有 FTM 硬件,真实会话永远失败;注入一个稳定快照,
+// 让结果页/诊断页出现 "FTM ok"/"2way"/[HI] 文案,用于布局验证。
+// 注:sim 快照绕过 timestamp_us 过期检查由 get_snapshot 统一处理
+// (注入时打上当前时间戳,不会过期)。
+static void sim_ftm_inject_snapshot(void) {
+#if CONFIG_RADAR_SIM_SCENARIO != 0
+    memset(&s_snapshot, 0, sizeof(s_snapshot));
+    s_snapshot.status = FTM_STATUS_NO_RESPONSE;
+    s_snapshot.distance_m = RADAR_DIST_INVALID;
+    s_last_status = FTM_STATUS_NO_RESPONSE;
+    return;
+#else
+    memset(&s_snapshot, 0, sizeof(s_snapshot));
+    s_snapshot.valid = true;
+    s_snapshot.calibrated = true;
+    s_snapshot.status = FTM_STATUS_SUCCESS;
+    s_snapshot.distance_m = 3.8f;
+    s_snapshot.spread_m = 0.4f;
+    s_snapshot.valid_bursts = 16;
+    s_snapshot.rssi = -52;
+    s_snapshot.timestamp_us = esp_timer_get_time();
+    s_snapshot.channel = FTM_AP_CHANNEL;
+    s_last_status = FTM_STATUS_SUCCESS;
+#endif
+}
+#endif
 
 // 与 BLE 扫描共存:Coded PHY 扫描窗口会挤压 FTM 会话帧。连续 initiate
 // 失败时暂停扫描几秒让 FTM 建立,超时后恢复扫描(若仍失败会再次触发)。
@@ -97,6 +127,7 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
                 next.valid_bursts = (uint8_t)valid;
                 next.rssi = rssi_sum / (int)valid;
                 next.valid = next.distance_m > 0.0f && isfinite(next.distance_m);
+                next.calibrated = false; // populated from NVS calibration state in the next phase
                 next.timestamp_us = esp_timer_get_time();
                 if (next.valid) {
                     s_snapshot = next;
@@ -127,6 +158,12 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
 }
 
 esp_err_t radar_ftm_init(void) {
+#ifdef CONFIG_RADAR_SIM_BUILD
+    // sim 下不配置 SoftAP/FTM responder(QEMU 无射频),
+    // 仅标记就绪让 tick 注入合成快照。
+    s_initialized = true;
+    return ESP_OK;
+#endif
     if (s_initialized) return ESP_OK;
     clear_snapshot(FTM_STATUS_FAIL);
     s_last_status = 0;
@@ -186,6 +223,10 @@ void radar_ftm_pause(bool paused) {
 }
 
 void radar_ftm_tick(void) {
+#ifdef CONFIG_RADAR_SIM_BUILD
+    sim_ftm_inject_snapshot();
+    return;
+#endif
     if (!s_initialized || s_paused || !radar_espnow_is_ftm_initiator()) return;
     int64_t now = esp_timer_get_time();
 

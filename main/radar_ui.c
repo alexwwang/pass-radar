@@ -241,7 +241,8 @@ void radar_ui_init(void) {
 }
 
 void radar_ui_update_tracking(const radar_fusion_result_t *fr, int raw_rssi,
-                              bool ble_alive, float vote_spread_deg) {
+                              bool ble_alive, float vote_spread_deg,
+                              const char *class_label, const char *hint_label) {
     if (s_page != RADAR_PAGE_MAIN || !s_scr || !fr) return;
 
     // 主页面方向可信度门控:最近投票分歧 > 20° 时 HIGH 封顶为 MED
@@ -263,10 +264,30 @@ void radar_ui_update_tracking(const radar_fusion_result_t *fr, int raw_rssi,
                                         : "OUT OF RANGE");
         } else {
             int dm = (int)(fr->distance_m * 10.0f + 0.5f);
-            lv_label_set_text_fmt(s_dist_label, "DIST: %s%d.%d %s m",
-                                  conf == RADAR_CONF_HIGH ? "" : "~",
-                                  dm / 10, dm % 10, conf_dist_err(conf));
+            const char *label = class_label ? class_label : "";
+            if (fr->upper_bound_only && fr->dist_hi_m > 0.0f) {
+                lv_label_set_text_fmt(s_dist_label, "DIST <= %.0f m [%s] L%d %s",
+                                      (double)fr->dist_hi_m, conf_tag(conf),
+                                      (int)fr->level, label);
+            } else if (fr->dist_lo_m > 0.0f && fr->dist_hi_m > 0.0f) {
+                lv_label_set_text_fmt(s_dist_label, "DIST %s%d.%d (%.1f~%.1f) [%s] L%d %s",
+                                      conf == RADAR_CONF_HIGH ? "" : "~",
+                                      dm / 10, dm % 10,
+                                      (double)fr->dist_lo_m, (double)fr->dist_hi_m,
+                                      conf_tag(conf), (int)fr->level, label);
+            } else {
+                lv_label_set_text_fmt(s_dist_label, "DIST: %s%d.%d %s m [%s] L%d %s",
+                                      conf == RADAR_CONF_HIGH ? "" : "~",
+                                      dm / 10, dm % 10, conf_dist_err(conf),
+                                      conf_tag(conf), (int)fr->level, label);
+            }
         }
+    }
+
+    if (s_hint_label && hint_label && hint_label[0] != '\0') {
+        lv_label_set_text(s_hint_label, hint_label);
+    } else if (s_hint_label) {
+        lv_label_set_text(s_hint_label, "");
     }
 
     // 信号行:原始 RSSI + 观测源/置信度标记

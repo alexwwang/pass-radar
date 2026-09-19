@@ -1,0 +1,12 @@
+# sdkconfig.sim —— passport-sim(QEMU-wasm)页面布局验证专用配置。
+# 用法: idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.sim" build
+# 或直接跑 tools/sim/build-sim-firmware.sh。
+# 只叠加与 defaults 的差异;量产固件不受影响。
+
+# 模拟器构建开关:裁剪射频发送 + 注入合成对端(见 main/Kconfig.projbuild)。
+CONFIG_RADAR_SIM_BUILD=y
+CONFIG_RADAR_SIM_SCENARIO=0
+
+# QEMU 没有 BLE 控制器模型,nimble_port_init() 无法工作;
+# CMakeLists 会改用 radar_ble_sim.c 空桩,这里关闭 BT 省内存/编译时间。
+CONFIG_BT_ENABLED=n

@@ -18,6 +18,10 @@ resolve_python() {
     else
         [[ -n "${VIRTUAL_ENV:-}" ]] && candidates+=("${VIRTUAL_ENV}/bin/python")
         [[ -n "${IDF_PYTHON_ENV_PATH:-}" ]] && candidates+=("${IDF_PYTHON_ENV_PATH}/bin/python")
+        # ESP-IDF's installer places the uv-managed environment here on the
+        # supported macOS/Linux setup; make the unified gate work after a
+        # normal `source export.sh` without requiring another manual export.
+        candidates+=("${HOME}/.espressif/python_env/idf5.5_py3.10_env/bin/python")
         candidate="$(command -v python3 || true)"
         [[ -n "${candidate}" ]] && candidates+=("${candidate}")
         candidate="$(command -v python || true)"
@@ -77,6 +81,10 @@ run_static_checks() {
         tests/test_radar_fusion.c main/radar_fusion.c main/radar_sweep.c \
         -o "${test_dir}/test_radar_fusion" -lm
     "${test_dir}/test_radar_fusion"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_radar_obstruct.c main/radar_obstruct.c main/radar_fusion.c \
+        main/radar_sweep.c -o "${test_dir}/test_radar_obstruct" -lm
+    "${test_dir}/test_radar_obstruct"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_radar_protocol.c main/radar_protocol.c main/radar_sweep.c \
         main/radar_fusion.c -o "${test_dir}/test_radar_protocol" -lm

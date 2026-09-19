@@ -40,8 +40,20 @@ float radar_fusion_sym_distance(float rssi_sym, float tx_ref_sym, radar_env_t en
         return RADAR_DIST_INVALID;
     }
     float n = radar_env_path_loss_n(env);
-    float distance = powf(10.0f, (tx_ref_sym - rssi_sym) / (10.0f * n));
-    return isfinite(distance) && distance > 0.0f ? distance : RADAR_DIST_INVALID;
+    float near_distance = powf(10.0f, (tx_ref_sym - rssi_sym) / (10.0f * n));
+    if (!isfinite(near_distance) || near_distance <= 0.0f) return RADAR_DIST_INVALID;
+
+    // 地面反射的远场只在室外开阔场景启用；室内/遮挡场景没有可靠的
+    // 两射线几何，保持原单一指数模型，避免把多径误当成远距折点。
+    if (env != RADAR_ENV_OUTDOOR || near_distance <= RADAR_TWO_RAY_BREAK_M) {
+        return near_distance;
+    }
+    float rssi_break = tx_ref_sym -
+        10.0f * n * log10f(RADAR_TWO_RAY_BREAK_M);
+    float far_distance = RADAR_TWO_RAY_BREAK_M *
+        powf(10.0f, (rssi_break - rssi_sym) / (10.0f * RADAR_FAR_N));
+    return isfinite(far_distance) && far_distance > 0.0f
+               ? far_distance : RADAR_DIST_INVALID;
 }
 
 // ---- FTM 滤波 ----
@@ -80,6 +92,79 @@ float radar_fusion_ftm_filter(const float *raw_m, unsigned count, float *out_spr
 bool radar_fusion_ftm_suspicious(float ftm_m, float rssi_m) {
     return ftm_m > rssi_m * RADAR_FTM_SUSPICIOUS_RATIO &&
            ftm_m > rssi_m + RADAR_FTM_SUSPICIOUS_MARGIN_M;
+}
+
+// ---- 环境等级 ----
+
+radar_level_t radar_level_classify(const radar_level_features_t *f) {
+    if (!f || !f->peer_alive) return RADAR_LEVEL_L3_LOST;
+    bool low_ftm = isfinite(f->ftm_success_rate) && f->ftm_success_rate < 0.3f;
+    bool bad_iqr = isfinite(f->ftm_iqr_m) && f->ftm_iqr_m > 2.0f;
+    bool bad_p2p = isfinite(f->rssi_p2p_db) && f->rssi_p2p_db > 10.0f;
+    bool bad_sel = isfinite(f->csi_selectivity_db) && f->csi_selectivity_db > 8.0f;
+    if ((low_ftm && f->mean_rssi_dbm < -80.0f) || bad_iqr || bad_p2p || bad_sel) {
+        return RADAR_LEVEL_L2_NLOS;
+    }
+    bool good_ftm = isfinite(f->ftm_success_rate) && f->ftm_success_rate >= 0.7f;
+    bool good_iqr = !isfinite(f->ftm_iqr_m) || f->ftm_iqr_m < 1.0f;
+    bool good_sel = !isfinite(f->csi_selectivity_db) || f->csi_selectivity_db < 4.0f;
+    if (good_ftm && good_iqr && f->rssi_p2p_db < 6.0f &&
+        f->sym_gap_db < 6.0f && good_sel) return RADAR_LEVEL_L0_LOS;
+    return RADAR_LEVEL_L1_INDOOR;
+}
+
+void radar_level_init(radar_level_est_t *est, int64_t now_ms) {
+    if (!est) return;
+    est->level = RADAR_LEVEL_L0_LOS;
+    est->since_ms = now_ms;
+    est->pending_level = RADAR_LEVEL_L0_LOS;
+    est->pending_count = 0;
+}
+
+radar_level_t radar_level_update(radar_level_est_t *est,
+                                 const radar_level_features_t *f,
+                                 int64_t now_ms) {
+    if (!est || !f) return est ? est->level : RADAR_LEVEL_L3_LOST;
+    radar_level_t observed = radar_level_classify(f);
+    if (observed == RADAR_LEVEL_L3_LOST) {
+        est->level = observed;
+        est->since_ms = now_ms;
+        est->pending_count = 0;
+        return est->level;
+    }
+    if (est->level == RADAR_LEVEL_L3_LOST) {
+        if (now_ms - est->since_ms < 10000) return est->level;
+        est->level = RADAR_LEVEL_L1_INDOOR;
+        est->since_ms = now_ms;
+        est->pending_count = 0;
+        return est->level;
+    }
+    if (observed == est->level) {
+        est->pending_count = 0;
+        return est->level;
+    }
+    if (est->pending_level != observed) {
+        est->pending_level = observed;
+        est->pending_count = 1;
+    } else {
+        est->pending_count++;
+    }
+    if (est->pending_count >= 30 && now_ms - est->since_ms >= 10000) {
+        est->level = observed;
+        est->since_ms = now_ms;
+        est->pending_count = 0;
+    }
+    return est->level;
+}
+
+radar_env_t radar_fusion_env_of_level(radar_level_t level) {
+    switch (level) {
+    case RADAR_LEVEL_L1_INDOOR: return RADAR_ENV_INDOOR;
+    case RADAR_LEVEL_L2_NLOS:   return RADAR_ENV_OBSTRUCTED;
+    case RADAR_LEVEL_L3_LOST:   return RADAR_ENV_OBSTRUCTED;
+    case RADAR_LEVEL_L0_LOS:
+    default:                    return RADAR_ENV_OUTDOOR;
+    }
 }
 
 // ---- 融合主入口 ----
@@ -161,6 +246,75 @@ radar_fusion_result_t radar_fusion_update(bool ftm_valid, float ftm_m,
                                    tx_ref_sym, env);
 }
 
+radar_fusion_result_t radar_fusion_update_v3(
+    const radar_fusion_ftm_observation_t *ftm,
+    float local_rssi_dbm, float peer_rssi_dbm,
+    float tx_ref_sym, radar_level_t level, bool peer_alive) {
+    radar_fusion_result_t r = {
+        .distance_m = RADAR_DIST_INVALID,
+        .dist_lo_m = RADAR_DIST_INVALID,
+        .dist_hi_m = RADAR_DIST_INVALID,
+        .conf = RADAR_CONF_OOR,
+        .level = level,
+        .sym_rssi_dbm = RADAR_RSSI_ABSENT,
+        .rssi_dist_m = RADAR_DIST_INVALID,
+        .ftm_dist_m = RADAR_DIST_INVALID,
+    };
+    if (!peer_alive) return r;
+
+    bool local_ok = isfinite(local_rssi_dbm) && local_rssi_dbm > RSSI_PRESENT_TH;
+    bool peer_ok = isfinite(peer_rssi_dbm) && peer_rssi_dbm > RSSI_PRESENT_TH;
+    if (!local_ok && !peer_ok) return r;
+    float sym = peer_ok && local_ok
+                    ? radar_fusion_sym_rssi(local_rssi_dbm, peer_rssi_dbm)
+                    : (local_ok ? local_rssi_dbm : peer_rssi_dbm);
+    r.sym_rssi_dbm = sym;
+    radar_env_t env = radar_fusion_env_of_level(level);
+    r.rssi_dist_m = radar_fusion_sym_distance(sym, tx_ref_sym, env);
+    if (r.rssi_dist_m <= 0.0f) return r;
+
+    float e = level == RADAR_LEVEL_L0_LOS ? 0.15f
+            : level == RADAR_LEVEL_L1_INDOOR ? 0.35f : 0.60f;
+    bool weak = sym < RADAR_RSSI_MIN_VALID;
+    if (ftm && ftm->valid && ftm->calibrated && ftm->fresh &&
+        isfinite(ftm->distance_m) && ftm->distance_m > 0.0f) {
+        r.ftm_dist_m = ftm->distance_m;
+        float tolerance = fmaxf(2.0f, 0.5f * r.rssi_dist_m);
+        if (fabsf(ftm->distance_m - r.rssi_dist_m) <= tolerance) {
+            r.distance_m = ftm->distance_m;
+            float band = fmaxf(0.5f, isfinite(ftm->spread_m) ? ftm->spread_m : 0.5f);
+            r.dist_lo_m = fmaxf(0.1f, r.distance_m - band);
+            r.dist_hi_m = r.distance_m + band;
+            r.ftm_used = true;
+            r.conf = (level == RADAR_LEVEL_L0_LOS && peer_ok)
+                         ? RADAR_CONF_HIGH : RADAR_CONF_MED;
+        } else if (ftm->distance_m > r.rssi_dist_m * 1.8f + 2.0f) {
+            r.distance_m = fminf(ftm->distance_m, r.rssi_dist_m * 1.3f);
+            r.dist_lo_m = r.rssi_dist_m / (1.0f + e);
+            r.dist_hi_m = ftm->distance_m;
+            r.conf = RADAR_CONF_MED;
+        } else {
+            r.distance_m = ftm->distance_m;
+            r.dist_lo_m = fmaxf(0.1f, r.distance_m - 1.0f);
+            r.dist_hi_m = r.distance_m + 1.0f;
+            r.obstructed = true;
+            r.conf = RADAR_CONF_MED;
+        }
+    } else {
+        r.distance_m = r.rssi_dist_m;
+        r.dist_lo_m = r.distance_m / (1.0f + e);
+        r.dist_hi_m = r.distance_m * (1.0f + e);
+        r.conf = peer_ok ? (level == RADAR_LEVEL_L2_NLOS ? RADAR_CONF_LOW : RADAR_CONF_MED)
+                         : RADAR_CONF_LOW;
+        r.upper_bound_only = level == RADAR_LEVEL_L2_NLOS;
+    }
+    if (weak) {
+        r.conf = RADAR_CONF_LOW;
+        r.upper_bound_only = true;
+    }
+    return r;
+}
+
 // ---- 角度工具 ----
 
 float radar_fusion_angle_diff(float a_deg, float b_deg) {
@@ -233,6 +387,46 @@ radar_env_t radar_env_est_update(radar_env_est_t *est, float rssi_dbm) {
 }
 
 // ---- 1m 标定 ----
+
+float radar_fusion_ftm_offset_from_calib(const float *session_medians_m, unsigned count) {
+    if (!session_medians_m || count < 3) return NAN;
+    float values[32];
+    unsigned n = count > 32 ? 32 : count;
+    unsigned valid = 0;
+    for (unsigned i = 0; i < n; ++i) {
+        if (isfinite(session_medians_m[i]) && session_medians_m[i] > 0.0f) {
+            values[valid++] = session_medians_m[i];
+        }
+    }
+    if (valid < 3) return NAN;
+    qsort(values, valid, sizeof(float), cmp_float);
+    float median = (valid & 1u) ? values[valid / 2]
+                                : 0.5f * (values[valid / 2 - 1] + values[valid / 2]);
+    float offset = median - 1.0f;
+    if (offset < -2.0f) offset = -2.0f;
+    if (offset > 15.0f) offset = 15.0f;
+    return offset;
+}
+
+float radar_fusion_ftm_apply_offset(float raw_m, float offset_m) {
+    if (!isfinite(raw_m) || !isfinite(offset_m)) return NAN;
+    float adjusted = raw_m - offset_m;
+    return adjusted < 0.1f ? 0.1f : adjusted;
+}
+
+float radar_fusion_ftm_low_quantile(const float *hist_m, unsigned count) {
+    if (!hist_m || count == 0) return RADAR_DIST_INVALID;
+    float values[32];
+    unsigned n = count > 32 ? 32 : count;
+    unsigned valid = 0;
+    for (unsigned i = 0; i < n; ++i) {
+        if (isfinite(hist_m[i]) && hist_m[i] > 0.0f) values[valid++] = hist_m[i];
+    }
+    if (valid == 0) return RADAR_DIST_INVALID;
+    qsort(values, valid, sizeof(float), cmp_float);
+    unsigned index = (valid - 1u) / 4u;
+    return values[index];
+}
 
 float radar_fusion_calib_ref(float sym_rssi_at_1m) {
     if (sym_rssi_at_1m > -30.0f) return -30.0f;

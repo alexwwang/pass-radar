@@ -12,6 +12,7 @@
 
 typedef struct {
     bool valid;
+    bool calibrated;
     wifi_ftm_status_t status;
     float distance_m;
     float spread_m;

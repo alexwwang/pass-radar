@@ -29,6 +29,7 @@
 #include "radar_espnow.h"
 #include "radar_ftm.h"
 #include "radar_fusion.h"
+#include "radar_obstruct.h"
 #include "radar_sweep.h"
 #include "radar_ui.h"
 #include <math.h>
@@ -49,6 +50,10 @@ static lv_timer_t *s_calib_timer;   // 3s 标定一次性定时器
 static int64_t     s_sweep_start_ms;
 
 static radar_env_est_t s_env_est;   // 环境自适应估计器
+static radar_level_est_t s_level_est;
+static radar_obstruct_hold_t s_obstruct_hold;
+static radar_obstruct_class_t s_obstruct_class = OBS_NONE_LOS;
+static radar_hint_t s_obstruct_hint = HINT_NONE;
 static float s_tx_ref_sym = RADAR_TX_POWER_REF;  // 1m 对称参考(可标定)
 
 // 标定采样窗口(LVGL 任务内使用)。
@@ -71,29 +76,75 @@ static void start_sweep(void);
 
 static radar_fusion_result_t run_fusion(void) {
     float local = radar_espnow_filtered_rssi();
-    bool  alive = radar_espnow_peer_alive();
-    float peer  = alive ? (float)radar_espnow_peer_rssi() : RADAR_RSSI_ABSENT;
+    bool alive = radar_espnow_peer_alive();
+    float peer = alive ? (float)radar_espnow_peer_rssi() : RADAR_RSSI_ABSENT;
     uint8_t peer_identity[RADAR_BLE_ID_LEN];
     if (radar_espnow_peer_ble_identity(peer_identity)) {
         radar_ble_set_expected_identity(peer_identity);
     } else {
-        // 链路丢失即解除 BLE 哨兵绑定,避免锁死旧目标。
         radar_ble_set_expected_identity(NULL);
     }
 
-    // 环境估计(每次轮询喂样本)
-    radar_env_t env = radar_env_est_update(&s_env_est, local);
+    radar_env_est_update(&s_env_est, local);
+    static float raw_history[RADAR_RAW_RING];
+    static uint32_t raw_timestamps[RADAR_RAW_RING];
+    unsigned raw_count = radar_espnow_raw_history(raw_history, raw_timestamps,
+                                                   RADAR_RAW_RING);
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    float p2p_1s = NAN, p2p_10s = NAN;
+    radar_obstruct_p2p(raw_history, raw_timestamps, raw_count, now_ms,
+                       &p2p_1s, &p2p_10s);
 
     radar_ftm_snapshot_t ftm_snapshot;
     radar_fusion_ftm_observation_t ftm = {0};
     if (radar_ftm_get_snapshot(&ftm_snapshot)) {
         ftm.valid = true;
         ftm.fresh = true;
+        ftm.calibrated = ftm_snapshot.calibrated;
         ftm.distance_m = ftm_snapshot.distance_m;
         ftm.spread_m = ftm_snapshot.spread_m;
         ftm.valid_bursts = ftm_snapshot.valid_bursts;
     }
-    return radar_fusion_update_ftm(&ftm, local, peer, s_tx_ref_sym, env);
+    float ftm_success_rate = ftm.valid ? 1.0f : NAN;
+#if CONFIG_RADAR_SIM_BUILD
+#if CONFIG_RADAR_SIM_SCENARIO != 0
+    ftm_success_rate = 0.1f;
+#endif
+#endif
+    radar_level_features_t level_features = {
+        .ftm_success_rate = ftm_success_rate,
+        .ftm_iqr_m = ftm.valid ? ftm.spread_m : NAN,
+        .rssi_p2p_db = isfinite(p2p_1s) ? p2p_1s : 0.0f,
+        .sym_gap_db = radar_fusion_sym_valid(local, peer) ? fabsf(local - peer) : NAN,
+        .csi_selectivity_db = NAN,
+        .mean_rssi_dbm = s_env_est.mean_rssi,
+        .peer_alive = alive,
+    };
+    radar_level_t level = radar_level_update(&s_level_est, &level_features,
+                                             esp_timer_get_time() / 1000);
+    radar_fusion_result_t result = radar_fusion_update_v3(
+        &ftm, local, peer, s_tx_ref_sym, level, alive);
+
+    radar_obstruct_features_t features = {
+        .excess_loss_db = result.ftm_dist_m > 0.0f
+            ? radar_obstruct_excess_loss_db(result.rssi_dist_m, result.ftm_dist_m,
+                                            radar_env_path_loss_n(radar_fusion_env_of_level(level)))
+            : NAN,
+        .kfactor_db = radar_obstruct_kfactor_db(raw_history, raw_count),
+        .p2p_1s_db = p2p_1s,
+        .p2p_10s_db = p2p_10s,
+        .csi_sel_db = NAN,
+        .mirror_err_deg = NAN,
+        .mean_rssi_dbm = radar_obstruct_mean_recent(raw_history, raw_timestamps,
+                                                     raw_count, now_ms, 8000),
+        .level = level,
+    };
+    radar_obstruct_class_t observed = radar_obstruct_classify(&features);
+    s_obstruct_class = radar_obstruct_hold_update(&s_obstruct_hold, observed, 20);
+    s_obstruct_hint = radar_obstruct_apply(
+        s_obstruct_class, &features, raw_history, raw_count, s_tx_ref_sym,
+        radar_fusion_env_of_level(level), &result, &s_last_vote_spread);
+    return result;
 }
 
 // ---------- 定时器回调(LVGL 任务上下文,可直接操作 lv_obj) ----------
@@ -134,7 +185,9 @@ static void poll_tick(lv_timer_t *t) {
         radar_fusion_result_t shown = fr;
         shown.distance_m = s_track_dist_m;
         radar_ui_update_tracking(&shown, raw, radar_ble_peer_alive(),
-                                 s_last_vote_spread);
+                                 s_last_vote_spread,
+                                 radar_obstruct_class_label(s_obstruct_class),
+                                 radar_hint_label(s_obstruct_hint));
     } else if (page == RADAR_PAGE_DEBUG) {
         // 诊断页:同速率复用融合管线(环境估计每 100ms 仍只喂一次),
         // 并排显示 v1 纯 RSSI 距离作 A/B 回归基线(调研 5.9)。
@@ -446,6 +499,8 @@ void app_main(void) {
 
     // 环境估计器与标定值
     radar_env_est_init(&s_env_est);
+    radar_level_init(&s_level_est, esp_timer_get_time() / 1000);
+    radar_obstruct_hold_init(&s_obstruct_hold);
 
     // 先构建 UI:即使射频链路不可用,用户也能看到雷达界面(显示无信号)。
     if (bsp_lvgl_lock(1000)) {

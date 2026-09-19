@@ -50,7 +50,8 @@ void radar_ui_init(void);
 // vote_spread_deg:最近一次扫盘的信道投票/双端融合分歧(无数据传 0)。
 // vote_spread_deg > 20 时 HIGH 封顶为 MED(方向不可信档)。
 void radar_ui_update_tracking(const radar_fusion_result_t *fr, int raw_rssi,
-                              bool ble_alive, float vote_spread_deg);
+                              bool ble_alive, float vote_spread_deg,
+                              const char *class_label, const char *hint_label);
 
 // 切换到扫盘页面(4s 倒计时动画)。
 void radar_ui_show_sweeping(void);
