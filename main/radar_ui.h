@@ -9,6 +9,7 @@
 #include "bsp_button.h"
 #include "radar_fusion.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 // 页面状态
 typedef enum {
@@ -17,6 +18,7 @@ typedef enum {
     RADAR_PAGE_RESULT,     // 结果:相对方位 + 顺时针角度(+/-分歧)
     RADAR_PAGE_CALIB,      // 1m 标定中
     RADAR_PAGE_DEBUG,      // 诊断/回归:v1/v2 管线 A/B 对比
+    RADAR_PAGE_CAPTURE,    // 静态距离自动采集
 } radar_page_t;
 
 // 诊断页数据快照(由 main.c 每 100ms 填充)。
@@ -48,11 +50,16 @@ typedef struct {
     float env_mean_rssi;    // 环境估计长期均值
     float tx_ref_sym;       // 当前 1m 对称参考(标定值)
     float vote_spread_deg;  // 最近一次扫盘投票/融合分歧
+    float capture_target_m; // 当前 Debug Capture 目标标签
 } radar_debug_info_t;
 
 // 切换到诊断页并刷新(由 main.c 调用;入口=追踪页 UP 长按)。
 void radar_ui_show_debug(void);
 void radar_ui_update_debug(const radar_debug_info_t *info);
+void radar_ui_show_capture(float target_distance_m);
+void radar_ui_update_capture(const char *phase, float target_distance_m,
+                            uint32_t elapsed_ms, unsigned record_count,
+                            bool valid, bool saved);
 
 // 初始化雷达 UI(创建主页面并载入)。
 void radar_ui_init(void);

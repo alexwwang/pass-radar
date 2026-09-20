@@ -42,6 +42,8 @@ void radar_diag_persist_stage(radar_diag_stage_t stage, uint16_t flags,
 
 // Returns the record from the previous boot, if it was valid.
 bool radar_diag_persist_previous(radar_diag_record_t *out);
+uint32_t radar_diag_current_sequence(void);
+uint32_t radar_diag_current_reset_reason(void);
 
 bool radar_diag_record_valid(const radar_diag_record_t *record);
 uint32_t radar_diag_record_crc(const radar_diag_record_t *record);

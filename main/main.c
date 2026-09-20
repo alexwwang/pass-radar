@@ -34,6 +34,7 @@
 #include "radar_obstruct.h"
 #include "radar_csi.h"
 #include "radar_diag_persist.h"
+#include "radar_capture.h"
 #include "radar_sweep.h"
 #include "radar_ui.h"
 #include <math.h>
@@ -85,12 +86,24 @@ static int64_t s_walk_cap_until_ms;
 static int64_t s_walk_armed_ms;
 static bool s_diag_peer_recorded;
 static volatile bool s_radio_ready;
+static unsigned s_capture_target_index;
 #define WALK_ARMED 1u
 #define WALK_DONE 2u
 #define WALK_CAP_M 25.0f
 
 // ---------- 前置声明 ----------
 static void start_sweep(void);
+
+static const char *capture_phase_name(radar_capture_phase_t phase) {
+    switch (phase) {
+    case RADAR_CAPTURE_COUNTDOWN: return "COUNTDOWN";
+    case RADAR_CAPTURE_SETTLE: return "SETTLE";
+    case RADAR_CAPTURE_RUNNING: return "CAPTURE";
+    case RADAR_CAPTURE_SUMMARY: return "SUMMARY";
+    case RADAR_CAPTURE_INVALID: return "INVALID";
+    default: return "READY";
+    }
+}
 
 // ---------- 融合(供追踪页与扫盘结果共用) ----------
 
@@ -238,6 +251,32 @@ static void poll_tick(lv_timer_t *t) {
                                  s_last_vote_spread,
                                  radar_obstruct_class_label(s_obstruct_class),
                                  radar_hint_label(s_obstruct_hint));
+    } else if (page == RADAR_PAGE_CAPTURE) {
+        radar_ftm_snapshot_t snap = {0};
+        bool ftm_valid = radar_ftm_get_snapshot(&snap);
+        radar_capture_observation_t observation = {
+            .local_rssi = (int8_t)radar_espnow_raw_rssi(),
+            .peer_rssi = (int8_t)radar_espnow_peer_rssi(),
+            .peer_alive = radar_espnow_peer_alive(),
+            .ftm_valid = ftm_valid,
+            .ftm_status = (int16_t)radar_ftm_last_status(),
+            .ftm_distance_m = ftm_valid ? snap.distance_m : RADAR_DIST_INVALID,
+            .ftm_spread_m = ftm_valid ? snap.spread_m : 0.0f,
+            .ftm_session_count = (uint16_t)radar_ftm_session_count(),
+            .ble_ready = radar_ble_ready(),
+            .ble_peer_alive = radar_ble_peer_alive(),
+            .ble_rssi = (int8_t)radar_ble_peer_last_rssi(),
+            .ble_age_ms = radar_ble_peer_age_ms(),
+            .csi_frames = radar_csi_received_frames(),
+            .environment_level = (uint8_t)s_env_est.env,
+        };
+        radar_capture_tick(&observation);
+        radar_ui_update_capture(capture_phase_name(radar_capture_phase()),
+                                radar_capture_target_m(),
+                                radar_capture_elapsed_ms(),
+                                radar_capture_record_count(),
+                                radar_capture_data_valid(),
+                                radar_capture_save_succeeded());
     } else if (page == RADAR_PAGE_DEBUG) {
         // 诊断页:同速率复用融合管线(环境估计每 100ms 仍只喂一次),
         // 并排显示 v1 纯 RSSI 距离作 A/B 回归基线(调研 5.9)。
@@ -269,6 +308,7 @@ static void poll_tick(lv_timer_t *t) {
             .env_mean_rssi = s_env_est.mean_rssi,
             .tx_ref_sym = s_tx_ref_sym,
             .vote_spread_deg = s_last_vote_spread,
+            .capture_target_m = radar_capture_targets_m[s_capture_target_index],
         };
         radar_ftm_snapshot_t snap;
         if (radar_ftm_get_snapshot(&snap)) {
@@ -601,10 +641,35 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         break;
 
     case RADAR_PAGE_DEBUG:
-        // OK 返回追踪页;UP 双击再次切换(页面向)。
-        if (btn == BSP_BTN_OK ||
-            (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE)) {
+        // Debug 页:UP/DOWN 选择目标距离,OK 启动固定窗口 Capture。
+        if (btn == BSP_BTN_UP && ev == BSP_BTN_CLICK) {
+            s_capture_target_index =
+                (s_capture_target_index + 1u) % RADAR_CAPTURE_TARGET_COUNT;
+        } else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_CLICK) {
+            s_capture_target_index =
+                (s_capture_target_index + RADAR_CAPTURE_TARGET_COUNT - 1u) %
+                RADAR_CAPTURE_TARGET_COUNT;
+        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+            if (radar_capture_start(radar_capture_targets_m[s_capture_target_index]) == ESP_OK) {
+                radar_ui_show_capture(radar_capture_targets_m[s_capture_target_index]);
+            }
+        } else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_LONG) {
+            // Re-export the last valid Flash capture; never erase it here.
+            (void)radar_capture_export_saved();
+        } else if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
             radar_ui_show_main();
+        }
+        break;
+
+    case RADAR_PAGE_CAPTURE:
+        if (btn == BSP_BTN_OK && (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG)) {
+            if (radar_capture_phase() == RADAR_CAPTURE_SUMMARY ||
+                radar_capture_phase() == RADAR_CAPTURE_INVALID) {
+                radar_ui_show_debug();
+            } else {
+                radar_capture_abort();
+                radar_ui_show_debug();
+            }
         }
         break;
     }
@@ -707,6 +772,7 @@ void app_main(void) {
     radar_env_est_init(&s_env_est);
     radar_level_init(&s_level_est, esp_timer_get_time() / 1000);
     radar_obstruct_hold_init(&s_obstruct_hold);
+    radar_capture_init();
 
     // 先构建 UI:即使射频链路不可用,用户也能看到雷达界面(显示无信号)。
     if (bsp_lvgl_lock(1000)) {

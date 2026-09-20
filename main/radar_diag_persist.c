@@ -198,3 +198,11 @@ bool radar_diag_persist_previous(radar_diag_record_t *out) {
     *out = s_previous;
     return true;
 }
+
+uint32_t radar_diag_current_sequence(void) {
+    return s_initialized ? s_current.sequence : 0;
+}
+
+uint32_t radar_diag_current_reset_reason(void) {
+    return s_initialized ? s_current.reset_reason : 0;
+}

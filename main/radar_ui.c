@@ -54,6 +54,7 @@ static lv_obj_t *s_calib_bar;
 
 // 诊断页面对象
 static lv_obj_t *s_debug_label;
+static lv_obj_t *s_capture_label;
 
 // ---------- 坐标转换 ----------
 
@@ -211,6 +212,14 @@ static void build_calib_page(void) {
     lv_screen_load(s_scr);
 }
 
+static void build_capture_page(void) {
+    s_scr = ui_pixel_screen_create("CAPTURE");
+    s_capture_label = add_info_label(s_scr, 92, &lv_font_montserrat_14);
+    lv_obj_set_width(s_capture_label, 230);
+    lv_label_set_text(s_capture_label, "TARGET --");
+    lv_screen_load(s_scr);
+}
+
 static void build_debug_page(void) {
     s_scr = ui_pixel_screen_create("DEBUG");
 
@@ -241,6 +250,7 @@ static void page_teardown(void) {
         s_result_sector = NULL;
         s_calib_bar = NULL;
         s_debug_label = NULL;
+        s_capture_label = NULL;
     }
 }
 
@@ -439,6 +449,27 @@ void radar_ui_show_debug(void) {
     build_debug_page();
 }
 
+void radar_ui_show_capture(float target_distance_m) {
+    page_teardown();
+    s_page = RADAR_PAGE_CAPTURE;
+    build_capture_page();
+    radar_ui_update_capture("READY", target_distance_m, 0, 0, false, false);
+}
+
+void radar_ui_update_capture(const char *phase, float target_distance_m,
+                             uint32_t elapsed_ms, unsigned record_count,
+                             bool valid, bool saved) {
+    if (s_page != RADAR_PAGE_CAPTURE || !s_capture_label) return;
+    char text[160];
+    unsigned seconds = elapsed_ms / 1000u;
+    const char *state = saved ? "SAVED CSV" : (valid ? "VALID" : "WAITING");
+    (void)snprintf(text, sizeof(text),
+                   "TARGET %.1fm\n%s\nTIME %us\nRECORDS %u\n%s\nOK: RETURN",
+                   (double)target_distance_m, phase ? phase : "--", seconds,
+                   record_count, state);
+    lv_label_set_text(s_capture_label, text);
+}
+
 void radar_ui_update_debug(const radar_debug_info_t *info) {
     if (s_page != RADAR_PAGE_DEBUG || !s_scr || !s_debug_label || !info) return;
 
@@ -480,7 +511,7 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
                 "v1 %d.%d m | v2 %s%d.%d m [%s]\n"
                 "%s\n"
                 "%s\n"
-                "env %d n%.1f tx %.0f spread %.0f",
+                "env %d n%.1f tx %.0f sp%.0f cap%.1fm",
                 (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
                 info->fr->conf == RADAR_CONF_HIGH ? "" : "~",
                 v2dm / 10, v2dm % 10, conf_tag(info->fr->conf),
@@ -488,19 +519,21 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
                 ble_status,
                 (int)info->env,
                 (double)radar_env_path_loss_n(info->env),
-                (double)info->tx_ref_sym, (double)info->vote_spread_deg);
+                (double)info->tx_ref_sym, (double)info->vote_spread_deg,
+                (double)info->capture_target_m);
         } else {
             (void)snprintf(debug_text, sizeof(debug_text),
                 "v1 %d.%d m | v2 OUT OF RANGE\n"
                 "%s\n"
                 "%s\n"
-                "env %d n%.1f tx %.0f spread %.0f",
+                "env %d n%.1f tx %.0f sp%.0f cap%.1fm",
                 (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
                 ftm,
                 ble_status,
                 (int)info->env,
                 (double)radar_env_path_loss_n(info->env),
-                (double)info->tx_ref_sym, (double)info->vote_spread_deg);
+                (double)info->tx_ref_sym, (double)info->vote_spread_deg,
+                (double)info->capture_target_m);
         }
         lv_label_set_text(s_debug_label, debug_text);
     }
