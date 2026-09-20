@@ -50,3 +50,7 @@ esp_err_t radar_capture_save(void);
 
 // Re-exports the newest valid NVS record without changing or erasing it.
 esp_err_t radar_capture_export_saved(void);
+
+// One-shot status of the last DOWN long-press re-export, for Debug-page UI
+// feedback. Returns empty string when no export was attempted since boot.
+const char *radar_capture_export_status(void);

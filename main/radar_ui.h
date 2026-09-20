@@ -51,6 +51,7 @@ typedef struct {
     float tx_ref_sym;       // 当前 1m 对称参考(标定值)
     float vote_spread_deg;  // 最近一次扫盘投票/融合分歧
     float capture_target_m; // 当前 Debug Capture 目标标签
+    const char *capture_export_status; // DOWN 长按重复导出反馈（空串=无）
 } radar_debug_info_t;
 
 // 切换到诊断页并刷新(由 main.c 调用;入口=追踪页 UP 长按)。

@@ -43,10 +43,13 @@ _Static_assert(sizeof(capture_storage_header_t) == 76,
                "capture storage header layout changed");
 
 static radar_capture_record_t s_records[RADAR_CAPTURE_MAX_RECORDS];
-static uint8_t s_payload[RADAR_CAPTURE_CODEC_MAX_PAYLOAD];
-static uint8_t s_blob[CAPTURE_STORAGE_MAX];
-static uint8_t s_candidate_payload[RADAR_CAPTURE_CODEC_MAX_PAYLOAD];
-static uint8_t s_verified_payload[RADAR_CAPTURE_CODEC_MAX_PAYLOAD];
+// One shared 12.3 KB scratch buffer instead of five separate buffers
+// (~41 KB before): the extra BSS previously starved NimBLE host init of
+// heap and broke BLE startup on meta-pass devices. All capture storage
+// paths run in the LVGL poll task, never concurrently, so reuse is safe.
+static uint8_t s_scratch[CAPTURE_STORAGE_MAX];
+_Static_assert(sizeof(s_scratch) >= sizeof(capture_storage_header_t) + RADAR_CAPTURE_CODEC_MAX_PAYLOAD,
+               "scratch must hold header plus maximum codec payload");
 static radar_capture_phase_t s_phase;
 static float s_target_m;
 static int64_t s_start_us;
@@ -55,6 +58,10 @@ static unsigned s_record_count;
 static bool s_data_valid;
 static bool s_save_succeeded;
 static uint32_t s_capture_id;
+// Screen feedback for the DOWN long-press re-export: "" = never attempted,
+// otherwise a short status string cleared on the next Debug-page entry.
+static char s_export_status[16];
+static int64_t s_export_status_until_us;
 
 const float radar_capture_targets_m[RADAR_CAPTURE_TARGET_COUNT] = {
     1.0f, 3.0f, 5.0f, 8.0f, 10.0f, 15.0f, 20.0f, 30.0f,
@@ -93,17 +100,17 @@ static bool read_key(const char *key, capture_storage_header_t *header,
     if (!key || !header || !payload ||
         nvs_open(CAPTURE_NVS_NS, NVS_READONLY, &handle) != ESP_OK) return false;
 
-    size_t blob_size = sizeof(s_blob);
-    esp_err_t err = nvs_get_blob(handle, key, s_blob, &blob_size);
+    size_t blob_size = sizeof(s_scratch);
+    esp_err_t err = nvs_get_blob(handle, key, s_scratch, &blob_size);
     nvs_close(handle);
     if (err != ESP_OK || blob_size < sizeof(*header) ||
-        blob_size > sizeof(s_blob)) return false;
+        blob_size > sizeof(s_scratch)) return false;
 
-    memcpy(header, s_blob, sizeof(*header));
+    memcpy(header, s_scratch, sizeof(*header));
     if (!valid_header(header) ||
         sizeof(*header) + header->compressed_length != blob_size ||
         header->compressed_length > payload_capacity) return false;
-    memcpy(payload, s_blob + sizeof(*header), header->compressed_length);
+    memcpy(payload, s_scratch + sizeof(*header), header->compressed_length);
     return radar_capture_codec_crc32(payload, header->compressed_length) ==
            header->payload_crc32;
 }
@@ -115,13 +122,11 @@ static bool read_latest(capture_storage_header_t *header, uint8_t *payload,
     uint32_t best_generation = 0;
     for (unsigned i = 0; i < 2; ++i) {
         const char *key = i == 0 ? CAPTURE_NVS_KEY_A : CAPTURE_NVS_KEY_B;
-        if (!read_key(key, &candidate, s_candidate_payload,
-                      sizeof(s_candidate_payload))) continue;
+        if (!read_key(key, &candidate, payload, payload_capacity)) continue;
         if (!found || candidate.generation > best_generation) {
             found = true;
             best_generation = candidate.generation;
             *header = candidate;
-            memcpy(payload, s_candidate_payload, candidate.compressed_length);
         }
     }
     return found;
@@ -129,7 +134,9 @@ static bool read_latest(capture_storage_header_t *header, uint8_t *payload,
 
 static uint32_t latest_generation(void) {
     capture_storage_header_t header;
-    return read_latest(&header, s_payload, sizeof(s_payload)) ? header.generation : 0;
+    return read_latest(&header, s_scratch + sizeof(capture_storage_header_t),
+                       sizeof(s_scratch) - sizeof(capture_storage_header_t))
+               ? header.generation : 0;
 }
 
 static void emit_csv(const char *meta_tag, const char *row_tag,
@@ -260,7 +267,9 @@ esp_err_t radar_capture_save(void) {
     if (s_phase != RADAR_CAPTURE_SUMMARY || !s_data_valid) return ESP_ERR_INVALID_STATE;
 
     size_t payload_length = radar_capture_codec_encode(
-        s_records, s_record_count, s_payload, sizeof(s_payload));
+        s_records, s_record_count,
+        s_scratch + sizeof(capture_storage_header_t),
+        sizeof(s_scratch) - sizeof(capture_storage_header_t));
     if (payload_length == 0 || payload_length > RADAR_CAPTURE_CODEC_MAX_PAYLOAD) {
         ESP_LOGE(TAG, "CAPTURE_SAVE FAIL ENCODE");
         return ESP_ERR_NO_MEM;
@@ -287,7 +296,8 @@ esp_err_t radar_capture_save(void) {
         .capture_id = s_capture_id,
         .boot_sequence = radar_diag_current_sequence(),
         .reset_reason = radar_diag_current_reset_reason(),
-        .payload_crc32 = radar_capture_codec_crc32(s_payload, payload_length),
+        .payload_crc32 = radar_capture_codec_crc32(
+            s_scratch + sizeof(capture_storage_header_t), payload_length),
     };
     const esp_app_desc_t *app = esp_app_get_description();
     if (app) {
@@ -296,18 +306,17 @@ esp_err_t radar_capture_save(void) {
         header.firmware_version[sizeof(header.firmware_version) - 1u] = '\0';
     }
     size_t blob_length = sizeof(header) + payload_length;
-    if (blob_length > sizeof(s_blob)) {
+    if (blob_length > sizeof(s_scratch)) {
         ESP_LOGE(TAG, "CAPTURE_SAVE FAIL NVS_SPACE blob=%u max=%u",
-                 (unsigned)blob_length, (unsigned)sizeof(s_blob));
+                 (unsigned)blob_length, (unsigned)sizeof(s_scratch));
         return ESP_ERR_NO_MEM;
     }
-    memcpy(s_blob, &header, sizeof(header));
-    memcpy(s_blob + sizeof(header), s_payload, payload_length);
+    memcpy(s_scratch, &header, sizeof(header));
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(CAPTURE_NVS_NS, NVS_READWRITE, &handle);
     if (err == ESP_OK) {
-        err = nvs_set_blob(handle, key_for_generation(generation), s_blob, blob_length);
+        err = nvs_set_blob(handle, key_for_generation(generation), s_scratch, blob_length);
         if (err == ESP_OK) err = nvs_commit(handle);
         nvs_close(handle);
     }
@@ -321,9 +330,12 @@ esp_err_t radar_capture_save(void) {
     }
 
     capture_storage_header_t verified;
-    if (!read_key(key_for_generation(generation), &verified, s_verified_payload,
-                  sizeof(s_verified_payload)) || verified.generation != generation ||
-        !radar_capture_codec_decode(s_verified_payload, verified.compressed_length,
+    if (!read_key(key_for_generation(generation), &verified,
+                  s_scratch + sizeof(capture_storage_header_t),
+                  sizeof(s_scratch) - sizeof(capture_storage_header_t)) ||
+        verified.generation != generation ||
+        !radar_capture_codec_decode(s_scratch + sizeof(capture_storage_header_t),
+                                    verified.compressed_length,
                                     s_records, RADAR_CAPTURE_MAX_RECORDS,
                                     verified.record_count)) {
         ESP_LOGE(TAG, "CAPTURE_SAVE FAIL VERIFY");
@@ -345,11 +357,15 @@ esp_err_t radar_capture_save(void) {
 
 esp_err_t radar_capture_export_saved(void) {
     capture_storage_header_t header;
-    if (!read_latest(&header, s_payload, sizeof(s_payload)) ||
-        !radar_capture_codec_decode(s_payload, header.compressed_length,
+    if (!read_latest(&header, s_scratch + sizeof(capture_storage_header_t),
+                     sizeof(s_scratch) - sizeof(capture_storage_header_t)) ||
+        !radar_capture_codec_decode(s_scratch + sizeof(capture_storage_header_t),
+                                    header.compressed_length,
                                     s_records, RADAR_CAPTURE_MAX_RECORDS,
                                     header.record_count)) {
         ESP_LOGW(TAG, "CAPTURE_EXPORT no valid saved record");
+        snprintf(s_export_status, sizeof(s_export_status), "EXPORT NOREC");
+        s_export_status_until_us = esp_timer_get_time() + 5000000;
         return ESP_ERR_NOT_FOUND;
     }
     emit_csv("CAPTURE_EXPORT_META", "CAPTURE_EXPORT_CSV", &header, s_records);
@@ -357,5 +373,16 @@ esp_err_t radar_capture_export_saved(void) {
              (unsigned long)header.capture_id,
              (unsigned long)header.record_count,
              (unsigned long)header.generation);
+    snprintf(s_export_status, sizeof(s_export_status), "EXPORT OK %lu",
+             (unsigned long)header.record_count);
+    s_export_status_until_us = esp_timer_get_time() + 5000000;
     return ESP_OK;
+}
+
+const char *radar_capture_export_status(void) {
+    if (s_export_status[0] == '\0' ||
+        esp_timer_get_time() > s_export_status_until_us) {
+        return "";
+    }
+    return s_export_status;
 }

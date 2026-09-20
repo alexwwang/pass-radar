@@ -501,9 +501,17 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
                      : "--");
     }
     {
-        char debug_text[256];
+        char debug_text[288];
         char ble_status[48];
+        char export_line[24];
         format_ble_status(ble_status, sizeof(ble_status), info);
+        // 导出反馈行:DOWN 长按后 5 秒内显示结果,平时显示操作提示。
+        if (info->capture_export_status && info->capture_export_status[0]) {
+            (void)snprintf(export_line, sizeof(export_line), "%s",
+                           info->capture_export_status);
+        } else {
+            (void)snprintf(export_line, sizeof(export_line), "DOWN LONG: EXPORT");
+        }
         if (info->fr && info->fr->conf != RADAR_CONF_OOR &&
             info->fr->distance_m > 0.0f) {
             int v2dm = (int)(info->fr->distance_m * 10.0f + 0.5f);
@@ -511,7 +519,8 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
                 "v1 %d.%d m | v2 %s%d.%d m [%s]\n"
                 "%s\n"
                 "%s\n"
-                "env %d n%.1f tx %.0f sp%.0f cap%.1fm",
+                "env %d n%.1f tx %.0f sp%.0f cap%.1fm\n"
+                "%s",
                 (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
                 info->fr->conf == RADAR_CONF_HIGH ? "" : "~",
                 v2dm / 10, v2dm % 10, conf_tag(info->fr->conf),
@@ -520,20 +529,23 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
                 (int)info->env,
                 (double)radar_env_path_loss_n(info->env),
                 (double)info->tx_ref_sym, (double)info->vote_spread_deg,
-                (double)info->capture_target_m);
+                (double)info->capture_target_m,
+                export_line);
         } else {
             (void)snprintf(debug_text, sizeof(debug_text),
                 "v1 %d.%d m | v2 OUT OF RANGE\n"
                 "%s\n"
                 "%s\n"
-                "env %d n%.1f tx %.0f sp%.0f cap%.1fm",
+                "env %d n%.1f tx %.0f sp%.0f cap%.1fm\n"
+                "%s",
                 (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
                 ftm,
                 ble_status,
                 (int)info->env,
                 (double)radar_env_path_loss_n(info->env),
                 (double)info->tx_ref_sym, (double)info->vote_spread_deg,
-                (double)info->capture_target_m);
+                (double)info->capture_target_m,
+                export_line);
         }
         lv_label_set_text(s_debug_label, debug_text);
     }

@@ -309,6 +309,7 @@ static void poll_tick(lv_timer_t *t) {
             .tx_ref_sym = s_tx_ref_sym,
             .vote_spread_deg = s_last_vote_spread,
             .capture_target_m = radar_capture_targets_m[s_capture_target_index],
+            .capture_export_status = radar_capture_export_status(),
         };
         radar_ftm_snapshot_t snap;
         if (radar_ftm_get_snapshot(&snap)) {
