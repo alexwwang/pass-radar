@@ -32,12 +32,18 @@ typedef struct {
     float ftm_success_rate;
     unsigned ftm_bursts;
     unsigned ftm_hist_count;
+    unsigned ftm_session_count;
+    bool ftm_session_busy;
+    int ftm_snapshot_age_ms;
     bool ftm_calibrated;
     unsigned ftm_probe_attempts;
     unsigned ftm_probe_successes;
     int   ftm_last_status;  // 无有效快照时的失败原因(status 或 -esp_err_t)
+    bool  ble_ready;
     bool  ble_alive;
     int   ble_rssi;
+    int   ble_last_rssi;
+    int   ble_peer_age_ms;
     radar_env_t env;
     float env_mean_rssi;    // 环境估计长期均值
     float tx_ref_sym;       // 当前 1m 对称参考(标定值)

@@ -124,6 +124,21 @@ static const char *conf_tag(radar_confidence_t conf) {
     }
 }
 
+static void format_ble_status(char *out, size_t out_size,
+                              const radar_debug_info_t *info) {
+    const char *stack = info->ble_ready ? "OK" : "NO";
+    const char *peer = info->ble_alive ? "YES" : "NO";
+    if (info->ble_last_rssi <= 20 && info->ble_last_rssi >= -127 &&
+        info->ble_peer_age_ms >= 0) {
+        (void)snprintf(out, out_size, "BLE S:%s P:%s r%d age%ds",
+                       stack, peer, info->ble_last_rssi,
+                       info->ble_peer_age_ms / 1000);
+    } else {
+        (void)snprintf(out, out_size, "BLE S:%s P:%s r-- age--",
+                       stack, peer);
+    }
+}
+
 // 扫盘角度是相对于按下 OK 时顶边方向的顺时针角度，不是地理方位。
 static const char *relative_direction_label(int angle_deg) {
     static const char *const labels[] = {
@@ -438,44 +453,51 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
                  info->ftm_calibrated ? "CAL" : "RAW",
                  (double)(info->ftm_success_rate * 100.0f));
     } else if (info->ftm_last_status != 0) {
-        snprintf(ftm, sizeof(ftm), "FTM fail s%d r%.0f%% p%u/%u",
-                 info->ftm_last_status,
-                 (double)(info->ftm_success_rate * 100.0f),
-                 info->ftm_probe_successes, info->ftm_probe_attempts);
+        snprintf(ftm, sizeof(ftm), "FTM fail s%d n%u age%ds r%.0f%%",
+                 info->ftm_last_status, info->ftm_session_count,
+                 info->ftm_snapshot_age_ms >= 0 ? info->ftm_snapshot_age_ms / 1000 : -1,
+                 (double)(info->ftm_success_rate * 100.0f));
     } else {
         // No valid snapshot is a transient state while a session is pending,
         // not a permanent UI mode. Show it explicitly as WAIT and let the
         // next poll replace it with FTM ok or FTM fail automatically.
-        snprintf(ftm, sizeof(ftm), "FTM WAIT r%s",
+        snprintf(ftm, sizeof(ftm), "FTM WAIT n%u %s age%ds r%s",
+                 info->ftm_session_count,
+                 info->ftm_session_busy ? "BUSY" : "IDLE",
+                 info->ftm_snapshot_age_ms >= 0 ? info->ftm_snapshot_age_ms / 1000 : -1,
                  isfinite(info->ftm_success_rate)
                      ? (info->ftm_success_rate >= 0.995f ? "100" : "<100")
                      : "--");
     }
     {
         char debug_text[256];
+        char ble_status[48];
+        format_ble_status(ble_status, sizeof(ble_status), info);
         if (info->fr && info->fr->conf != RADAR_CONF_OOR &&
             info->fr->distance_m > 0.0f) {
             int v2dm = (int)(info->fr->distance_m * 10.0f + 0.5f);
             (void)snprintf(debug_text, sizeof(debug_text),
                 "v1 %d.%d m | v2 %s%d.%d m [%s]\n"
-                "%s | BLE %s\n"
+                "%s\n"
+                "%s\n"
                 "env %d n%.1f tx %.0f spread %.0f",
                 (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
                 info->fr->conf == RADAR_CONF_HIGH ? "" : "~",
                 v2dm / 10, v2dm % 10, conf_tag(info->fr->conf),
                 ftm,
-                info->ble_alive ? "yes" : "no",
+                ble_status,
                 (int)info->env,
                 (double)radar_env_path_loss_n(info->env),
                 (double)info->tx_ref_sym, (double)info->vote_spread_deg);
         } else {
             (void)snprintf(debug_text, sizeof(debug_text),
                 "v1 %d.%d m | v2 OUT OF RANGE\n"
-                "%s | BLE %s\n"
+                "%s\n"
+                "%s\n"
                 "env %d n%.1f tx %.0f spread %.0f",
                 (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
                 ftm,
-                info->ble_alive ? "yes" : "no",
+                ble_status,
                 (int)info->env,
                 (double)radar_env_path_loss_n(info->env),
                 (double)info->tx_ref_sym, (double)info->vote_spread_deg);

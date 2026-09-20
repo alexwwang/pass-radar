@@ -44,6 +44,13 @@ static volatile bool     s_scan_paused;
 static volatile bool     s_adv_started;
 static volatile bool     s_scan_started;
 static bool              s_initialized;
+static bool              s_diag_logged;
+static bool              s_diag_last_ready;
+static bool              s_diag_last_peer;
+static int               s_diag_last_rssi = -127;
+static int               s_diag_last_age_s = -1;
+static bool              s_diag_last_expected;
+static int64_t           s_diag_last_candidate_us;
 
 static bool is_valid_rssi(int8_t rssi) {
     // NimBLE uses 127 when RSSI is unavailable.
@@ -141,16 +148,30 @@ static int scan_event_cb(struct ble_gap_event *event, void *arg) {
     if (mfg[0] != (uint8_t)(BLE_SENTINEL_COMPANY & 0xff) ||
         mfg[1] != (uint8_t)(BLE_SENTINEL_COMPANY >> 8) ||
         mfg[2] != 'R' || mfg[3] != BLE_SENTINEL_VERSION ||
-        identity_is_self(&mfg[4]) ||
-        !s_expected_identity_known ||
+        identity_is_self(&mfg[4])) {
+        return 0;
+    }
+    if (!s_expected_identity_known ||
         memcmp(&mfg[4], s_expected_identity, BLE_IDENTITY_LEN) != 0) {
+        int64_t now = esp_timer_get_time();
+        if (now - s_diag_last_candidate_us > 2000000) {
+            ESP_LOGI(TAG, "BLE candidate rejected expected=%u id=%02x:%02x:%02x:%02x:%02x:%02x",
+                     s_expected_identity_known, mfg[4], mfg[5], mfg[6],
+                     mfg[7], mfg[8], mfg[9]);
+            s_diag_last_candidate_us = now;
+        }
         return 0;
     }
 
+    bool was_alive = s_peer_identity_known && s_ble_seen_us != 0 &&
+                     (esp_timer_get_time() - s_ble_seen_us) < BLE_PEER_HOLD_US;
     s_ble_rssi = desc->rssi;
     memcpy(s_peer_identity, &mfg[4], BLE_IDENTITY_LEN);
     s_peer_identity_known = true;
     s_ble_seen_us = esp_timer_get_time();
+    if (!was_alive) {
+        ESP_LOGI(TAG, "BLE peer matched rssi=%d", (int)desc->rssi);
+    }
     return 0;
 }
 
@@ -213,6 +234,13 @@ esp_err_t radar_ble_init(void) {
     s_adv_started = false;
     s_scan_started = false;
     s_peer_identity_known = false;
+    s_diag_logged = false;
+    s_diag_last_ready = false;
+    s_diag_last_peer = false;
+    s_diag_last_rssi = -127;
+    s_diag_last_age_s = -1;
+    s_diag_last_expected = false;
+    s_diag_last_candidate_us = 0;
     s_expected_identity_known = false;
     s_ble_seen_us = 0;
 
@@ -271,21 +299,56 @@ void radar_ble_pause(bool paused) {
 }
 
 void radar_ble_set_expected_identity(const uint8_t identity[6]) {
-    if (!identity) {
-        s_expected_identity_known = false;
-        return;
+    if (!identity) return;
+    if (!s_expected_identity_known ||
+        memcmp(s_expected_identity, identity, BLE_IDENTITY_LEN) != 0) {
+        memcpy(s_expected_identity, identity, BLE_IDENTITY_LEN);
+        s_expected_identity_known = true;
+        ESP_LOGI(TAG, "BLE identity bound id=%02x:%02x:%02x:%02x:%02x:%02x",
+                 identity[0], identity[1], identity[2], identity[3],
+                 identity[4], identity[5]);
     }
-    memcpy(s_expected_identity, identity, BLE_IDENTITY_LEN);
-    s_expected_identity_known = true;
 }
 
 int radar_ble_peer_rssi(void) {
     return radar_ble_peer_alive() ? s_ble_rssi : -127;
 }
 
+int radar_ble_peer_last_rssi(void) {
+    return s_peer_identity_known ? s_ble_rssi : -127;
+}
+
 bool radar_ble_peer_alive(void) {
     return s_peer_identity_known && s_ble_seen_us != 0 &&
            (esp_timer_get_time() - s_ble_seen_us) < BLE_PEER_HOLD_US;
+}
+
+int radar_ble_peer_age_ms(void) {
+    if (!s_peer_identity_known || s_ble_seen_us == 0) return -1;
+    int64_t age_us = esp_timer_get_time() - s_ble_seen_us;
+    if (age_us < 0) return -1;
+    return (int)(age_us / 1000);
+}
+
+void radar_ble_diag_tick(void) {
+    bool ready = radar_ble_ready();
+    bool peer = radar_ble_peer_alive();
+    int rssi = radar_ble_peer_last_rssi();
+    int age_ms = radar_ble_peer_age_ms();
+    int age_s = age_ms >= 0 ? age_ms / 1000 : -1;
+    if (!s_diag_logged || ready != s_diag_last_ready || peer != s_diag_last_peer ||
+        rssi != s_diag_last_rssi || age_s != s_diag_last_age_s ||
+        s_expected_identity_known != s_diag_last_expected) {
+        ESP_LOGI(TAG, "BLE_STATE ready=%u peer=%u expected=%u rssi=%d age_ms=%d scan=%u adv=%u",
+                 ready, peer, s_expected_identity_known, rssi, age_ms,
+                 s_scan_started, s_adv_started);
+        s_diag_logged = true;
+        s_diag_last_ready = ready;
+        s_diag_last_peer = peer;
+        s_diag_last_rssi = rssi;
+        s_diag_last_age_s = age_s;
+        s_diag_last_expected = s_expected_identity_known;
+    }
 }
 
 bool radar_ble_peer_identity(uint8_t out_identity[6]) {

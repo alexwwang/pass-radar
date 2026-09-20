@@ -46,6 +46,11 @@ bool radar_ftm_get_snapshot(radar_ftm_snapshot_t *out);
 // 无有效快照时用于诊断:3=NO_RESPONSE(对端未就位/被挤占)、4=REJECTED 等。
 int radar_ftm_last_status(void);
 
+// 已发起的 FTM session 数量、当前 session 是否进行中、最近快照年龄(ms)。
+unsigned radar_ftm_session_count(void);
+bool radar_ftm_session_busy(void);
+int radar_ftm_snapshot_age_ms(void);
+
 // 探针诊断计数（不计入常规 FTM 成功率）。
 unsigned radar_ftm_probe_attempts(void);
 unsigned radar_ftm_probe_successes(void);

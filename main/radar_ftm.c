@@ -48,6 +48,7 @@ static int64_t s_coex_start_us;
 static volatile int s_last_status;
 static bool s_probe_session;
 static int64_t s_last_probe_us;
+static unsigned s_session_count;
 static unsigned s_probe_attempts;
 static unsigned s_probe_successes;
 static float s_offset_m;
@@ -79,6 +80,13 @@ static void record_distance(float distance_m) {
 }
 
 int radar_ftm_last_status(void) { return s_last_status; }
+unsigned radar_ftm_session_count(void) { return s_session_count; }
+bool radar_ftm_session_busy(void) { return s_session_busy; }
+int radar_ftm_snapshot_age_ms(void) {
+    if (s_snapshot.timestamp_us == 0) return -1;
+    int64_t age_us = esp_timer_get_time() - s_snapshot.timestamp_us;
+    return age_us < 0 ? -1 : (int)(age_us / 1000);
+}
 unsigned radar_ftm_probe_attempts(void) { return s_probe_attempts; }
 unsigned radar_ftm_probe_successes(void) { return s_probe_successes; }
 void radar_ftm_set_offset_m(float offset_m) {
@@ -183,6 +191,9 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
                     s_last_status = (int)FTM_STATUS_SUCCESS;
                     s_snapshot = next;
                     s_probe_session = false;
+                    ESP_LOGI(TAG, "FTM_SESSION end=%u result=OK distance=%.2f spread=%.2f bursts=%u rssi=%d",
+                             s_session_count, (double)next.distance_m, (double)next.spread_m,
+                             next.valid_bursts, next.rssi);
                     ESP_LOGI(TAG, "FTM ok: %.2fm spread %.2f bursts %u rssi %d",
                              (double)next.distance_m, (double)next.spread_m,
                              next.valid_bursts, next.rssi);
@@ -198,6 +209,8 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
         s_probe_session = false;
         clear_snapshot(FTM_STATUS_NO_VALID_MSMT);
         s_snapshot.timestamp_us = esp_timer_get_time();
+        ESP_LOGW(TAG, "FTM_SESSION end=%u result=FAIL status=%d valid=0",
+                 s_session_count, (int)FTM_STATUS_NO_VALID_MSMT);
         return;
     }
 
@@ -210,6 +223,8 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
     s_probe_session = false;
     s_snapshot.timestamp_us = esp_timer_get_time();
     s_backoff_until_us = s_snapshot.timestamp_us + FTM_BACKOFF_US;
+    ESP_LOGW(TAG, "FTM_SESSION end=%u result=FAIL status=%d",
+             s_session_count, (int)report->status);
     ESP_LOGW(TAG, "FTM session status=%d", (int)report->status);
 }
 
@@ -222,6 +237,7 @@ esp_err_t radar_ftm_init(void) {
     s_last_session_us = 0;
     s_session_deadline_us = 0;
     s_backoff_until_us = 0;
+    s_session_count = 0;
     s_coex_kick_count = 0;
     s_coex_active = false;
     s_coex_start_us = 0;
@@ -300,6 +316,8 @@ void radar_ftm_tick(void) {
             clear_snapshot(FTM_STATUS_USER_TERM);
             if (!s_probe_session) record_regular_session(false);
             s_probe_session = false;
+            ESP_LOGW(TAG, "FTM_SESSION end=%u result=TIMEOUT status=%d",
+                     s_session_count, (int)FTM_STATUS_USER_TERM);
         }
         return;
     }
@@ -327,7 +345,12 @@ void radar_ftm_tick(void) {
 
     esp_err_t err = esp_wifi_ftm_initiate_session(&cfg);
     if (err == ESP_OK) {
+        s_session_count++;
         s_probe_session = probe;
+        ESP_LOGI(TAG, "FTM_SESSION start=%u role=%s probe=%u rssi=%d channel=%u",
+                 s_session_count,
+                 radar_espnow_is_ftm_initiator() ? "INITIATOR" : "RESPONDER",
+                 probe, peer_rssi, cfg.channel);
         if (probe) {
             s_last_probe_us = now;
             s_probe_attempts++;

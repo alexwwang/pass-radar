@@ -24,11 +24,20 @@ void radar_ble_pause(bool paused);
 // NimBLE sync callback 已完成且广播/扫描已成功提交。
 bool radar_ble_ready(void);
 
-// 最近一次收到的目标 BLE 广播 RSSI(dBm)。无数据返回 -127。
+// 最近一次仍在 10s 有效窗口内的目标 BLE 广播 RSSI(dBm)。无当前对端返回 -127。
 int radar_ble_peer_rssi(void);
+
+// 最近一次收到的目标 BLE 广播 RSSI(dBm)，即使已经超出有效窗口也保留。
+int radar_ble_peer_last_rssi(void);
 
 // 最近 10s 内收到过目标 BLE 广播。
 bool radar_ble_peer_alive(void);
+
+// 最近一次有效对端广播距现在的毫秒数；从未收到或当前不可用返回 -1。
+int radar_ble_peer_age_ms(void);
+
+// 低频输出 BLE ready/peer/RSSI/age 状态变化，供 USB 现场诊断使用。
+void radar_ble_diag_tick(void);
 
 // 设置由 ESP-NOW v2 验证过的目标 identity；未绑定前不接受 BLE sentinel。
 void radar_ble_set_expected_identity(const uint8_t identity[6]);

@@ -99,10 +99,11 @@ static radar_fusion_result_t run_fusion(void) {
     bool alive = radar_espnow_peer_alive();
     float peer = alive ? (float)radar_espnow_peer_rssi() : RADAR_RSSI_ABSENT;
     uint8_t peer_identity[RADAR_BLE_ID_LEN];
+    // Keep a validated BLE identity across short ESP-NOW liveness gaps.
+    // Clearing it here made BLE matching depend on a single 100 ms poll and
+    // could discard the binding before the coded-PHY scan callback arrived.
     if (radar_espnow_peer_ble_identity(peer_identity)) {
         radar_ble_set_expected_identity(peer_identity);
-    } else {
-        radar_ble_set_expected_identity(NULL);
     }
 
     radar_env_est_update(&s_env_est, local);
@@ -195,7 +196,10 @@ static void poll_tick(lv_timer_t *t) {
     }
 
     // FTM 周期驱动(无线初始化失败时完全跳过)
-    if (s_radio_ready) radar_ftm_tick();
+    if (s_radio_ready) {
+        radar_ftm_tick();
+        radar_ble_diag_tick();
+    }
 
     // 双端同扫跟随(调研 5.4 P0):对端开始扫盘且本端空闲时自动进入扫盘,
     // 按 sweep_id 一次性触发,错过 1s 以上不补扫(中途加入同步无意义)。
@@ -250,11 +254,17 @@ static void poll_tick(lv_timer_t *t) {
             .ftm_success_rate = radar_ftm_success_rate(),
             .ftm_bursts = 0,
             .ftm_hist_count = 0,
+            .ftm_session_count = radar_ftm_session_count(),
+            .ftm_session_busy = radar_ftm_session_busy(),
+            .ftm_snapshot_age_ms = radar_ftm_snapshot_age_ms(),
             .ftm_calibrated = radar_ftm_is_calibrated(),
             .ftm_probe_attempts = radar_ftm_probe_attempts(),
             .ftm_probe_successes = radar_ftm_probe_successes(),
+            .ble_ready = radar_ble_ready(),
             .ble_alive = radar_ble_peer_alive(),
             .ble_rssi = radar_ble_peer_rssi(),
+            .ble_last_rssi = radar_ble_peer_last_rssi(),
+            .ble_peer_age_ms = radar_ble_peer_age_ms(),
             .env = s_env_est.env,
             .env_mean_rssi = s_env_est.mean_rssi,
             .tx_ref_sym = s_tx_ref_sym,
@@ -267,6 +277,7 @@ static void poll_tick(lv_timer_t *t) {
             di.ftm_spread_m = snap.spread_m;
             di.ftm_hist_spread_m = snap.hist_spread_m;
             di.ftm_hist_count = snap.hist_count;
+            di.ftm_snapshot_age_ms = radar_ftm_snapshot_age_ms();
             di.ftm_calibrated = snap.calibrated;
             di.ftm_bursts = snap.valid_bursts;
         } else {

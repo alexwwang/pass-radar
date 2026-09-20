@@ -20,7 +20,7 @@ The current firmware includes:
 - `FTM_GRANT`, `FTM_BUSY`, and `FTM_CALIB` protocol fields with token watchdog logic;
 - 50 ms tracking updates, 25 ms sweep updates, six-second sweep target, and up to 256 RSSI samples;
 - RSSI fallback when FTM is unavailable or a session fails;
-- Debug-page FTM status, success-rate, and history display;
+- Debug-page FTM status, success-rate, history, and split BLE stack/peer diagnostics;
 - one production firmware path for hardware and simulator;
 - RTC and NVS diagnostic breadcrumbs;
 - USB Serial/JTAG logging with an auto-reconnecting host monitor.
@@ -196,7 +196,25 @@ The current development image contains:
 
 These changes passed repository checks, host tests, firmware build, protected-layout validation, and simulator boot/first-frame validation. They still require hardware retesting.
 
-## 7. Crash diagnosis and USB monitoring
+## 7. Debug BLE status semantics
+
+The Debug page reports two independent BLE states:
+
+- `BLE S:OK` means the local BLE/NimBLE controller, advertising, and scanning procedures initialized successfully; `BLE S:NO` means the optional BLE subsystem is unavailable.
+- `P:YES` means a matching peer sentinel was received within the 10-second liveness window; `P:NO` means no current matching peer advertisement is available.
+- `age=...ms` is the age of the last matching peer advertisement. It explains why `P:NO` can occur even while the local BLE stack remains healthy.
+
+The compact display format is:
+
+```text
+BLE S:OK P:YES r-68 age2s
+BLE S:OK P:NO  r-68 age12s
+BLE S:NO  P:NO  r-- age--
+```
+
+`r` is the last matching peer RSSI, even after the peer has left the 10-second live window. `age` is the age in seconds of that last matching advertisement. A `BLE S:OK P:NO` display is therefore normal during scan gaps, FTM/sweep coexistence pauses, or when the peer is not advertising. It is not evidence that BLE initialization failed.
+
+## 8. Crash diagnosis and USB monitoring
 
 The production image uses ESP32-C3 USB Serial/JTAG. The host monitor reconnects after USB re-enumeration:
 
@@ -209,7 +227,30 @@ The monitor does not toggle DTR/RTS or intentionally reset the board. Start it b
 
 RTC breadcrumbs avoid relying on Flash writes during panic. A complete brownout backtrace is still not guaranteed because power loss can remove both CPU execution time and USB transport.
 
-## 8. Stop conditions and next step
+## 9. Current USB evidence and diagnostic interpretation
+
+The latest USB monitor log must not be summarized as “FTM always fails.” It contains both outcomes: 228 session starts, 222 session reports, 80 `FTM ok` records, and 12 explicit failure status records. The main failure codes observed were status 5 (no measurements from the responder), status 6, and status 3.
+
+The Debug page reports the freshness of the current FTM snapshot, not the complete historical result set. A successful snapshot older than the five-second validity window is displayed as unavailable, while `radar_ftm_last_status` reports the most recent failure. These are different facts and must not be conflated.
+
+The responder role is not itself an error. In v3, a responder may initiate when it receives the FTM grant token. `FTM_TOKEN role=RESPONDER grant=1` is therefore evidence that the token was granted, not evidence of an invalid role.
+
+The USB diagnostic stream now includes:
+
+```text
+BLE peer matched rssi=...
+BLE_STATE ready=1 peer=1 rssi=... age_ms=... scan=1 adv=1
+FTM_SESSION start=... role=... probe=... rssi=... channel=...
+FTM_SESSION end=... result=OK ...
+FTM_SESSION end=... result=FAIL status=...
+FTM_SESSION end=... result=TIMEOUT status=...
+```
+
+`BLE S:OK P:NO` on the screen should correspond to `BLE_STATE ready=1 peer=0`; this means the local BLE stack is healthy but no matching sentinel is currently inside the ten-second liveness window. `expected=1` means an ESP-NOW-validated identity is bound. `BLE candidate rejected` identifies a scan candidate that was rejected because it was not the bound peer. `FTM WAIT`, `FTM fail`, and `FTM ok` should be interpreted together with session number, busy state, snapshot age, and success rate.
+
+The latest hardware check confirmed that the BLE fields visible on the Debug page match the corresponding USB log fields (`ready`, `peer`, RSSI, and age). BLE diagnostic observability is therefore accepted. This does not yet establish BLE range or obstruction performance; those still require controlled capture data.
+
+## 10. Stop conditions and next step
 
 Stop parameter collection after any reboot, panic, white screen, exit, hang, unexplained FTM success, abnormal power condition, or missing raw evidence.
 

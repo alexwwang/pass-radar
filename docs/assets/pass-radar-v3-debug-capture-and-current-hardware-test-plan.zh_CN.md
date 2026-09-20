@@ -20,7 +20,7 @@
 - `FTM_GRANT`、`FTM_BUSY`、`FTM_CALIB` 协议字段及 token watchdog；
 - 50 ms 追踪更新、25 ms 扫盘更新、目标 6 秒扫盘和最多 256 个 RSSI 样本；
 - FTM 不可用或 session 失败时的 RSSI 降级；
-- Debug 页 FTM 状态、成功率和历史窗口显示；
+- Debug 页 FTM 状态、成功率、历史窗口以及 BLE 本机/对端分离诊断；
 - 真机和 simulator 共用一条正式固件构建路径；
 - RTC 和 NVS 诊断 breadcrumb；
 - 带 USB Serial/JTAG 自动重连的主机日志监听器。
@@ -210,7 +210,25 @@ previous NVS: seq=8 reset=4 stage=PEER_SEEN(6) flags=0x0002 rssi=-38 csi=0 uptim
 
 这些修改已经通过仓库检查、host 测试、固件构建、受保护布局验证和 simulator boot/首帧验证，但仍需要真机复测。
 
-## 7. 崩溃诊断和 USB 监听
+## 7. Debug 页 BLE 状态语义
+
+Debug 页将 BLE 状态拆成两个独立字段：
+
+- `BLE S:OK` 表示本机 BLE/NimBLE 控制器、广播和扫描流程均已初始化成功；`BLE S:NO` 表示可选 BLE 子系统不可用。
+- `P:YES` 表示最近 10 秒内收到过匹配的对端哨兵广播；`P:NO` 表示当前没有有效的匹配对端广播。
+- `age=...ms` 表示最近一次匹配对端广播距现在的时间，可解释为什么本机 BLE 正常时 `P:NO` 仍会出现。
+
+紧凑显示格式如下：
+
+```text
+BLE S:OK P:YES r-68 age2s
+BLE S:OK P:NO  r-68 age12s
+BLE S:NO  P:NO  r-- age--
+```
+
+`r` 是最近一次匹配对端广播的 RSSI，即使对端已经超过 10 秒有效窗口仍会保留；`age` 是最近一次匹配广播距现在的秒数。因此，`BLE S:OK P:NO` 在扫描间隙、FTM/扫盘共存暂停，或对端没有广播时都是正常状态，不代表 BLE 初始化失败。
+
+## 8. 崩溃诊断和 USB 监听
 
 正式固件使用 ESP32-C3 USB Serial/JTAG。主机监听器会在 USB 重枚举后自动重连：
 
@@ -223,7 +241,30 @@ python3 tools/monitor-usb.py --output /tmp/pass-radar-usb-monitor.log
 
 RTC breadcrumb 不依赖 panic 时写 Flash。由于掉电可能同时中断 CPU 执行和 USB 传输，因此仍不能保证获得完整 brownout 回溯。
 
-## 8. 停止条件和下一步
+## 9. 当前 USB 证据和诊断解释
+
+最新 USB 监听日志不能概括为“FTM 始终失败”。日志中同时存在成功和失败：共发起 228 次 session，收到 222 次 session report，出现 80 次 `FTM ok`，以及 12 次明确失败状态。主要失败码为 status 5（未从 responder 收到测量值）、status 6 和 status 3。
+
+Debug 页显示的是当前 FTM 快照是否仍在有效时间内，而不是全部历史结果。成功快照超过 5 秒有效窗口后会显示不可用；`radar_ftm_last_status` 则表示最近一次失败原因。这两者不能混为一谈。
+
+Responder 角色本身不是错误。在 v3 中，Responder 获得 FTM grant token 后可以发起 FTM。因此 `FTM_TOKEN role=RESPONDER grant=1` 表示 token 已授予，而不是角色非法。
+
+USB 诊断流现在包含：
+
+```text
+BLE peer matched rssi=...
+BLE_STATE ready=1 peer=1 rssi=... age_ms=... scan=1 adv=1
+FTM_SESSION start=... role=... probe=... rssi=... channel=...
+FTM_SESSION end=... result=OK ...
+FTM_SESSION end=... result=FAIL status=...
+FTM_SESSION end=... result=TIMEOUT status=...
+```
+
+屏幕上的 `BLE S:OK P:NO` 应与 `BLE_STATE ready=1 peer=0` 对应，表示本机 BLE 栈正常，但当前十秒有效窗口内没有匹配的哨兵广播。`expected=1` 表示已经绑定了经 ESP-NOW 验证的 identity；`BLE candidate rejected` 表示扫描到了候选广播但因不是已绑定对端而拒绝。`FTM WAIT`、`FTM fail` 和 `FTM ok` 必须结合 session 编号、busy 状态、快照年龄和成功率一起解释。
+
+最新真机检查确认，Debug 页显示的 BLE 字段与 USB 日志中的对应字段（`ready`、`peer`、RSSI 和 age）基本一致。因此 BLE 诊断可观测性验收通过。但这还不能证明 BLE 在远距离或遮挡场景下的性能；这些内容仍需受控采集数据验证。
+
+## 10. 停止条件和下一步
 
 出现重启、panic、白屏、退出、卡死、没有依据的 FTM 成功、供电异常或缺少原始证据时，立即停止参数采集。
 
