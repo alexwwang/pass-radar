@@ -110,7 +110,7 @@ Records should remain in RAM during capture and be written in one batch. Per-sam
 
 ### H-00: pre-test check — S
 
-Use the same production image on both cards. Confirm slot2 launch behavior, record image size and installation time, retain NVS unless explicitly testing a clean state, and prepare a tape measure and USB log.
+Use the same production image on both cards. Confirm that the selected meta-pass slot launches the image, record the slot, image size, and installation time, retain NVS unless explicitly testing a clean state, and prepare a tape measure and USB log. The Capture test does not require slot2 specifically; any known-good bootable slot is acceptable.
 
 ### H-01: single-card boot stability — S
 
@@ -154,7 +154,7 @@ Run both cards for ten minutes and perform three sweeps with at least 30 seconds
 
 ### H-11: meta-pass launcher compatibility — S
 
-Install the production image into slot2, launch pass-radar, and verify the documented OK LONG2 return path. Do not use UP long-press for this test. Pass requires normal launch and return without corruption or reboot loops.
+Launch pass-radar from the selected meta-pass slot and verify the documented OK LONG2 return path. Do not use UP long-press for this test. Pass requires normal launch and return without corruption or reboot loops. This launcher-compatibility check is separate from Capture and does not require slot2.
 
 ## 5. Current hardware evidence and assessment
 
@@ -265,7 +265,104 @@ The MVP stores up to 128 observations in RAM at a 250 ms cadence. At completion 
 
 The MVP fields are the available raw RSSI, peer liveness, FTM status/distance/spread/session count, BLE state/RSSI/age, CSI frame count, and environment level. The saved header and `CAPTURE_META` line now also include firmware version, capture ID, boot sequence, reset reason, target label, record count, and CRC32. Token fields, obstruction class, channel, and persistent re-export/erase controls remain to be added before using the output for final parameter tuning.
 
-## 11. Stop conditions and next step
+## 11. Build environment and exact firmware command
+
+Build the production image from the repository root on macOS/Linux with ESP-IDF 5.5.3 and the existing uv-managed Python environment. The build timeout for this command is 15 minutes; it produces the only firmware image used by meta-pass, hardware, and passport-sim.
+
+```bash
+cd /Users/alex/ai-passport/pass-radar
+
+export IDF_PATH=/Users/alex/esp/esp-idf-v5.5.3
+export IDF_PYTHON_ENV_PATH="$HOME/.espressif/python_env/idf5.5_py3.10_env"
+export PATH="$IDF_PYTHON_ENV_PATH/bin:$PATH"
+source "$IDF_PATH/export.sh"
+
+idf.py --version                         # must report ESP-IDF v5.5.3
+./tools/validate.sh --firmware           # 15-minute build gate
+IMAGE="$(ls -t build/pass-radar_*.bin | head -1)"
+printf 'Firmware: %s\n' "$IMAGE"
+shasum -a 256 "$IMAGE"
+```
+
+Use the newest versioned file under `build/`, represented by `$IMAGE` above. The final path will look like:
+
+```text
+build/pass-radar_v0.1-<commit>.bin
+```
+
+Do not flash or give to passport-sim the intermediate files `build/pass-radar.bin` or `build/pass-radar-full.bin`. Do not build a simulator-specific firmware. If the local ESP-IDF path differs, replace only `IDF_PATH`; keep the required version at 5.5.3. The command must be run again after any source change; an older image must not be used to evaluate the current commit.
+
+## 12. Capture MVP hardware validation procedure
+
+### 12.1 Required environment
+
+The first validation should use one operator and two cards. A second operator is optional and must not be required for the basic acceptance run.
+
+Required:
+
+- two cards running the same newly built production image from a known-good meta-pass boot slot; slot2 is optional;
+- the selected slot is recorded for each card, and the image version is confirmed at boot;
+
+- stable power for both cards; avoid changing USB hubs, cables, or power sources during capture;
+- a data-capable USB cable and access to at least one card's USB Serial/JTAG port;
+- a tape measure and a quiet, fixed test location;
+- a measured target distance, with both cards stationary and their intended front directions marked;
+- no browser WebSerial page, `idf.py monitor`, or other serial client open on the monitored port.
+
+For the first run, use one measured distance such as 3 m. The UI label must match the measured setup, but the label remains metadata rather than truth until the physical measurement is recorded with the log.
+
+### 12.2 Flash and start logging
+
+Keep the existing working slot and its fallback firmware unchanged. Install the versioned production image into the selected bootable slot on both cards; slot0 is acceptable if it is the current known-good launch slot. Do not erase NVS for this validation: this preserves device identity, diagnostic breadcrumbs, calibration/history, and peer state. NVS erasure is not required by Capture, but a clean-NVS experiment must be a separate, explicitly recorded test. Verify the displayed/app-log version matches the image selected from `build/`.
+
+If the current layout is `slot0=pass-radar`, `slot1=occupied`, `slot2=empty`, it is valid for Capture provided slot0 boots the newly built image. The occupied slot1 and empty slot2 do not affect the Capture state machine, BLE, FTM, RSSI, or the `radar_capture` data partition. The trade-off is only rollback/launcher safety: do not overwrite slot1, and verify the meta-pass return path before relying on it.
+
+Start the reconnecting monitor before powering or restarting the first card:
+
+```bash
+cd /Users/alex/ai-passport/pass-radar
+rm -f /tmp/pass-radar-usb-monitor.log
+python3 tools/monitor-usb.py \\
+  --output /tmp/pass-radar-usb-monitor.log
+```
+
+Leave this process running throughout the test. With one USB connection, the monitor captures one card; observe the second card's screen locally. If both cards are connected through a shared hub, start the first card, wait until it is stable, then connect/start the second card. Do not repeatedly unplug or reset cards during the 38-second capture.
+
+### 12.3 Capture operation
+
+1. Start card A and confirm it reaches STATUS without reboot, white screen, or exit.
+2. Start card B and place both cards at the measured distance. Wait until the peer/link state is stable.
+3. On either card, use the current UP double-click action from STATUS to open DEBUG.
+4. Use UP/DOWN click to select the preset target label matching the measured distance.
+5. Press OK once. The screen must enter `COUNTDOWN`, then `SETTLE`, then `CAPTURE`.
+6. Do not press buttons or move either card during the 3 s countdown, 5 s settle period, and 30 s capture period.
+7. Wait approximately 38 seconds until the page shows `SUMMARY`, `RECORDS`, and `SAVED CSV`.
+8. Preserve the USB log. The log should contain `CAPTURE_START`, `CAPTURE_META`, one stable `CAPTURE_CSV` header, CSV rows, and `CAPTURE_SAVE OK`.
+9. After recording the result, return with OK. If needed, enter DEBUG again and use DOWN long-press to re-export the saved Flash record; this does not erase it.
+
+### 12.4 Capture acceptance
+
+Record the following without manually editing the raw log:
+
+```text
+firmware version
+image SHA-256
+measured distance and selected TARGET label
+capture_id
+boot_sequence
+reset_reason
+record count
+CRC32
+CAPTURE_SAVE result
+whether the screen reached SAVED CSV
+whether either card rebooted, went white, exited, or hung
+```
+
+A basic Capture PASS requires: one complete 38-second run; no reboot, panic, white screen, exit, or hang; a nonzero record count; `CAPTURE_SAVE OK`; matching `CAPTURE_META` and CRC32; and the expected CSV header/rows in `/tmp/pass-radar-usb-monitor.log`. This proves the capture/storage/export path, not distance accuracy. Do not tune FTM, RSSI, BLE, P25, or direction parameters from one run.
+
+If the run is aborted, the page shows `INVALID`, the save result is absent, the CRC cannot be matched, or the monitor misses the save lines, record `FAIL` and preserve the complete log. Do not repeat parameter collection until the evidence is understood.
+
+## 13. Stop conditions and next step
 
 Stop parameter collection after any reboot, panic, white screen, exit, hang, unexplained FTM success, abnormal power condition, or missing raw evidence.
 

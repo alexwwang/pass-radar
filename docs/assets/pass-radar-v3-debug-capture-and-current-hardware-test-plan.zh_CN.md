@@ -110,7 +110,7 @@ reset_reason
 
 ### H-00：测试前检查 — S
 
-两张卡使用同一个正式镜像。确认 slot2 启动方式，记录镜像大小和安装时间；除非测试清洁状态，否则保留 NVS；准备卷尺和 USB 日志。
+两张卡使用同一个正式镜像。确认所选 meta-pass 槽位能够启动该镜像，记录槽位、镜像大小和安装时间；除非测试清洁状态，否则保留 NVS；准备卷尺和 USB 日志。Capture 测试不要求必须使用 slot2，任何已知可正常启动的槽位都可以。
 
 ### H-01：单卡启动稳定性 — S
 
@@ -168,7 +168,7 @@ SWEEP_SAMPLES count=...
 
 ### H-11：meta-pass 启动器兼容 — S
 
-将正式镜像安装到 slot2，启动 pass-radar，验证约定的 OK LONG2 返回路径。本项不要使用 UP 长按。通过标准是正常启动和返回，没有固件损坏或重启循环。
+从所选的 meta-pass 槽位启动 pass-radar，验证约定的 OK LONG2 返回路径。本项不要使用 UP 长按。通过标准是正常启动和返回，没有固件损坏或重启循环。这个启动器兼容性检查独立于 Capture，也不要求使用 slot2。
 
 ## 5. 当前真机证据与评估
 
@@ -279,7 +279,104 @@ MVP 在 RAM 中最多保存 128 条观测，采样周期为 250 ms。采集结�
 
 MVP 当前保存可用的原始 RSSI、对端存活、FTM 状态/距离/分歧/session 数、BLE 状态/RSSI/年龄、CSI 帧数和环境等级。Flash header 和 `CAPTURE_META` 行现在还包含固件版本、采集 ID、boot sequence、复位原因、目标标签、记录数和 CRC32。正式用于最终参数调优前，还需要补充 token 字段、遮挡分类、信道，以及持久重复导出/清除控制。
 
-## 11. 停止条件和下一步
+## 11. 编译环境和正式固件命令
+
+在 macOS/Linux 上，从仓库根目录使用 ESP-IDF 5.5.3 和现有的 uv Python 环境构建正式镜像。该命令的编译 timeout 为 15 分钟；它生成的是 meta-pass、真机和 passport-sim 共用的唯一固件，不存在 simulator 专用固件。
+
+```bash
+cd /Users/alex/ai-passport/pass-radar
+
+export IDF_PATH=/Users/alex/esp/esp-idf-v5.5.3
+export IDF_PYTHON_ENV_PATH="$HOME/.espressif/python_env/idf5.5_py3.10_env"
+export PATH="$IDF_PYTHON_ENV_PATH/bin:$PATH"
+source "$IDF_PATH/export.sh"
+
+idf.py --version                         # 必须显示 ESP-IDF v5.5.3
+./tools/validate.sh --firmware           # 15 分钟编译门禁
+IMAGE="$(ls -t build/pass-radar_*.bin | head -1)"
+printf 'Firmware: %s\n' "$IMAGE"
+shasum -a 256 "$IMAGE"
+```
+
+命令完成后使用 `build/` 下最新的版本化文件，即上面 `$IMAGE` 的值。实际路径类似：
+
+```text
+build/pass-radar_v0.1-<commit>.bin
+```
+
+不要把中间文件 `build/pass-radar.bin` 或 `build/pass-radar-full.bin` 烧录到 0x0，也不要交给 passport-sim。不要为 simulator 单独编译固件。如果本机 ESP-IDF 路径不同，只替换 `IDF_PATH`；要求的版本仍必须是 5.5.3。任何源码变更后都必须重新执行构建，不能用旧镜像判断当前 commit。
+
+## 12. Capture MVP 真机验证方法
+
+### 12.1 所需环境
+
+第一轮验证由一人操作两张卡即可完成；第二名测试者只是可选项，不是基本验收的必要条件。
+
+必须准备：
+
+- 两张卡都安装刚构建的同一个正式镜像，并从已知可正常启动的 meta-pass 槽位运行；slot2 不是必需的；
+- 记录每张卡实际使用的槽位，并在启动时确认镜像版本；
+
+- 两张卡使用稳定供电；采集过程中不要更换 USB hub、线材或供电来源；
+- 支持数据传输的 USB 线，并至少能访问一张卡的 USB Serial/JTAG 端口；
+- 卷尺和安静、固定的测试位置；
+- 已实际测量的目标距离，两张卡静止，并标记预期的正面方向；
+- 被监听端口不能同时打开 WebSerial、`idf.py monitor` 或其他串口客户端。
+
+第一轮建议使用一个实际测量距离，例如 3 m。界面目标标签应与布置距离一致，但在日志记录实际测量值之前，标签仍然只是元数据，不能直接当作真值。
+
+### 12.2 刷机和启动监听
+
+保留当前可用槽位及其中的回退固件不变，把版本化正式镜像安装到两张卡实际选定的可启动槽位；如果 slot0 是当前已知可正常启动的槽位，使用 slot0 也可以。本轮不要清除 NVS：这样可以保留设备身份、诊断 breadcrumb、标定/历史数据和对端状态。清除 NVS 不是 Capture 的要求；如果要做 NVS 清洁实验，必须另行记录。确认设备屏幕或启动日志中的版本与 `build/` 中选定镜像一致。
+
+如果当前布局是 `slot0=pass-radar`、`slot1=已有固件`、`slot2=空`，只要 slot0 启动的是新构建镜像，就可以进行 Capture。slot1 被占用、slot2 为空不会影响 Capture 状态机、BLE、FTM、RSSI 或 `radar_capture` 数据分区。影响只在回退和启动器安全性：不要覆盖 slot1，并在依赖回到启动器前先确认 meta-pass 返回路径。
+
+在第一张卡上电或重启前，先启动自动重连监听器：
+
+```bash
+cd /Users/alex/ai-passport/pass-radar
+rm -f /tmp/pass-radar-usb-monitor.log
+python3 tools/monitor-usb.py \\
+  --output /tmp/pass-radar-usb-monitor.log
+```
+
+整个测试过程中保持监听器运行。只有一张卡连接 USB 时，监听器会记录其中一张卡，另一张卡通过屏幕观察。如果两张卡共用 USB hub，先启动第一张卡，确认稳定后再连接/启动第二张卡。38 秒采集期间不要反复拔插或复位设备。
+
+### 12.3 Capture 操作步骤
+
+1. 启动 A 卡，确认进入 STATUS，且没有重启、白屏或退出。
+2. 启动 B 卡，将两张卡放在实际测量距离处，等待对端/链路状态稳定。
+3. 在任一张卡的 STATUS 页使用当前约定的 UP 双击进入 DEBUG。
+4. 使用 UP/DOWN 短按选择与实际测量距离对应的预设 TARGET 标签。
+5. 按一次 OK。页面应依次进入 `COUNTDOWN`、`SETTLE`、`CAPTURE`。
+6. 在 3 秒倒计时、5 秒稳定期和 30 秒采集期间不要按键，也不要移动任一卡片。
+7. 等待约 38 秒，直到页面显示 `SUMMARY`、`RECORDS` 和 `SAVED CSV`。
+8. 保存 USB 日志。日志应包含 `CAPTURE_START`、`CAPTURE_META`、一个固定的 `CAPTURE_CSV` 表头、CSV 数据行和 `CAPTURE_SAVE OK`。
+9. 记录结果后按 OK 返回。如需确认 Flash 重复导出，可再次进入 DEBUG，按 DOWN 长按；该操作不会清除记录。
+
+### 12.4 Capture 验收标准
+
+以下信息必须从原始日志和测试记录中保存，不能手工改写原始日志：
+
+```text
+固件版本
+镜像 SHA-256
+实际测量距离和选择的 TARGET 标签
+capture_id
+boot_sequence
+reset_reason
+记录数
+CRC32
+CAPTURE_SAVE 结果
+页面是否显示 SAVED CSV
+任一卡是否重启、白屏、退出或卡死
+```
+
+基本 Capture 通过标准是：完整完成一次 38 秒流程；无重启、panic、白屏、退出或卡死；记录数非零；出现 `CAPTURE_SAVE OK`；`CAPTURE_META` 与 CRC32 可对应；并且 `/tmp/pass-radar-usb-monitor.log` 中存在预期的 CSV 表头和数据行。这只能证明采集/存储/导出链路，不证明距离精度。不能根据一次采集调整 FTM、RSSI、BLE、P25 或方向参数。
+
+如果采集被中止、页面显示 `INVALID`、没有保存结果、CRC 无法对应，或监听日志缺少保存行，则记录为 `FAIL` 并保留完整日志。在证据明确前，不要继续进行参数采集。
+
+## 13. 停止条件和下一步
 
 出现重启、panic、白屏、退出、卡死、没有依据的 FTM 成功、供电异常或缺少原始证据时，立即停止参数采集。
 
