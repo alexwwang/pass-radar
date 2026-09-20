@@ -93,6 +93,10 @@ run_static_checks() {
         tests/test_radar_protocol.c main/radar_protocol.c main/radar_sweep.c \
         main/radar_fusion.c -o "${test_dir}/test_radar_protocol" -lm
     "${test_dir}/test_radar_protocol"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_radar_capture_codec.c main/radar_capture_codec.c \
+        -o "${test_dir}/test_radar_capture_codec" -lm
+    "${test_dir}/test_radar_capture_codec"
     "${python_cmd}" tests/test_verify_firmware.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"

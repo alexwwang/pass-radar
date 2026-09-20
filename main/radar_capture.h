@@ -45,8 +45,8 @@ unsigned radar_capture_record_count(void);
 bool radar_capture_data_valid(void);
 bool radar_capture_save_succeeded(void);
 
-// Writes the completed run in one batch and emits a stable CSV stream over USB.
+// Encodes and saves the completed run to the existing NVS partition, then emits CSV after read-back verification.
 esp_err_t radar_capture_save(void);
 
-// Re-exports the last valid Flash record without changing or erasing it.
+// Re-exports the newest valid NVS record without changing or erasing it.
 esp_err_t radar_capture_export_saved(void);

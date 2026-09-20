@@ -654,7 +654,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 radar_ui_show_capture(radar_capture_targets_m[s_capture_target_index]);
             }
         } else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_LONG) {
-            // Re-export the last valid Flash capture; never erase it here.
+            // Re-export the newest valid NVS capture; never erase it here.
             (void)radar_capture_export_saved();
         } else if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
             radar_ui_show_main();

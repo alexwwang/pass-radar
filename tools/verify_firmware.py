@@ -103,11 +103,6 @@ def verify_protected_layout(merged: bytes, build_dir: Path) -> None:
     if len(merged) <= 0x10000 or merged[0x10000] != 0xE9:
         raise ValueError("merged artifact has no ESP application image at 0x10000")
 
-    capture = by_label.get("radar_capture")
-    if capture is not None:
-        if capture.offset != 0x35A000 or capture.size != 0xA000:
-            raise ValueError("radar_capture must remain at 0x35A000 with size 0xA000")
-
     # A derivative may add resource partitions after cardid. The merged file is
     # still acceptable only if the protected cardid region contains padding,
     # never real device identity data.

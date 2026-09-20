@@ -256,16 +256,67 @@ The current production image implements the first static-distance capture loop:
 
 ```text
 Debug target selection -> COUNTDOWN 3s -> SETTLE 5s -> CAPTURE 30s
-                       -> SUMMARY -> batch Flash save -> USB CSV output
+                       -> SUMMARY -> compressed NVS save -> USB CSV output
 ```
 
-UP/DOWN on the Debug page selects one of the preset target labels, and OK starts the run. The target is a label only; it is not treated as measured truth. The capture page reports phase, elapsed time, record count, validity, and `SAVED CSV` after a successful batch write. OK returns to Debug; OK during an active run aborts it and marks the run invalid. DOWN long-press on Debug re-exports the last valid Flash record without erasing it.
+UP/DOWN on the Debug page selects one of the preset target labels, and OK starts the run. The target is a label only; it is not treated as measured truth. The capture page reports phase, elapsed time, record count, validity, and `SAVED CSV` after a successful batch write. OK returns to Debug; OK during an active run aborts it and marks the run invalid. DOWN long-press on Debug re-exports the newest valid NVS record without erasing it.
 
-The MVP stores up to 128 observations in RAM at a 250 ms cadence. At completion it erases and rewrites the dedicated `radar_capture` data partition in one batch, validates the record payload with CRC32, and emits a stable CSV header followed by `CAPTURE_CSV` rows over USB. A write failure marks the run invalid. The MVP exports immediately after save and supports repeated export of the last valid Flash record through the Debug-page DOWN long-press. It intentionally has no erase action yet, so raw evidence cannot be deleted accidentally.
+The MVP stores up to 128 observations in RAM at a 250 ms cadence. At completion it encodes the records and writes one generation to the existing NVS namespace in one batch, validates the read-back payload with CRC32, and emits a stable CSV header followed by `CAPTURE_CSV` rows over USB. A write failure marks the run invalid. The MVP exports immediately after save and supports repeated export of the newest valid NVS record through the Debug-page DOWN long-press. It intentionally has no erase action yet, so raw evidence cannot be deleted accidentally.
 
-The MVP fields are the available raw RSSI, peer liveness, FTM status/distance/spread/session count, BLE state/RSSI/age, CSI frame count, and environment level. The saved header and `CAPTURE_META` line now also include firmware version, capture ID, boot sequence, reset reason, target label, record count, and CRC32. Token fields, obstruction class, channel, and persistent re-export/erase controls remain to be added before using the output for final parameter tuning.
+The MVP fields are the available raw RSSI, peer liveness, FTM status/distance/spread/session count, BLE state/RSSI/age, CSI frame count, and environment level. The saved NVS header and `CAPTURE_META` line now also include firmware version, capture ID, boot sequence, reset reason, target label, record count, and CRC32. Token fields, obstruction class, channel, and persistent re-export/erase controls remain to be added before using the output for final parameter tuning.
 
-## 11. Build environment and exact firmware command
+The previous MVP wrote to a project-specific `radar_capture` data partition. That partition was not present in the existing meta-pass partition table, so the latest hardware run completed RAM capture but reported `CAPTURE_SAVE failed: partition missing`. The implementation now reuses the existing meta-pass `nvs` partition; this new path still requires the next hardware run for acceptance.
+
+## 11. Implemented meta-pass-compatible compressed NVS storage
+
+The next storage implementation will reuse the existing meta-pass `nvs` partition. It will not require a new partition and will not modify `cardid` or any OTA slot. The namespace and keys will be isolated from existing calibration and diagnostic data:
+
+```text
+namespace: radar_capture
+keys:      latest_a / latest_b
+```
+
+The payload will not be a ZIP file. The project has no existing ZIP/deflate/miniz dependency, and ZIP would add a container format, code size, RAM use, and another corruption boundary without solving the NVS write problem. Instead, use a versioned binary payload with a compact lossless codec:
+
+```text
+fixed-point fields -> delta encoding -> unsigned varints -> optional RLE
+```
+
+The encoding must preserve the raw observation meaning. Distances and spreads use fixed-point centimetres, RSSI remains signed dBm, timestamps use a documented delta unit, counters use deltas, and flags are bit-packed. No field may be rounded away merely to improve the compression ratio.
+
+The storage header must contain at least:
+
+```text
+magic
+format_version
+codec_id
+generation
+capture_id
+target_distance_cm
+record_count
+uncompressed_length
+compressed_length
+firmware_version
+boot_sequence
+reset_reason
+payload_crc32
+```
+
+A 128-record capture is about 4.7 KB in the current unpacked C layout. Compact fields are expected to reduce this to roughly 2.6–3.2 KB; delta/varint/RLE compression may reduce it further, but the actual maximum must be measured with representative and worst-case data before release. The implementation must reject the save if the final NVS blob does not fit and log `CAPTURE_SAVE FAIL NVS_SPACE`.
+
+The save and export contracts are:
+
+1. Keep all observations in RAM during the capture window; never write one NVS entry per sample.
+2. Encode and CRC the complete payload after `CAPTURE_DONE`.
+3. Write one generation to `latest_a` or `latest_b`, alternating keys.
+4. Read the blob back, validate header, lengths, codec, generation, and CRC, then decode it.
+5. Emit `CAPTURE_SAVE OK` and CSV only after read-back and decoded-record validation succeed.
+6. On export, choose the newest valid generation and decode it before emitting CSV.
+7. If a write, read-back, decompression, or CRC check fails, keep the previous valid generation and report failure.
+
+This plan is designed for the current meta-pass layout, but the NVS free-entry budget must still be checked at runtime because meta-pass may already use part of the 0x6000-byte NVS partition. The compressed NVS format is now implemented in the current source and formal build. It has passed host codec tests and the firmware gate, but it is not hardware-accepted until a meta-pass run produces `CAPTURE_SAVE OK` and a successful repeated export.
+
+## 12. Build environment and exact firmware command
 
 Build the production image from the repository root on macOS/Linux with ESP-IDF 5.5.3 and the existing uv-managed Python environment. The build timeout for this command is 15 minutes; it produces the only firmware image used by meta-pass, hardware, and passport-sim.
 
@@ -292,7 +343,7 @@ build/pass-radar_v0.1-<commit>.bin
 
 Do not flash or give to passport-sim the intermediate files `build/pass-radar.bin` or `build/pass-radar-full.bin`. Do not build a simulator-specific firmware. If the local ESP-IDF path differs, replace only `IDF_PATH`; keep the required version at 5.5.3. The command must be run again after any source change; an older image must not be used to evaluate the current commit.
 
-## 12. Capture MVP hardware validation procedure
+## 13. Capture MVP hardware validation procedure
 
 ### 12.1 Required environment
 
@@ -362,14 +413,16 @@ A basic Capture PASS requires: one complete 38-second run; no reboot, panic, whi
 
 If the run is aborted, the page shows `INVALID`, the save result is absent, the CRC cannot be matched, or the monitor misses the save lines, record `FAIL` and preserve the complete log. Do not repeat parameter collection until the evidence is understood.
 
-## 13. Stop conditions and next step
+## 14. Stop conditions and next step
 
 Stop parameter collection after any reboot, panic, white screen, exit, hang, unexplained FTM success, abnormal power condition, or missing raw evidence.
 
 Next order:
 
-1. Validate the Capture MVP on hardware at one measured distance;
-2. Confirm the USB CSV header, row count, CRC/save status, and no reboot during the 38-second run;
-3. Add token/obstruction/channel fields and an explicit, confirmed erase control;
-4. Repeat across the controlled distance matrix;
-5. Only then tune FTM, RSSI, sweep, and obstruction parameters.
+1. Validate the implemented compressed NVS implementation from Section 11 on the current meta-pass layout;
+2. Validate NVS capacity, dual-key recovery, read-back CRC, and CSV export on the current meta-pass layout;
+3. Validate the Capture MVP on hardware at one measured distance;
+4. Confirm the USB CSV header, row count, CRC/save status, and no reboot during the 38-second run;
+5. Add token/obstruction/channel fields and an explicit, confirmed erase control;
+6. Repeat across the controlled distance matrix;
+7. Only then tune FTM, RSSI, sweep, and obstruction parameters.

@@ -270,16 +270,67 @@ FTM_SESSION end=... result=TIMEOUT status=...
 
 ```text
 Debug 目标标签选择 -> COUNTDOWN 3 秒 -> SETTLE 5 秒 -> CAPTURE 30 秒
-                  -> SUMMARY -> Flash 批量保存 -> USB CSV 输出
+                  -> SUMMARY -> 压缩 NVS 保存 -> USB CSV 输出
 ```
 
-在 Debug 页使用 UP/DOWN 选择预设目标标签，按 OK 启动采集。目标值只是分类标签，不能当作真实测量值。采集页显示阶段、耗时、记录数、有效性；批量写入成功后显示 `SAVED CSV`。采集完成后按 OK 返回 Debug；采集进行中按 OK 会中止并将本次标记为无效。在 Debug 页 DOWN 长按可以重复导出 Flash 中最后一次有效记录，但不会清除记录。
+在 Debug 页使用 UP/DOWN 选择预设目标标签，按 OK 启动采集。目标值只是分类标签，不能当作真实测量值。采集页显示阶段、耗时、记录数、有效性；批量写入成功后显示 `SAVED CSV`。采集完成后按 OK 返回 Debug；采集进行中按 OK 会中止并将本次标记为无效。在 Debug 页 DOWN 长按可以重复导出 NVS 中最新一代有效记录，但不会清除记录。
 
-MVP 在 RAM 中最多保存 128 条观测，采样周期为 250 ms。采集结束后一次性擦除并重写专用 `radar_capture` 数据分区，使用 CRC32 校验记录载荷，并通过 USB 输出固定 CSV 表头和 `CAPTURE_CSV` 数据行。写入失败会将本次采集标记为无效。当前 MVP 在保存后立即导出，并支持通过 Debug 页 DOWN 长按重复导出最后一次有效 Flash 记录。当前故意不提供清除动作，避免误删原始证据。
+MVP 在 RAM 中最多保存 128 条观测，采样周期为 250 ms。采集结束后将记录编码并一次性写入现有 NVS namespace，回读 payload 后使用 CRC32 校验，并通过 USB 输出固定 CSV 表头和 `CAPTURE_CSV` 数据行。写入失败会将本次采集标记为无效。当前 MVP 在保存后立即导出，并支持通过 Debug 页 DOWN 长按重复导出 NVS 中最新一代有效记录。当前故意不提供清除动作，避免误删原始证据。
 
-MVP 当前保存可用的原始 RSSI、对端存活、FTM 状态/距离/分歧/session 数、BLE 状态/RSSI/年龄、CSI 帧数和环境等级。Flash header 和 `CAPTURE_META` 行现在还包含固件版本、采集 ID、boot sequence、复位原因、目标标签、记录数和 CRC32。正式用于最终参数调优前，还需要补充 token 字段、遮挡分类、信道，以及持久重复导出/清除控制。
+MVP 当前保存可用的原始 RSSI、对端存活、FTM 状态/距离/分歧/session 数、BLE 状态/RSSI/年龄、CSI 帧数和环境等级。NVS header 和 `CAPTURE_META` 行现在还包含固件版本、采集 ID、boot sequence、复位原因、目标标签、记录数和 CRC32。正式用于最终参数调优前，还需要补充 token 字段、遮挡分类、信道，以及持久重复导出/清除控制。
 
-## 11. 编译环境和正式固件命令
+之前的 MVP 实现写入项目自有的 `radar_capture` 数据分区。现有 meta-pass 分区表中没有这个分区，因此最近一次真机测试虽然完成了 RAM 采集，却出现了 `CAPTURE_SAVE failed: partition missing`。当前实现已经改为复用 meta-pass 现有的 `nvs` 分区；这条新路径仍需下一次真机测试验收。
+
+## 11. 已实现的与 meta-pass 兼容的压缩 NVS 存储
+
+下一版存储实现将复用 meta-pass 现有的 `nvs` 分区，不新增分区，也不修改 `cardid` 或任何 OTA 槽位。使用独立 namespace 和 key，避免与已有标定、诊断数据冲突：
+
+```text
+namespace: radar_capture
+keys:      latest_a / latest_b
+```
+
+保存内容不采用 ZIP。项目当前没有现成的 ZIP/deflate/miniz 依赖；ZIP 会增加容器格式、固件代码、RAM 使用和损坏边界，但不能解决 NVS 写入本身的问题。计划使用带版本的二进制 payload 和轻量无损编码：
+
+```text
+定点字段 -> 差分编码 -> 无符号变长整数 -> 可选 RLE
+```
+
+编码必须保留原始观测含义。距离和分歧使用厘米定点数，RSSI 保留有符号 dBm，时间使用文档化的差分单位，计数器使用差分，状态使用 bit 打包。不能为了提高压缩率而静默丢弃或过度舍入字段。
+
+存储 header 至少包含：
+
+```text
+magic
+format_version
+codec_id
+generation
+capture_id
+target_distance_cm
+record_count
+uncompressed_length
+compressed_length
+firmware_version
+boot_sequence
+reset_reason
+payload_crc32
+```
+
+当前未解包的 C 结构中，128 条记录约占 4.7 KB。紧凑字段预计可降到约 2.6～3.2 KB；差分/变长/RLE 还可能进一步减少，但发布前必须使用真实样本和最坏情况样本测得最大长度。最终 NVS blob 放不下时必须拒绝保存，并输出 `CAPTURE_SAVE FAIL NVS_SPACE`。
+
+保存和导出契约如下：
+
+1. 采集期间所有观测保存在 RAM，不能每条样本写一个 NVS 条目；
+2. `CAPTURE_DONE` 后一次性编码完整 payload 并计算 CRC；
+3. 两个 key 轮换写入一代数据：`latest_a` 或 `latest_b`；
+4. 写入后重新读取，校验 header、长度、codec、generation 和 CRC，然后解码；
+5. 只有回读和解码校验成功后，才能输出 `CAPTURE_SAVE OK` 和 CSV；
+6. 重复导出时选择 generation 最新且有效的一份，解码后输出 CSV；
+7. 写入、回读、解码或 CRC 任一步失败时，保留上一代有效数据并报告失败。
+
+该方案针对当前 meta-pass 布局设计，但仍必须在运行时检查 NVS 可用条目，因为 meta-pass 可能已经占用 0x6000 字节 NVS 分区的一部分。压缩 NVS 格式已经在当前源码和正式构建中实现。编解码已通过 host 测试，固件门禁也已通过；但在 meta-pass 真机产生 `CAPTURE_SAVE OK` 并成功完成重复导出前，不能称为硬件验收通过。
+
+## 12. 编译环境和正式固件命令
 
 在 macOS/Linux 上，从仓库根目录使用 ESP-IDF 5.5.3 和现有的 uv Python 环境构建正式镜像。该命令的编译 timeout 为 15 分钟；它生成的是 meta-pass、真机和 passport-sim 共用的唯一固件，不存在 simulator 专用固件。
 
@@ -306,7 +357,7 @@ build/pass-radar_v0.1-<commit>.bin
 
 不要把中间文件 `build/pass-radar.bin` 或 `build/pass-radar-full.bin` 烧录到 0x0，也不要交给 passport-sim。不要为 simulator 单独编译固件。如果本机 ESP-IDF 路径不同，只替换 `IDF_PATH`；要求的版本仍必须是 5.5.3。任何源码变更后都必须重新执行构建，不能用旧镜像判断当前 commit。
 
-## 12. Capture MVP 真机验证方法
+## 13. Capture MVP 真机验证方法
 
 ### 12.1 所需环境
 
@@ -376,14 +427,16 @@ CAPTURE_SAVE 结果
 
 如果采集被中止、页面显示 `INVALID`、没有保存结果、CRC 无法对应，或监听日志缺少保存行，则记录为 `FAIL` 并保留完整日志。在证据明确前，不要继续进行参数采集。
 
-## 13. 停止条件和下一步
+## 14. 停止条件和下一步
 
 出现重启、panic、白屏、退出、卡死、没有依据的 FTM 成功、供电异常或缺少原始证据时，立即停止参数采集。
 
 下一步顺序：
 
-1. 在一个实际测量距离上验证 Capture MVP；
-2. 确认 USB CSV 表头、记录数、CRC/保存状态，以及 38 秒流程内无重启；
-3. 补充 token/遮挡/信道字段和需要明确确认的清除控制；
-4. 再按受控距离矩阵重复采集；
-5. 最后根据数据修正 FTM、RSSI、扫盘和遮挡参数。
+1. 在当前 meta-pass 布局上验证第 11 节已经实现的压缩 NVS；
+2. 在当前 meta-pass 布局上验证 NVS 容量、双 key 恢复、回读 CRC 和 CSV 导出；
+3. 在一个实际测量距离上验证 Capture MVP；
+4. 确认 USB CSV 表头、记录数、CRC/保存状态，以及 38 秒流程内无重启；
+5. 补充 token/遮挡/信道字段和需要明确确认的清除控制；
+6. 再按受控距离矩阵重复采集；
+7. 最后根据数据修正 FTM、RSSI、扫盘和遮挡参数。
