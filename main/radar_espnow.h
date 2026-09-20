@@ -10,9 +10,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define RADAR_MAX_SAMPLES 100
+#define RADAR_MAX_SAMPLES 256
 #define RADAR_RAW_RING 256
-#define RADAR_SWEEP_DURATION_MS 4000
+#define RADAR_SWEEP_DURATION_MS 6000
+#define RADAR_TRACK_PERIOD_MS 50
+#define RADAR_SWEEP_PERIOD_MS 25
 
 esp_err_t radar_espnow_init(void);
 esp_err_t radar_espnow_start_broadcast(const char *device_name);
@@ -32,10 +34,17 @@ void radar_espnow_report_result(float angle_deg, float dist_m);
 // 接收源 MAC 仅表示 ESP-NOW 发送接口；FTM 必须使用已验证的 AP MAC。
 bool radar_espnow_peer_mac(uint8_t out_mac[RADAR_MAC_LEN]);
 bool radar_espnow_peer_ap_mac(uint8_t out_mac[RADAR_MAC_LEN]);
+uint8_t radar_espnow_peer_channel(void);
 bool radar_espnow_peer_ble_identity(uint8_t out_identity[RADAR_BLE_ID_LEN]);
 bool radar_espnow_is_ftm_initiator(void);
+bool radar_espnow_ftm_can_initiate(void);
+void radar_espnow_ftm_session_started(void);
+void radar_espnow_ftm_session_finished(void);
+void radar_espnow_ftm_set_calibrating(bool active);
+bool radar_espnow_peer_ftm_calibrating(void);
 bool radar_espnow_is_hopping(void);
 
+void radar_espnow_set_period_ms(uint32_t period_ms);
 void radar_espnow_start_sweep(void);
 unsigned radar_espnow_stop_sweep(void);
 unsigned radar_espnow_get_samples(radar_sample_t *out, unsigned max_count);

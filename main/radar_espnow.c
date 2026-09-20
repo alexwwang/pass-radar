@@ -11,6 +11,8 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "sdkconfig.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -65,6 +67,16 @@ static uint8_t s_ap_mac[RADAR_MAC_LEN];
 static uint8_t s_ble_identity[RADAR_BLE_ID_LEN];
 static bool s_ftm_initiator;
 static bool s_role_known;
+static bool s_peer_v3;
+static bool s_ftm_token;
+static bool s_ftm_local_busy;
+static bool s_peer_ftm_calibrating;
+static bool s_ftm_local_calibrating;
+static int64_t s_peer_ftm_busy_until_us;
+static int64_t s_ftm_grant_until_us;
+static int64_t s_last_ftm_control_us;
+static uint8_t s_last_logged_ftm_control;
+static bool s_ftm_control_logged;
 
 static volatile float s_report_angle = -1.0f;
 static volatile float s_report_dist = -1.0f;
@@ -78,77 +90,10 @@ static bool s_event_loop_ready;
 static bool s_initialized;
 
 static esp_timer_handle_t s_broadcast_timer;
+static TaskHandle_t s_tx_task;
 static radar_packet_t s_tx_packet;
 static volatile bool s_broadcasting;
 static const uint8_t BROADCAST_MAC[RADAR_MAC_LEN] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-
-#ifdef CONFIG_RADAR_SIM_BUILD
-// ==== passport-sim 专用:合成对端注入(QEMU 无射频) ====
-// TX 路径已裁剪(esp_now_send 在 QEMU 里死循环),改为在广播 tick 里
-// 周期性喂入一个稳定的合成对端包,驱动接收/融合/UI 管线,验证页面布局。
-static void parse_v2_packet(const radar_packet_t *pkt, int64_t now);
-static uint32_t s_sim_seq;
-
-static void sim_feed_peer(void) {
-    if (!s_initialized) return;
-    int64_t now = esp_timer_get_time();
-    s_sim_seq++;
-    radar_packet_t pkt;
-    memset(&pkt, 0, sizeof(pkt));
-    strncpy(pkt.device_name, "sim-peer", RADAR_PACKET_NAME_LEN - 1);
-    pkt.sequence = s_sim_seq;
-    pkt.proto_ver = RADAR_PROTO_VER;
-    pkt.flags = RADAR_PKT_FLAG_VALID_AP_MAC | RADAR_PKT_FLAG_VALID_BLE_ID;
-#if CONFIG_RADAR_SIM_SCENARIO == 1
-    pkt.rssi_to_peer = -82;
-#elif CONFIG_RADAR_SIM_SCENARIO == 2
-    pkt.rssi_to_peer = (s_sim_seq % 2u) ? -70 : -82;
-#else
-    pkt.rssi_to_peer = -58;
-#endif
-    pkt.angle_deg10 = (int16_t)(315 * 10);
-    pkt.dist_dm = (int16_t)(38 * 10);
-#if CONFIG_RADAR_SIM_SCENARIO == 2
-    // 用现有 passport-sim 注入 HOMING，验证对端静止提示优先级。
-    pkt.v3_flags = RADAR_V3_FLAG_HOMING;
-#endif
-    pkt.payload_len = sizeof(radar_packet_t);
-    const uint8_t ap[RADAR_MAC_LEN] = {0x42, 0x00, 0x00, 0x00, 0x00, 0x01};
-    memcpy(pkt.ap_mac, ap, RADAR_MAC_LEN);
-    memset(pkt.ble_identity, 0xAB, RADAR_BLE_ID_LEN);
-
-    // 对端链路信号:让追踪页显示一个"中等距离"的稳定读数。
-#if CONFIG_RADAR_SIM_SCENARIO == 1
-    s_raw_rssi = -82;
-    s_filtered_rssi = -82.0f;
-#elif CONFIG_RADAR_SIM_SCENARIO == 2
-    s_raw_rssi = (s_sim_seq % 2u) ? -70 : -82;
-    s_filtered_rssi = (float)s_raw_rssi;
-#else
-    s_raw_rssi = -55;
-    s_filtered_rssi = -55.0f;
-#endif
-    unsigned raw_head = s_raw_head;
-    s_raw_ring[raw_head] = (int8_t)s_raw_rssi;
-    s_raw_ts[raw_head] = (uint32_t)(now / 1000);
-    s_raw_head = (raw_head + 1u) % RADAR_RAW_RING;
-    s_raw_total++;
-    parse_v2_packet(&pkt, now);
-
-    // 扫盘期:用 4s 周期余弦方向图注入采样(真实 RX 回调在 QEMU 不触发),
-    // 激励"卡尔曼→谐波拟合→信道投票"整条定向管线,验证结果页数值布局。
-    if (s_sweeping && !s_channel_fault && s_sample_count < RADAR_MAX_SAMPLES) {
-        uint32_t elapsed = (uint32_t)((now - s_sweep_start_us) / 1000);
-        // 峰值固定在 3500ms(= 315/360*4000),与合成对端报告的 315° 一致。
-        float phase = (float)(((int32_t)elapsed - 3500) % 4000) / 4000.0f * 2.0f * (float)M_PI;
-        float pattern = -49.0f + 6.0f * cosf(phase);  // 峰-谷 12dB
-        s_samples[s_sample_count].timestamp_ms = elapsed;
-        s_samples[s_sample_count].rssi = pattern;
-        s_samples[s_sample_count].channel = s_cur_channel;
-        s_sample_count++;
-    }
-}
-#endif
 
 static bool valid_mac(const uint8_t mac[RADAR_MAC_LEN]) {
     return radar_protocol_valid_mac(mac);
@@ -190,11 +135,32 @@ static void parse_v2_packet(const radar_packet_t *pkt, int64_t now) {
         s_peer_ble_identity_known = true;
     }
     s_peer_rssi = pkt->rssi_to_peer;
+    // The packet channel is the peer's current SoftAP/FTM responder channel.
+    // Keep it even outside sweep mode so FTM does not rely on a hard-coded channel.
+    if (pkt->channel >= 1 && pkt->channel <= 14) {
+        s_peer_channel = pkt->channel;
+    }
     s_peer_angle = pkt->angle_deg10 >= 0 ? (float)pkt->angle_deg10 / 10.0f : -1.0f;
     s_peer_dist = pkt->dist_dm >= 0 ? (float)pkt->dist_dm / 10.0f : -1.0f;
     s_peer_sequence = pkt->sequence;
     s_peer_sequence_known = true;
     update_role();
+    bool was_peer_v3 = s_peer_v3;
+    s_peer_v3 = pkt->proto_ver >= RADAR_PROTO_VER;
+    if (s_peer_v3) {
+        if (!was_peer_v3) s_ftm_token = s_ftm_initiator;
+        uint8_t control = pkt->v3_flags &
+            (RADAR_V3_FLAG_FTM_GRANT | RADAR_V3_FLAG_FTM_BUSY |
+             RADAR_V3_FLAG_FTM_CALIB);
+        if (control != 0) s_last_ftm_control_us = now;
+        if ((pkt->v3_flags & RADAR_V3_FLAG_FTM_GRANT) != 0 && !s_ftm_local_busy) {
+            s_ftm_token = true;
+        }
+        if ((pkt->v3_flags & RADAR_V3_FLAG_FTM_BUSY) != 0) {
+            s_peer_ftm_busy_until_us = now + 800000;
+        }
+        s_peer_ftm_calibrating = (pkt->v3_flags & RADAR_V3_FLAG_FTM_CALIB) != 0;
+    }
 
     if ((pkt->v3_flags & RADAR_V3_FLAG_HOMING) != 0) {
         s_peer_wants_still_us = now;
@@ -342,13 +308,23 @@ static void hop_tick(int64_t now) {
     }
 }
 
+static void tx_task(void *arg) {
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (!s_broadcasting) continue;
+        // Keep a potentially unsupported simulator TX path away from both
+        // the LVGL task and the esp_timer service task. A stuck/unsupported
+        // radio call can only strand this low-priority worker.
+        (void)esp_now_send(BROADCAST_MAC, (const uint8_t *)&s_tx_packet,
+                           sizeof(s_tx_packet));
+    }
+}
+
 static void broadcast_tick(void *arg) {
     (void)arg;
     int64_t now = esp_timer_get_time();
     hop_tick(now);
-#ifdef CONFIG_RADAR_SIM_BUILD
-    sim_feed_peer();
-#endif
     s_tx_packet.sequence++;
     s_tx_packet.proto_ver = RADAR_PROTO_VER;
     s_tx_packet.payload_len = sizeof(radar_packet_t);
@@ -356,6 +332,24 @@ static void broadcast_tick(void *arg) {
     if (s_sweeping) s_tx_packet.flags |= RADAR_PKT_FLAG_SWEEPING;
     if (s_ftm_initiator) s_tx_packet.flags |= RADAR_PKT_FLAG_FTM_INITIATOR;
     s_tx_packet.v3_flags = s_homing ? RADAR_V3_FLAG_HOMING : 0;
+    if (s_peer_v3 && (s_ftm_token || now < s_ftm_grant_until_us) && !s_ftm_local_busy) {
+        s_tx_packet.v3_flags |= RADAR_V3_FLAG_FTM_GRANT;
+    }
+    if (s_ftm_local_busy) s_tx_packet.v3_flags |= RADAR_V3_FLAG_FTM_BUSY;
+    if (s_ftm_local_calibrating) s_tx_packet.v3_flags |= RADAR_V3_FLAG_FTM_CALIB;
+
+    uint8_t ftm_control = s_tx_packet.v3_flags &
+        (RADAR_V3_FLAG_FTM_GRANT | RADAR_V3_FLAG_FTM_BUSY |
+         RADAR_V3_FLAG_FTM_CALIB);
+    if (!s_ftm_control_logged || ftm_control != s_last_logged_ftm_control) {
+        ESP_LOGI(TAG, "FTM_TOKEN role=%s grant=%u busy=%u calib=%u",
+                 s_role_known ? (s_ftm_initiator ? "INITIATOR" : "RESPONDER") : "UNKNOWN",
+                 (ftm_control & RADAR_V3_FLAG_FTM_GRANT) != 0,
+                 (ftm_control & RADAR_V3_FLAG_FTM_BUSY) != 0,
+                 (ftm_control & RADAR_V3_FLAG_FTM_CALIB) != 0);
+        s_last_logged_ftm_control = ftm_control;
+        s_ftm_control_logged = true;
+    }
     float fr = s_filtered_rssi;
     s_tx_packet.rssi_to_peer = fr < -127.0f ? -127 : (fr > 0.0f ? 0 : (int8_t)fr);
     float ra = s_report_angle;
@@ -368,11 +362,7 @@ static void broadcast_tick(void *arg) {
     s_tx_packet.sweep_elapsed_ms = s_sweeping ? (uint32_t)((now - s_sweep_start_us) / 1000) : 0;
     s_tx_packet.hop_index = (uint8_t)(s_tx_packet.sweep_elapsed_ms / RADAR_SWEEP_HOP_DWELL_MS);
     s_tx_packet.channel = s_cur_channel;
-#ifndef CONFIG_RADAR_SIM_BUILD
-    // QEMU-wasm 没有射频发送模型:esp_now_send 内部自旋等待发送完成,
-    // 在模拟器里会永久卡死(实测冻结点),故 sim 构建裁剪发送。
-    (void)esp_now_send(BROADCAST_MAC, (const uint8_t *)&s_tx_packet, sizeof(s_tx_packet));
-#endif
+    if (s_tx_task) xTaskNotifyGive(s_tx_task);
 }
 
 esp_err_t radar_espnow_start_broadcast(const char *device_name) {
@@ -394,13 +384,20 @@ esp_err_t radar_espnow_start_broadcast(const char *device_name) {
     s_tx_packet.angle_deg10 = -1;
     s_tx_packet.dist_dm = -1;
 
+    if (xTaskCreate(tx_task, "radar_tx", 3072, NULL, 1, &s_tx_task) != pdPASS) {
+        s_tx_task = NULL;
+        return ESP_ERR_NO_MEM;
+    }
     esp_timer_create_args_t timer_args = {.callback = broadcast_tick, .name = "radar_tx"};
     err = esp_timer_create(&timer_args, &s_broadcast_timer);
     if (err != ESP_OK) return err;
-    err = esp_timer_start_periodic(s_broadcast_timer, 50000);
+    err = esp_timer_start_periodic(s_broadcast_timer,
+                                   RADAR_TRACK_PERIOD_MS * 1000);
     if (err != ESP_OK) {
         (void)esp_timer_delete(s_broadcast_timer);
         s_broadcast_timer = NULL;
+        vTaskDelete(s_tx_task);
+        s_tx_task = NULL;
         return err;
     }
     s_broadcasting = true;
@@ -413,6 +410,11 @@ void radar_espnow_stop_broadcast(void) {
     (void)esp_timer_delete(s_broadcast_timer);
     s_broadcast_timer = NULL;
     s_broadcasting = false;
+    if (s_tx_task) {
+        xTaskNotifyGive(s_tx_task);
+        vTaskDelete(s_tx_task);
+        s_tx_task = NULL;
+    }
     (void)esp_now_del_peer(BROADCAST_MAC);
 }
 
@@ -471,6 +473,11 @@ bool radar_espnow_peer_ap_mac(uint8_t out_mac[RADAR_MAC_LEN]) {
     return true;
 }
 
+uint8_t radar_espnow_peer_channel(void) {
+    return (s_peer_channel >= 1 && s_peer_channel <= 14)
+        ? s_peer_channel : RADAR_HOME_CHANNEL;
+}
+
 bool radar_espnow_peer_ble_identity(uint8_t out_identity[RADAR_BLE_ID_LEN]) {
     if (!out_identity || !s_peer_ble_identity_known || !radar_espnow_peer_alive()) return false;
     memcpy(out_identity, s_peer_ble_identity, RADAR_BLE_ID_LEN);
@@ -478,6 +485,36 @@ bool radar_espnow_peer_ble_identity(uint8_t out_identity[RADAR_BLE_ID_LEN]) {
 }
 
 bool radar_espnow_is_ftm_initiator(void) { return s_role_known && s_ftm_initiator; }
+
+bool radar_espnow_ftm_can_initiate(void) {
+    if (!s_role_known || !radar_espnow_peer_alive()) return false;
+    if (!s_peer_v3) return s_ftm_initiator;
+    int64_t now = esp_timer_get_time();
+    if (s_last_ftm_control_us != 0 && now - s_last_ftm_control_us > 3000000 &&
+        s_ftm_initiator) {
+        s_ftm_token = true; // token watchdog: MAC-lower side recovers ownership
+    }
+    return s_ftm_token && !s_ftm_local_busy && now >= s_peer_ftm_busy_until_us;
+}
+
+void radar_espnow_ftm_session_started(void) {
+    s_ftm_local_busy = true;
+    if (s_peer_v3) s_ftm_token = false;
+}
+
+void radar_espnow_ftm_session_finished(void) {
+    s_ftm_local_busy = false;
+    if (s_peer_v3) {
+        s_ftm_token = false;
+        s_ftm_grant_until_us = esp_timer_get_time() + 1000000;
+    }
+}
+
+void radar_espnow_ftm_set_calibrating(bool active) {
+    s_ftm_local_calibrating = active;
+}
+
+bool radar_espnow_peer_ftm_calibrating(void) { return s_peer_ftm_calibrating; }
 
 bool radar_espnow_is_hopping(void) {
     return s_sweeping || (s_peer_sweep_known &&
@@ -498,7 +535,14 @@ bool radar_espnow_peer_wants_still(void) {
            esp_timer_get_time() - s_peer_wants_still_us < 1000000;
 }
 
+void radar_espnow_set_period_ms(uint32_t period_ms) {
+    if (!s_broadcast_timer || period_ms == 0) return;
+    (void)esp_timer_stop(s_broadcast_timer);
+    (void)esp_timer_start_periodic(s_broadcast_timer, period_ms * 1000);
+}
+
 void radar_espnow_start_sweep(void) {
+    radar_espnow_set_period_ms(RADAR_SWEEP_PERIOD_MS);
     s_sample_count = 0;
     s_channel_fault = false;
     s_sweep_start_us = esp_timer_get_time();
@@ -509,6 +553,7 @@ void radar_espnow_start_sweep(void) {
 
 unsigned radar_espnow_stop_sweep(void) {
     s_sweeping = false;
+    radar_espnow_set_period_ms(RADAR_TRACK_PERIOD_MS);
     if (s_cur_channel != RADAR_HOME_CHANNEL) {
         esp_err_t err = esp_wifi_set_channel(RADAR_HOME_CHANNEL, WIFI_SECOND_CHAN_NONE);
         if (err == ESP_OK) {

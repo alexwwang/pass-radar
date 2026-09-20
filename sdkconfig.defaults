@@ -23,14 +23,20 @@ CONFIG_COMPILER_CXX_RTTI=n
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE=y
 
 # --- 日志(瘦身) ---
-# 默认 WARN:INFO 级日志字符串占用大量 .rodata;按需用 esp_log_level_set() 临时调高。
-CONFIG_LOG_DEFAULT_LEVEL_WARN=y
-CONFIG_LOG_DEFAULT_LEVEL=2
+# 现场诊断阶段保留 INFO:启动、无线阶段和 FTM report 必须可从 USB 读取。
+# 体积增加可接受，正式固件不再把关键诊断信息静默掉。
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
 
 # --- 控制台:USB-Serial-JTAG(C3 原生 USB,GPIO18/19)---
 # 不用 UART0:其默认 TX=GPIO21 与本板背光引脚冲突。
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# Panic 直接打印寄存器/回溯后重启；不启用 silent reboot 或 GDB halt，
+# 这样 USB 监听器至少能捕获可用的 panic 文本。
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
+CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=0
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
 
 # --- LVGL(瘦身裁剪) ---
 CONFIG_LV_COLOR_DEPTH_16=y
@@ -88,9 +94,15 @@ CONFIG_LV_USE_ARC=y
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
 
-# --- Wi-Fi(ESP-NOW/CSI 依赖) ---
+# --- Wi-Fi(ESP-NOW/CSI/FTM 依赖) ---
 # ESP-NOW 需要 Wi-Fi 驱动初始化；CSI 用于子载波幅度选择性统计。
 CONFIG_ESP_WIFI_CSI_ENABLED=y
+# ESP32-C3 supports FTM when the Wi-Fi feature is linked in. The runtime
+# still falls back to RSSI when the peer is not an FTM responder or the
+# session cannot be established.
+CONFIG_ESP_WIFI_FTM_ENABLE=y
+CONFIG_ESP_WIFI_FTM_INITIATOR_SUPPORT=y
+CONFIG_ESP_WIFI_FTM_RESPONDER_SUPPORT=y
 # BLE 已启用(Coded PHY 长距哨兵链路),见下。
 
 # --- BLE(NimBLE,测距增强:长距哨兵 + 异构校验) ---

@@ -347,7 +347,7 @@ uint32_t radar_sweep_estimate_period_ms(const radar_sample_t *samples, unsigned 
     }
     if (best_t == sweep_duration_ms) return sweep_duration_ms;
 
-    // 细化:在最优 T 附近 ±步长内以 20ms 网格重搜(角度粒度 ≤ ~2.5°)。
+    // 细化:在最优 T 附近 plus/minus 步长内以 20ms 网格重搜(角度粒度 ≤ ~2.5°)。
     uint32_t lo = best_t > SWEEP_PERIOD_STEP_MS
                       ? best_t - SWEEP_PERIOD_STEP_MS : best_t;
     uint32_t hi = best_t + SWEEP_PERIOD_STEP_MS;

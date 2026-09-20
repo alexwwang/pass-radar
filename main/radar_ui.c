@@ -46,6 +46,7 @@ static lv_obj_t *s_sweep_msg;
 static lv_obj_t *s_result_dot;
 static lv_obj_t *s_result_angle;
 static lv_obj_t *s_result_dist;
+static lv_obj_t *s_result_meta;
 static lv_obj_t *s_result_sector;
 
 // 标定页面对象
@@ -123,24 +124,30 @@ static const char *conf_tag(radar_confidence_t conf) {
     }
 }
 
-// 置信度对应距离误差(调研 5.6:HIGH ±0.5m / MED ±2m)。
-static const char *conf_dist_err(radar_confidence_t conf) {
-    return conf == RADAR_CONF_HIGH ? "±0.5" : "±2";
+// 扫盘角度是相对于按下 OK 时顶边方向的顺时针角度，不是地理方位。
+static const char *relative_direction_label(int angle_deg) {
+    static const char *const labels[] = {
+        "FRONT", "FRONT-RIGHT", "RIGHT", "REAR-RIGHT",
+        "REAR", "REAR-LEFT", "LEFT", "FRONT-LEFT",
+    };
+    int normalized = angle_deg % 360;
+    if (normalized < 0) normalized += 360;
+    unsigned sector = (unsigned)((normalized + 22) / 45) % 8;
+    return labels[sector];
 }
 
 // ---------- 页面构建/销毁 ----------
 
 static void build_main_page(void) {
-    s_scr = ui_pixel_screen_create("RADAR");
-    build_radar_panel();
+    s_scr = ui_pixel_screen_create("STATUS");
 
-    // 目标点(初始隐藏)
-    s_target_dot = create_dot(s_radar_panel, RADAR_TARGET, RADAR_DOT_SIZE);
-
-    // 距离与信号强度
-    s_dist_label = add_info_label(s_scr, 232, &lv_font_montserrat_20);
-    s_rssi_label = add_info_label(s_scr, 258, &lv_font_montserrat_14);
-    s_hint_label = add_info_label(s_scr, 290, &lv_font_montserrat_14);
+    // 待机页没有实时方向观测，不显示静态雷达图，避免暗示方向有效。
+    // 三行状态固定放在屏幕中部，避免底部文字被裁切。
+    s_dist_label = add_info_label(s_scr, 92, &lv_font_montserrat_20);
+    s_rssi_label = add_info_label(s_scr, 136, &lv_font_montserrat_14);
+    s_hint_label = add_info_label(s_scr, 178, &lv_font_montserrat_14);
+    lv_label_set_text(s_dist_label, "WAITING FOR PEER");
+    lv_label_set_text(s_rssi_label, "RSSI:--  1way [--]");
     lv_label_set_text(s_hint_label, "[OK] Sweep  [LONG] Calib");
 
     lv_screen_load(s_scr);
@@ -151,7 +158,7 @@ static void build_sweeping_page(void) {
     build_radar_panel();
 
     s_sweep_msg = add_info_label(s_scr, 232, &lv_font_montserrat_14);
-    lv_label_set_text(s_sweep_msg, "Rotate clockwise!\nHold card at chest level");
+    lv_label_set_text(s_sweep_msg, "0=TOP EDGE AT OK\nROTATE CW");
 
     // 进度条(屏幕底部)
     s_progress_bar = ui_pixel_panel_create(s_scr, 30, 280, 0, 8, RADAR_SWEEP);
@@ -164,35 +171,24 @@ static void build_sweeping_page(void) {
 
 static void build_result_page(void) {
     s_scr = ui_pixel_screen_create("RESULT");
+
+    // 保留扫盘后的雷达盘面，再在盘面下方叠加文字结果。
+    // 页面切换会销毁 SWEEPING 页面，因此结果页必须重新创建自己的面板。
     build_radar_panel();
-
-    // 低置信度扇形(±spread 方向不确定区域,show_result 按需显示)。
-    s_result_sector = lv_arc_create(s_radar_panel);
-    lv_obj_set_size(s_result_sector, RADAR_RADIUS * 2, RADAR_RADIUS * 2);
-    lv_obj_set_pos(s_result_sector, RADAR_CX - RADAR_RADIUS, RADAR_CY - RADAR_RADIUS);
-    lv_obj_remove_style_all(s_result_sector);
-    lv_obj_set_style_arc_color(s_result_sector, lv_color_hex(RADAR_WARN), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(s_result_sector, 14, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(s_result_sector, LV_OPA_40, LV_PART_INDICATOR);
-    lv_obj_add_flag(s_result_sector, LV_OBJ_FLAG_HIDDEN);
-
-    // 结果点
     s_result_dot = create_dot(s_radar_panel, RADAR_TARGET, RADAR_DOT_SIZE);
-
-    // 结果文字
-    s_result_angle = add_info_label(s_scr, 232, &lv_font_montserrat_20);
-    s_result_dist = add_info_label(s_scr, 258, &lv_font_montserrat_14);
-    s_hint_label = add_info_label(s_scr, 290, &lv_font_montserrat_14);
-    lv_label_set_text(s_hint_label, "[OK] Again  [LONG] Back");
+    s_result_angle = add_info_label(s_scr, 228, &lv_font_montserrat_14);
+    s_result_dist = add_info_label(s_scr, 248, &lv_font_montserrat_14);
+    s_result_meta = add_info_label(s_scr, 268, &lv_font_montserrat_14);
+    s_hint_label = add_info_label(s_scr, 292, &lv_font_montserrat_14);
+    lv_label_set_text(s_hint_label, "0=TOP EDGE AT OK");
 
     lv_screen_load(s_scr);
 }
 
 static void build_calib_page(void) {
     s_scr = ui_pixel_screen_create("CALIBRATE");
-    build_radar_panel();
 
-    s_sweep_msg = add_info_label(s_scr, 232, &lv_font_montserrat_14);
+    s_sweep_msg = add_info_label(s_scr, 108, &lv_font_montserrat_14);
     lv_label_set_text(s_sweep_msg, "Hold two cards 1m apart\nKeep still...");
 
     s_calib_bar = ui_pixel_panel_create(s_scr, 30, 280, 0, 8, RADAR_SWEEP);
@@ -202,10 +198,9 @@ static void build_calib_page(void) {
 
 static void build_debug_page(void) {
     s_scr = ui_pixel_screen_create("DEBUG");
-    build_radar_panel();
 
-    // 单块多行文本,避免大量小标签对象(雷达页面 LVGL 内存教训)。
-    s_debug_label = add_info_label(s_scr, 228, &lv_font_montserrat_14);
+    // 单块多行文本，诊断页也不显示没有实时方向意义的静态雷达图。
+    s_debug_label = add_info_label(s_scr, 78, &lv_font_montserrat_14);
     lv_obj_set_width(s_debug_label, 230);
     lv_label_set_text(s_debug_label, "...");
 
@@ -227,6 +222,7 @@ static void page_teardown(void) {
         s_sweep_msg = NULL;
         s_result_angle = NULL;
         s_result_dist = NULL;
+        s_result_meta = NULL;
         s_result_sector = NULL;
         s_calib_bar = NULL;
         s_debug_label = NULL;
@@ -256,48 +252,59 @@ void radar_ui_update_tracking(const radar_fusion_result_t *fr, int raw_rssi,
     if (s_dist_label) {
         if (fr->conf == RADAR_CONF_OOR) {
             // BLE 哨兵远/近两档(调研 5.5):RSSI > -75dBm 判近档。
-            // 阈值待真机标定,预计开阔场 Coded PHY 链路 50~100m 对应该分界。
+            // 待机页第一行只保留短状态，确保 240px 屏幕不截断。
             lv_label_set_text(s_dist_label,
                               ble_alive ? (radar_ble_peer_rssi() > -75
-                                               ? "FAR NEAR (BLE)"
-                                               : "FAR (BLE link)")
+                                               ? "FAR NEAR BLE"
+                                               : "FAR BLE")
                                         : "OUT OF RANGE");
         } else {
             int dm = (int)(fr->distance_m * 10.0f + 0.5f);
-            const char *label = class_label ? class_label : "";
+            char distance_text[96];
             if (fr->upper_bound_only && fr->dist_hi_m > 0.0f) {
-                lv_label_set_text_fmt(s_dist_label, "DIST <= %.0f m [%s] L%d %s",
-                                      (double)fr->dist_hi_m, conf_tag(conf),
-                                      (int)fr->level, label);
+                (void)snprintf(distance_text, sizeof(distance_text),
+                               "DIST <= %.0fm %s L%d",
+                               (double)fr->dist_hi_m, conf_tag(conf),
+                               (int)fr->level);
             } else if (fr->dist_lo_m > 0.0f && fr->dist_hi_m > 0.0f) {
-                lv_label_set_text_fmt(s_dist_label, "DIST %s%d.%d (%.1f~%.1f) [%s] L%d %s",
-                                      conf == RADAR_CONF_HIGH ? "" : "~",
-                                      dm / 10, dm % 10,
-                                      (double)fr->dist_lo_m, (double)fr->dist_hi_m,
-                                      conf_tag(conf), (int)fr->level, label);
+                (void)snprintf(distance_text, sizeof(distance_text),
+                               "DIST %s%d.%dm %s L%d",
+                               conf == RADAR_CONF_HIGH ? "" : "~",
+                               dm / 10, dm % 10, conf_tag(conf),
+                               (int)fr->level);
             } else {
-                lv_label_set_text_fmt(s_dist_label, "DIST: %s%d.%d %s m [%s] L%d %s",
-                                      conf == RADAR_CONF_HIGH ? "" : "~",
-                                      dm / 10, dm % 10, conf_dist_err(conf),
-                                      conf_tag(conf), (int)fr->level, label);
+                (void)snprintf(distance_text, sizeof(distance_text),
+                               "DIST %s%d.%dm %s L%d",
+                               conf == RADAR_CONF_HIGH ? "" : "~",
+                               dm / 10, dm % 10, conf_tag(conf),
+                               (int)fr->level);
             }
+            lv_label_set_text(s_dist_label, distance_text);
         }
     }
 
-    if (s_hint_label && hint_label && hint_label[0] != '\0') {
-        lv_label_set_text(s_hint_label, hint_label);
-    } else if (s_hint_label) {
-        lv_label_set_text(s_hint_label, "");
+    if (s_hint_label) {
+        // 第三行优先显示动作提示；无动作时显示遮挡分类，最后才显示默认操作。
+        const char *status_hint = (hint_label && hint_label[0] != '\0')
+            ? hint_label
+            : ((class_label && class_label[0] != '\0')
+                ? class_label
+                : "[OK] SWEEP  [LONG] CALIB");
+        lv_label_set_text(s_hint_label, status_hint);
     }
 
-    // 信号行:原始 RSSI + 观测源/置信度标记
+    // 信号行:原始 RSSI + 观测源/置信度标记。
+    // 先在本地缓冲区完成格式化，避免 LVGL 内置 varargs formatter 在
+    // 无效/已失效字符串参数下解引用崩溃。
     if (s_rssi_label) {
-        lv_label_set_text_fmt(s_rssi_label, "RSSI:%d %s%s [%s]",
-                              raw_rssi,
-                              fr->ftm_used ? "FTM " : "",
-                              fr->conf == RADAR_CONF_MED ||
-                              fr->conf == RADAR_CONF_HIGH ? "2way" : "1way",
-                              conf_tag(conf));
+        char rssi_text[64];
+        (void)snprintf(rssi_text, sizeof(rssi_text), "RSSI:%d %s%s [%s]",
+                       raw_rssi,
+                       fr->ftm_used ? "FTM " : "",
+                       fr->conf == RADAR_CONF_MED ||
+                       fr->conf == RADAR_CONF_HIGH ? "2way" : "1way",
+                       conf_tag(conf));
+        lv_label_set_text(s_rssi_label, rssi_text);
     }
 
     // 目标点:距离映射到半径(0~75px),显示在 12 点钟方向(追踪态无角度)
@@ -352,60 +359,56 @@ void radar_ui_show_result(int angle_deg, float distance_m,
     s_page = RADAR_PAGE_RESULT;
     build_result_page();
 
-    // 低置信度扇形(调研 5.6):±spread 的方向不确定区域,
-    // 张角下限 20° 保证可见,上限 120° 避免整圈无意义。
-    if (s_result_sector) {
-        float half = spread_deg;
-        if (half < 10.0f) half = 10.0f;
-        if (half > 60.0f) half = 60.0f;
-        if (!weak_signal && angle_deg >= 0 && conf != RADAR_CONF_OOR) {
-            lv_arc_set_bg_angles(s_result_sector, (int)(angle_deg - half),
-                                 (int)(angle_deg + half));
-            lv_obj_remove_flag(s_result_sector, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-
     if (weak_signal || angle_deg < 0 || conf == RADAR_CONF_OOR) {
-        if (s_result_angle) lv_label_set_text(s_result_angle, "OUT OF RANGE");
+        if (s_result_angle) lv_label_set_text(s_result_angle, "DIR: UNKNOWN");
         if (s_result_dist)  lv_label_set_text(s_result_dist,
-                                              weak_signal ? "Signal too weak"
-                                                          : "No clear direction");
+                                              weak_signal ? "SIGNAL TOO WEAK"
+                                                          : "NO CLEAR DIRECTION");
+        if (s_result_meta) lv_label_set_text(s_result_meta, "DIST --  CONF --");
         return;
     }
 
-    // 角度行:附信道投票分歧(±)与置信度颜色
+    // 结果页三行:相对方位、顺时针角度、0°基准。
     if (s_result_angle) {
-        lv_label_set_text_fmt(s_result_angle, "Angle: %d+/-%d deg",
-                              angle_deg, (int)(spread_deg + 0.5f));
+        char direction_text[48];
+        (void)snprintf(direction_text, sizeof(direction_text), "DIR: %s",
+                       relative_direction_label(angle_deg));
+        lv_label_set_text(s_result_angle, direction_text);
         lv_obj_set_style_text_color(s_result_angle,
             lv_color_hex(conf == RADAR_CONF_LOW ? RADAR_WARN : RADAR_TEXT), 0);
     }
     if (s_result_dist) {
-        int dm = (int)(distance_m * 10.0f + 0.5f);
-        lv_label_set_text_fmt(s_result_dist, "Dist: %s%d.%d %s m [%s]",
-                              conf == RADAR_CONF_HIGH ? "" : "~",
-                              dm / 10, dm % 10, conf_dist_err(conf), conf_tag(conf));
+        char angle_text[48];
+        (void)snprintf(angle_text, sizeof(angle_text), "CW %d+/-%.0f deg",
+                       angle_deg, (double)spread_deg);
+        lv_label_set_text(s_result_dist, angle_text);
     }
-
-    // 在雷达上画出目标方向(低置信度用警示色)
+    if (s_result_meta) {
+        char meta_text[48];
+        (void)snprintf(meta_text, sizeof(meta_text), "DIST %.1fm  CONF %s",
+                       (double)distance_m, conf_tag(conf));
+        lv_label_set_text(s_result_meta, meta_text);
+    }
     if (s_result_dot) {
-        int r = (int)(distance_m * 8.0f);
-        if (r > RADAR_RADIUS) r = RADAR_RADIUS;
-        if (r < 5) r = 5;
         int x, y;
-        polar_to_xy(angle_deg, r, &x, &y);
-        lv_obj_set_pos(s_result_dot,
-                       x - RADAR_DOT_SIZE / 2,
+        polar_to_xy(angle_deg, RADAR_RADIUS - 10, &x, &y);
+        lv_obj_set_pos(s_result_dot, x - RADAR_DOT_SIZE / 2,
                        y - RADAR_DOT_SIZE / 2);
-        lv_obj_set_style_bg_color(s_result_dot,
-            lv_color_hex(conf == RADAR_CONF_LOW ? RADAR_WARN : RADAR_TARGET), 0);
         lv_obj_remove_flag(s_result_dot, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
 void radar_ui_set_result_hint(const char *hint_label) {
     if (s_page == RADAR_PAGE_RESULT && s_hint_label) {
-        lv_label_set_text(s_hint_label, hint_label ? hint_label : "");
+        // 保留结果页的 0° 基准说明；异常场景提示追加在同一行。
+        if (hint_label && hint_label[0] != '\0') {
+            char hint_text[64];
+            (void)snprintf(hint_text, sizeof(hint_text), "%s / 0=TOP EDGE",
+                           hint_label);
+            lv_label_set_text(s_hint_label, hint_text);
+        } else {
+            lv_label_set_text(s_hint_label, "0=TOP EDGE AT OK");
+        }
     }
 }
 
@@ -429,41 +432,55 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
     // 行3:环境与标定参数 / 最近投票分歧
     char ftm[40];
     if (info->ftm_valid) {
-        snprintf(ftm, sizeof(ftm), "FTM ok %.1f m +/-%.1f b%u p%u/%u",
+        snprintf(ftm, sizeof(ftm), "FTM ok %.1f +/-%.1f q%u %s r%.0f%%",
                  (double)info->ftm_dist_m, (double)info->ftm_spread_m,
-                 info->ftm_bursts, info->ftm_probe_successes,
-                 info->ftm_probe_attempts);
+                 info->ftm_hist_count,
+                 info->ftm_calibrated ? "CAL" : "RAW",
+                 (double)(info->ftm_success_rate * 100.0f));
     } else if (info->ftm_last_status != 0) {
-        snprintf(ftm, sizeof(ftm), "FTM fail s%d p%u/%u", info->ftm_last_status,
+        snprintf(ftm, sizeof(ftm), "FTM fail s%d r%.0f%% p%u/%u",
+                 info->ftm_last_status,
+                 (double)(info->ftm_success_rate * 100.0f),
                  info->ftm_probe_successes, info->ftm_probe_attempts);
     } else {
-        snprintf(ftm, sizeof(ftm), "FTM --");
+        // No valid snapshot is a transient state while a session is pending,
+        // not a permanent UI mode. Show it explicitly as WAIT and let the
+        // next poll replace it with FTM ok or FTM fail automatically.
+        snprintf(ftm, sizeof(ftm), "FTM WAIT r%s",
+                 isfinite(info->ftm_success_rate)
+                     ? (info->ftm_success_rate >= 0.995f ? "100" : "<100")
+                     : "--");
     }
-    if (info->fr && info->fr->conf != RADAR_CONF_OOR && info->fr->distance_m > 0.0f) {
-        int v2dm = (int)(info->fr->distance_m * 10.0f + 0.5f);
-        lv_label_set_text_fmt(s_debug_label,
-            "v1 %d.%d m | v2 %s%d.%d m [%s]\n"
-            "%s | BLE %s\n"
-            "env %d n%.1f tx %.0f spread %.0f",
-            (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
-            info->fr->conf == RADAR_CONF_HIGH ? "" : "~",
-            v2dm / 10, v2dm % 10, conf_tag(info->fr->conf),
-            ftm,
-            info->ble_alive ? "yes" : "no",
-            (int)info->env,
-            (double)radar_env_path_loss_n(info->env),
-            (double)info->tx_ref_sym, (double)info->vote_spread_deg);
-    } else {
-        lv_label_set_text_fmt(s_debug_label,
-            "v1 %d.%d m | v2 OUT OF RANGE\n"
-            "%s | BLE %s\n"
-            "env %d n%.1f tx %.0f spread %.0f",
-            (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
-            ftm,
-            info->ble_alive ? "yes" : "no",
-            (int)info->env,
-            (double)radar_env_path_loss_n(info->env),
-            (double)info->tx_ref_sym, (double)info->vote_spread_deg);
+    {
+        char debug_text[256];
+        if (info->fr && info->fr->conf != RADAR_CONF_OOR &&
+            info->fr->distance_m > 0.0f) {
+            int v2dm = (int)(info->fr->distance_m * 10.0f + 0.5f);
+            (void)snprintf(debug_text, sizeof(debug_text),
+                "v1 %d.%d m | v2 %s%d.%d m [%s]\n"
+                "%s | BLE %s\n"
+                "env %d n%.1f tx %.0f spread %.0f",
+                (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
+                info->fr->conf == RADAR_CONF_HIGH ? "" : "~",
+                v2dm / 10, v2dm % 10, conf_tag(info->fr->conf),
+                ftm,
+                info->ble_alive ? "yes" : "no",
+                (int)info->env,
+                (double)radar_env_path_loss_n(info->env),
+                (double)info->tx_ref_sym, (double)info->vote_spread_deg);
+        } else {
+            (void)snprintf(debug_text, sizeof(debug_text),
+                "v1 %d.%d m | v2 OUT OF RANGE\n"
+                "%s | BLE %s\n"
+                "env %d n%.1f tx %.0f spread %.0f",
+                (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
+                ftm,
+                info->ble_alive ? "yes" : "no",
+                (int)info->env,
+                (double)radar_env_path_loss_n(info->env),
+                (double)info->tx_ref_sym, (double)info->vote_spread_deg);
+        }
+        lv_label_set_text(s_debug_label, debug_text);
     }
 }
 

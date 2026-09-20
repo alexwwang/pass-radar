@@ -54,6 +54,13 @@ static void test_ftm_filter(void) {
     CHECK(radar_fusion_ftm_filter(NULL, 0, NULL) == RADAR_DIST_INVALID,
           "ftm_filter empty should be invalid");
 
+    // 最近 session 的 P25：高值反射径不应抬高窗口输出。
+    float history[5] = {2.0f, 2.1f, 2.2f, 8.0f, 12.0f};
+    float p25 = radar_fusion_ftm_low_quantile(history, 5);
+    CHECK(fabsf(p25 - 2.1f) < 0.01f, "ftm P25: %.2f, expected 2.10", p25);
+    CHECK(radar_fusion_ftm_low_quantile(NULL, 0) == RADAR_DIST_INVALID,
+          "ftm P25 empty should be invalid");
+
     // 单样本
     float one[1] = {3.3f};
     CHECK(fabsf(radar_fusion_ftm_filter(one, 1, NULL) - 3.3f) < 0.01f,

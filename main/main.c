@@ -22,6 +22,8 @@
 #include "bsp_pins.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "lvgl.h"
 #include "metapass_hook.h"
@@ -31,6 +33,7 @@
 #include "radar_fusion.h"
 #include "radar_obstruct.h"
 #include "radar_csi.h"
+#include "radar_diag_persist.h"
 #include "radar_sweep.h"
 #include "radar_ui.h"
 #include <math.h>
@@ -80,6 +83,8 @@ static unsigned s_walk_state;
 static float s_walk_reference = NAN;
 static int64_t s_walk_cap_until_ms;
 static int64_t s_walk_armed_ms;
+static bool s_diag_peer_recorded;
+static volatile bool s_radio_ready;
 #define WALK_ARMED 1u
 #define WALK_DONE 2u
 #define WALK_CAP_M 25.0f
@@ -120,17 +125,7 @@ static radar_fusion_result_t run_fusion(void) {
         ftm.spread_m = ftm_snapshot.spread_m;
         ftm.valid_bursts = ftm_snapshot.valid_bursts;
     }
-    float ftm_success_rate = ftm.valid ? 1.0f : NAN;
-#if CONFIG_RADAR_SIM_BUILD
-#if CONFIG_RADAR_SIM_SCENARIO != 0
-    ftm_success_rate = 0.1f;
-#endif
-#endif
-#if CONFIG_RADAR_SIM_BUILD && CONFIG_RADAR_SIM_SCENARIO == 2
-    float sim_csi[16];
-    for (unsigned i = 0; i < 16; ++i) sim_csi[i] = i < 8 ? 1.0f : 4.0f;
-    (void)radar_csi_push_amplitudes(sim_csi, 16);
-#endif
+    float ftm_success_rate = radar_ftm_success_rate();
     uint8_t csi_peer_mac[RADAR_MAC_LEN];
     if (radar_espnow_peer_ap_mac(csi_peer_mac)) {
         radar_csi_set_peer_mac(csi_peer_mac);
@@ -199,8 +194,8 @@ static void poll_tick(lv_timer_t *t) {
         s_track_dist_m = RADAR_DIST_INVALID;
     }
 
-    // FTM 周期驱动(任何页面都需要;跳频期内部自动跳过)
-    radar_ftm_tick();
+    // FTM 周期驱动(无线初始化失败时完全跳过)
+    if (s_radio_ready) radar_ftm_tick();
 
     // 双端同扫跟随(调研 5.4 P0):对端开始扫盘且本端空闲时自动进入扫盘,
     // 按 sweep_id 一次性触发,错过 1s 以上不补扫(中途加入同步无意义)。
@@ -218,6 +213,12 @@ static void poll_tick(lv_timer_t *t) {
 
     if (page == RADAR_PAGE_MAIN) {
         radar_fusion_result_t fr = run_fusion();
+        if (radar_espnow_peer_alive() && !s_diag_peer_recorded) {
+            s_diag_peer_recorded = true;
+            radar_diag_persist_stage(RADAR_DIAG_STAGE_PEER_SEEN, 2u,
+                                     radar_espnow_peer_rssi(),
+                                     radar_csi_received_frames());
+        }
         int raw = radar_espnow_raw_rssi();
         // 追踪页距离 IIR 平滑;结果失效(OOR)时立即复位,避免旧值回显。
         if (fr.conf == RADAR_CONF_OOR || fr.distance_m <= 0.0f) {
@@ -245,7 +246,11 @@ static void poll_tick(lv_timer_t *t) {
             .ftm_valid = false,
             .ftm_dist_m = RADAR_DIST_INVALID,
             .ftm_spread_m = 0.0f,
+            .ftm_hist_spread_m = 0.0f,
+            .ftm_success_rate = radar_ftm_success_rate(),
             .ftm_bursts = 0,
+            .ftm_hist_count = 0,
+            .ftm_calibrated = radar_ftm_is_calibrated(),
             .ftm_probe_attempts = radar_ftm_probe_attempts(),
             .ftm_probe_successes = radar_ftm_probe_successes(),
             .ble_alive = radar_ble_peer_alive(),
@@ -260,6 +265,9 @@ static void poll_tick(lv_timer_t *t) {
             di.ftm_valid = true;
             di.ftm_dist_m = snap.distance_m;
             di.ftm_spread_m = snap.spread_m;
+            di.ftm_hist_spread_m = snap.hist_spread_m;
+            di.ftm_hist_count = snap.hist_count;
+            di.ftm_calibrated = snap.calibrated;
             di.ftm_bursts = snap.valid_bursts;
         } else {
             // 无有效快照时显示最近一次失败原因(status 编码),现场定位共存/对端问题。
@@ -298,12 +306,18 @@ static void sweep_done(lv_timer_t *t) {
     (void)t;
     if (radar_ui_current_page() != RADAR_PAGE_SWEEPING) return;
 
+    int64_t sweep_elapsed_ms = (esp_timer_get_time() / 1000) - s_sweep_start_ms;
+    // Keep timing and sample completeness observable without requiring a
+    // Debug Capture implementation. This is a low-rate boundary log.
+    ESP_LOGI(TAG, "SWEEP_DONE elapsed_ms=%lld", (long long)sweep_elapsed_ms);
+
     // 停止采样并取回数据(恢复固定信道),恢复 FTM 与 BLE 扫描
     unsigned count = radar_espnow_stop_sweep();
     radar_ftm_pause(false);
     radar_ble_pause(false);
     radar_sample_t samples[RADAR_MAX_SAMPLES];
     count = radar_espnow_get_samples(samples, RADAR_MAX_SAMPLES);
+    ESP_LOGI(TAG, "SWEEP_SAMPLES count=%u", count);
 
     // 旋转速度自校正(调研 5.4 P1):估计实际完成时刻,剔除提前停转后的
     // 尾部平台样本,并缩短时间→角度映射基准。未检出修正时保持 4s。
@@ -441,16 +455,19 @@ static void calib_done(lv_timer_t *t) {
     if (s_calib_ftm_cnt >= 3) {
         float offset = radar_fusion_ftm_offset_from_calib(s_calib_ftm_samples,
                                                           s_calib_ftm_cnt);
-        if (isfinite(offset)) {
+        if (isfinite(offset) && radar_espnow_ftm_offset_save(offset) == ESP_OK) {
             radar_ftm_set_offset_m(offset);
-            (void)radar_espnow_ftm_offset_save(offset);
+            radar_ftm_set_calibrated(true);
             ESP_LOGI(TAG, "FTM 标定偏移=%.2f m (%u samples)",
                      (double)offset, s_calib_ftm_cnt);
+        } else if (isfinite(offset)) {
+            ESP_LOGW(TAG, "FTM 标定值保存失败,保持未标定状态");
         }
     } else {
         radar_ftm_set_offset_m(s_calib_old_ftm_offset);
     }
 
+    radar_espnow_ftm_set_calibrating(false);
     if (s_calib_timer) {
         lv_timer_delete(s_calib_timer);
         s_calib_timer = NULL;
@@ -461,6 +478,7 @@ static void calib_done(lv_timer_t *t) {
 // ---------- 扫盘/标定启动 ----------
 
 static void start_sweep(void) {
+    ESP_LOGI(TAG, "SWEEP_START");
     radar_ftm_pause(true);   // 跳频期间暂停 FTM
     radar_ble_pause(true);   // 让出射频:跳频 + 扫描无法同时进行
     s_sweep_start_ms = esp_timer_get_time() / 1000;
@@ -474,6 +492,7 @@ static void start_sweep(void) {
 
 static void start_calib(void) {
     radar_ftm_pause(true);   // 标定期间稳定信道,暂停 FTM 会话
+    radar_espnow_ftm_set_calibrating(true);
     radar_ble_pause(true);   // 标定采样不受扫描干扰
     memset(s_calib_samples, 0, sizeof(s_calib_samples));
     s_calib_cnt = 0;
@@ -539,14 +558,13 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
             radar_espnow_stop_sweep();
             radar_espnow_set_homing(false);
             radar_ftm_pause(false);
-    if (s_sweep_timer) {
-        lv_timer_delete(s_sweep_timer);
-        s_sweep_timer = NULL;
-    }
-    radar_ftm_pause(false);
-    radar_ble_pause(false);
-    radar_ui_show_main();
-}
+            if (s_sweep_timer) {
+                lv_timer_delete(s_sweep_timer);
+                s_sweep_timer = NULL;
+            }
+            radar_ble_pause(false);
+            radar_ui_show_main();
+        }
         break;
 
     case RADAR_PAGE_CALIB:
@@ -557,6 +575,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
             s_calib_timer = NULL;
         }
         radar_ftm_pause(false);
+        radar_espnow_ftm_set_calibrating(false);
         radar_ble_pause(false);
         radar_ui_show_main();
     }
@@ -582,9 +601,77 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     bsp_lvgl_unlock();
 }
 
+// ---------- 无线软依赖任务 ----------
+
+static void ble_init_task(void *arg) {
+    (void)arg;
+    // BLE is optional. Keep it out of the Wi-Fi/radio setup task so a missing
+    // controller (for example in a board simulator) cannot hold up the rest
+    // of the application.
+    esp_err_t err = radar_ble_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "BLE sentinel unavailable; continuing without BLE");
+    }
+    vTaskDelete(NULL);
+}
+
+static void radio_init_task(void *arg) {
+    (void)arg;
+    radar_diag_persist_stage(RADAR_DIAG_STAGE_RADIO_INIT, 0, -127, 0);
+    esp_err_t espnow_err = radar_espnow_init();
+    if (espnow_err != ESP_OK) {
+        s_radio_ready = false;
+        ESP_LOGW(TAG, "ESP-NOW unavailable (%s); UI remains available without peer data",
+                 esp_err_to_name(espnow_err));
+        radar_diag_persist_stage(RADAR_DIAG_STAGE_RUNNING, 0, -127, 0);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    s_radio_ready = true;
+    radar_diag_persist_stage(RADAR_DIAG_STAGE_RADIO_READY, 0, -127, 0);
+    float calib;
+    if (radar_espnow_calib_load(&calib) == ESP_OK &&
+        isfinite(calib) && calib >= -60.0f && calib <= -30.0f) {
+        s_tx_ref_sym = calib;
+    } else {
+        s_tx_ref_sym = RADAR_TX_POWER_REF;
+    }
+
+    if (radar_ftm_init() != ESP_OK) {
+        ESP_LOGW(TAG, "FTM unavailable; using RSSI fusion");
+    }
+    float ftm_offset;
+    if (radar_espnow_ftm_offset_load(&ftm_offset) == ESP_OK && isfinite(ftm_offset)) {
+        radar_ftm_set_offset_m(ftm_offset);
+        radar_ftm_set_calibrated(true);
+    }
+
+    bool csi_ready = radar_csi_init();
+    if (csi_ready) radar_csi_start_window(esp_timer_get_time());
+    radar_diag_persist_stage(csi_ready ? RADAR_DIAG_STAGE_CSI_READY
+                                       : RADAR_DIAG_STAGE_RUNNING,
+                             csi_ready ? 1u : 0u, -127,
+                             radar_csi_received_frames());
+
+    BaseType_t ble_task_ok = xTaskCreate(ble_init_task, "radar_ble",
+                                         6144, NULL, 1, NULL);
+    if (ble_task_ok != pdPASS) {
+        ESP_LOGW(TAG, "BLE task could not start; continuing without BLE");
+    }
+    if (radar_espnow_start_broadcast("pass-radar") != ESP_OK) {
+        ESP_LOGW(TAG, "ESP-NOW broadcast unavailable; continuing without peer data");
+    }
+    radar_diag_persist_stage(RADAR_DIAG_STAGE_RUNNING, 0, -127,
+                             radar_csi_received_frames());
+    vTaskDelete(NULL);
+}
+
 // ---------- 入口 ----------
 
 void app_main(void) {
+    (void)radar_diag_persist_init();
+    radar_diag_persist_stage(RADAR_DIAG_STAGE_BOOT, 0, -127, 0);
     ESP_LOGI(TAG, "pass-radar 启动");
 
     bsp_i2c_init();
@@ -598,6 +685,7 @@ void app_main(void) {
         return;
     }
     bsp_display_backlight(100);
+    radar_diag_persist_stage(RADAR_DIAG_STAGE_DISPLAY_READY, 0, -127, 0);
 
     // 按键为软依赖:失败只影响交互,不阻塞启动。
     if (bsp_button_init(on_key, NULL) != ESP_OK) {
@@ -621,42 +709,15 @@ void app_main(void) {
         bsp_lvgl_unlock();
     }
 
-    // ESP-NOW 初始化放在 UI 之后:失败不阻塞界面,仅影响信号采集。
-    if (radar_espnow_init() != ESP_OK) {
-        ESP_LOGE(TAG, "ESP-NOW 初始化失败,雷达将无法接收信号");
-    } else {
-        // 标定值(NVS,失败保持默认 -42dBm)
-        float calib;
-        if (radar_espnow_calib_load(&calib) == ESP_OK &&
-            isfinite(calib) && calib >= -60.0f && calib <= -30.0f) {
-            s_tx_ref_sym = calib;
-            ESP_LOGI(TAG, "载入标定值 tx_ref_sym=%.1f", (double)calib);
-        } else {
-            ESP_LOGW(TAG, "标定值无效,回退默认 tx_ref_sym=%.1f",
-                     (double)RADAR_TX_POWER_REF);
-            s_tx_ref_sym = RADAR_TX_POWER_REF;
-        }
-
-        // FTM 测距(软依赖:失败降级为纯 RSSI 融合)
-        if (radar_ftm_init() != ESP_OK) {
-            ESP_LOGW(TAG, "FTM 初始化失败,距离将仅基于 RSSI");
-        }
-        float ftm_offset;
-        if (radar_espnow_ftm_offset_load(&ftm_offset) == ESP_OK && isfinite(ftm_offset)) {
-            radar_ftm_set_offset_m(ftm_offset);
-        }
-        (void)radar_csi_init();
-        radar_csi_start_window(esp_timer_get_time());
-
-        // BLE 哨兵链路(软依赖:失败无超界提示)
-        if (radar_ble_init() != ESP_OK) {
-            ESP_LOGW(TAG, "BLE 哨兵初始化失败");
-        }
-
-        // 自动启动 20Hz 广播发射:两台设备刷同一固件即可互相对测。
-        if (radar_espnow_start_broadcast("pass-radar") != ESP_OK) {
-            ESP_LOGE(TAG, "广播发射启动失败");
-        }
+    // Radio is a soft dependency. Start it after the display and input path;
+    // unsupported simulator peripherals must never block the UI task.
+    // Lowest application priority: a missing/blocked radio driver must never
+    // starve LVGL, the button task, or the display refresh path.
+    BaseType_t radio_task_ok = xTaskCreate(radio_init_task, "radar_radio",
+                                           8192, NULL, 1, NULL);
+    if (radio_task_ok != pdPASS) {
+        ESP_LOGW(TAG, "radio task could not start; continuing with UI only");
+        radar_diag_persist_stage(RADAR_DIAG_STAGE_RUNNING, 0, -127, 0);
     }
     // meta-pass 子固件适配:签名固件常驻,未签名试运行(重启回启动器)。
     esp_err_t mv = metapass_mark_valid();

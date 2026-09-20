@@ -25,10 +25,14 @@ static const char *TAG = "radar_ftm";
 #define FTM_BACKOFF_US (2 * 1000 * 1000)
 #define FTM_PS_TO_M (1.49896e-4f)
 #define FTM_MAX_REPORT 64
+#define FTM_HISTORY 5
+#define FTM_SUCCESS_WINDOW 10
 #define FTM_MIN_PEER_RSSI (-72)
 #define FTM_PROBE_MIN_RSSI (-82)
 #define FTM_PROBE_PERIOD_US (5 * 1000 * 1000)
-#define FTM_PROBE_FRAMES 4
+// ESP-IDF accepts 0, 8, 16, 24, 32 or 64 frames; 8 is the smallest
+// useful probe and avoids the invalid 4-frame request used previously.
+#define FTM_PROBE_FRAMES 8
 
 static volatile bool s_paused;
 static volatile bool s_session_busy;
@@ -47,6 +51,32 @@ static int64_t s_last_probe_us;
 static unsigned s_probe_attempts;
 static unsigned s_probe_successes;
 static float s_offset_m;
+static bool s_calibrated;
+static float s_history[FTM_HISTORY];
+static unsigned s_history_count;
+static unsigned s_history_head;
+static bool s_success_history[FTM_SUCCESS_WINDOW];
+static unsigned s_success_count;
+static unsigned s_success_head;
+
+// WIFI_EVENT_FTM_REPORT runs on ESP-IDF's sys_evt task. Keep the report
+// buffers out of that task's stack: 64 entries are already about 2.5 KiB on
+// ESP32-C3, before the raw-distance buffer and event-handler call chain.
+static wifi_ftm_report_entry_t s_report_entries[FTM_MAX_REPORT];
+static float s_raw_distances[FTM_MAX_REPORT];
+static float s_history_scratch[FTM_HISTORY];
+
+static void record_regular_session(bool success) {
+    s_success_history[s_success_head] = success;
+    s_success_head = (s_success_head + 1u) % FTM_SUCCESS_WINDOW;
+    if (s_success_count < FTM_SUCCESS_WINDOW) s_success_count++;
+}
+
+static void record_distance(float distance_m) {
+    s_history[s_history_head] = distance_m;
+    s_history_head = (s_history_head + 1u) % FTM_HISTORY;
+    if (s_history_count < FTM_HISTORY) s_history_count++;
+}
 
 int radar_ftm_last_status(void) { return s_last_status; }
 unsigned radar_ftm_probe_attempts(void) { return s_probe_attempts; }
@@ -56,34 +86,18 @@ void radar_ftm_set_offset_m(float offset_m) {
 }
 float radar_ftm_offset_m(void) { return s_offset_m; }
 
-#ifdef CONFIG_RADAR_SIM_BUILD
-// ==== passport-sim 专用:合成 FTM 快照注入 ====
-// QEMU 没有 FTM 硬件,真实会话永远失败;注入一个稳定快照,
-// 让结果页/诊断页出现 "FTM ok"/"2way"/[HI] 文案,用于布局验证。
-// 注:sim 快照绕过 timestamp_us 过期检查由 get_snapshot 统一处理
-// (注入时打上当前时间戳,不会过期)。
-static void sim_ftm_inject_snapshot(void) {
-#if CONFIG_RADAR_SIM_SCENARIO != 0
-    memset(&s_snapshot, 0, sizeof(s_snapshot));
-    s_snapshot.status = FTM_STATUS_NO_RESPONSE;
-    s_snapshot.distance_m = RADAR_DIST_INVALID;
-    s_last_status = FTM_STATUS_NO_RESPONSE;
-    return;
-#else
-    memset(&s_snapshot, 0, sizeof(s_snapshot));
-    s_snapshot.valid = true;
-    s_snapshot.calibrated = true;
-    s_snapshot.status = FTM_STATUS_SUCCESS;
-    s_snapshot.distance_m = 3.8f;
-    s_snapshot.spread_m = 0.4f;
-    s_snapshot.valid_bursts = 16;
-    s_snapshot.rssi = -52;
-    s_snapshot.timestamp_us = esp_timer_get_time();
-    s_snapshot.channel = FTM_AP_CHANNEL;
-    s_last_status = FTM_STATUS_SUCCESS;
-#endif
+void radar_ftm_set_calibrated(bool calibrated) { s_calibrated = calibrated; }
+bool radar_ftm_is_calibrated(void) { return s_calibrated; }
+
+float radar_ftm_success_rate(void) {
+    if (s_success_count == 0) return NAN;
+    unsigned ok = 0;
+    for (unsigned i = 0; i < s_success_count; ++i) {
+        if (s_success_history[i]) ok++;
+    }
+    return (float)ok / (float)s_success_count;
 }
-#endif
+
 
 // 与 BLE 扫描共存:Coded PHY 扫描窗口会挤压 FTM 会话帧。连续 initiate
 // 失败时暂停扫描几秒让 FTM 建立,超时后恢复扫描(若仍失败会再次触发)。
@@ -112,6 +126,7 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
     const wifi_event_ftm_report_t *report = data;
     s_session_busy = false;
     s_session_deadline_us = 0;
+    radar_espnow_ftm_session_finished();
 
     radar_ftm_snapshot_t next = {0};
     next.status = report->status;
@@ -123,31 +138,51 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
         report->ftm_report_num_entries > 0) {
         uint8_t count = report->ftm_report_num_entries;
         if (count > FTM_MAX_REPORT) count = FTM_MAX_REPORT;
-        wifi_ftm_report_entry_t entries[FTM_MAX_REPORT];
-        esp_err_t err = esp_wifi_ftm_get_report(entries, count);
+        esp_err_t err = esp_wifi_ftm_get_report(s_report_entries, count);
         if (err == ESP_OK) {
-            float raw[FTM_MAX_REPORT];
             unsigned valid = 0;
             int rssi_sum = 0;
             for (unsigned i = 0; i < count; ++i) {
-                float distance = (float)entries[i].rtt * FTM_PS_TO_M;
+                float distance = (float)s_report_entries[i].rtt * FTM_PS_TO_M;
                 if (!isfinite(distance) || distance <= 0.0f || distance > 1000.0f) {
                     continue;
                 }
-                raw[valid++] = distance;
-                rssi_sum += entries[i].rssi;
+                s_raw_distances[valid++] = distance;
+                rssi_sum += s_report_entries[i].rssi;
             }
             if (valid > 0) {
-                next.distance_m = radar_fusion_ftm_filter(raw, valid, &next.spread_m);
+                next.distance_m = radar_fusion_ftm_filter(s_raw_distances, valid, &next.spread_m);
                 next.distance_m = radar_fusion_ftm_apply_offset(next.distance_m, s_offset_m);
                 next.valid_bursts = (uint8_t)valid;
                 next.rssi = rssi_sum / (int)valid;
                 next.valid = next.distance_m > 0.0f && isfinite(next.distance_m);
-                next.calibrated = false; // populated from NVS calibration state in the next phase
+                next.last_session_m = next.distance_m;
+                next.calibrated = s_calibrated;
                 next.timestamp_us = esp_timer_get_time();
-                if (s_probe_session) s_probe_successes++;
+                if (s_probe_session) {
+                    s_probe_successes++;
+                } else {
+                    record_regular_session(next.valid);
+                }
                 if (next.valid) {
+                    record_distance(next.distance_m);
+                    unsigned history_count = s_history_count;
+                    unsigned start = (s_history_head + FTM_HISTORY - history_count) % FTM_HISTORY;
+                    for (unsigned j = 0; j < history_count; ++j) {
+                        s_history_scratch[j] = s_history[(start + j) % FTM_HISTORY];
+                    }
+                    next.distance_m = radar_fusion_ftm_low_quantile(s_history_scratch,
+                                                                    history_count);
+                    next.hist_count = (uint8_t)history_count;
+                    float min_d = s_history_scratch[0], max_d = s_history_scratch[0];
+                    for (unsigned j = 1; j < history_count; ++j) {
+                        if (s_history_scratch[j] < min_d) min_d = s_history_scratch[j];
+                        if (s_history_scratch[j] > max_d) max_d = s_history_scratch[j];
+                    }
+                    next.hist_spread_m = max_d - min_d;
+                    s_last_status = (int)FTM_STATUS_SUCCESS;
                     s_snapshot = next;
+                    s_probe_session = false;
                     ESP_LOGI(TAG, "FTM ok: %.2fm spread %.2f bursts %u rssi %d",
                              (double)next.distance_m, (double)next.spread_m,
                              next.valid_bursts, next.rssi);
@@ -159,6 +194,7 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
             // release it through the IDF API, never with free().
             (void)esp_wifi_ftm_get_report(NULL, 0);
         }
+        if (!s_probe_session) record_regular_session(false);
         s_probe_session = false;
         clear_snapshot(FTM_STATUS_NO_VALID_MSMT);
         s_snapshot.timestamp_us = esp_timer_get_time();
@@ -169,6 +205,7 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
     // even when the session did not produce usable measurements; never free
     // event-owned memory directly.
     (void)esp_wifi_ftm_get_report(NULL, 0);
+    if (!s_probe_session) record_regular_session(false);
     clear_snapshot(report->status);
     s_probe_session = false;
     s_snapshot.timestamp_us = esp_timer_get_time();
@@ -177,12 +214,6 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
 }
 
 esp_err_t radar_ftm_init(void) {
-#ifdef CONFIG_RADAR_SIM_BUILD
-    // sim 下不配置 SoftAP/FTM responder(QEMU 无射频),
-    // 仅标记就绪让 tick 注入合成快照。
-    s_initialized = true;
-    return ESP_OK;
-#endif
     if (s_initialized) return ESP_OK;
     clear_snapshot(FTM_STATUS_FAIL);
     s_last_status = 0;
@@ -194,6 +225,13 @@ esp_err_t radar_ftm_init(void) {
     s_coex_kick_count = 0;
     s_coex_active = false;
     s_coex_start_us = 0;
+    s_calibrated = false;
+    s_history_count = 0;
+    s_history_head = 0;
+    s_success_count = 0;
+    s_success_head = 0;
+    memset(s_history, 0, sizeof(s_history));
+    memset(s_success_history, 0, sizeof(s_success_history));
 
     wifi_config_t ap = {
         .ap = {
@@ -243,11 +281,7 @@ void radar_ftm_pause(bool paused) {
 }
 
 void radar_ftm_tick(void) {
-#ifdef CONFIG_RADAR_SIM_BUILD
-    sim_ftm_inject_snapshot();
-    return;
-#endif
-    if (!s_initialized || s_paused || !radar_espnow_is_ftm_initiator()) return;
+    if (!s_initialized || s_paused || !radar_espnow_ftm_can_initiate()) return;
     int64_t now = esp_timer_get_time();
 
     // 共存保持超时:恢复扫描,允许下一轮按需再次触发。
@@ -261,8 +295,10 @@ void radar_ftm_tick(void) {
         if (now >= s_session_deadline_us) {
             (void)esp_wifi_ftm_end_session();
             s_session_busy = false;
+            radar_espnow_ftm_session_finished();
             s_backoff_until_us = now + FTM_BACKOFF_US;
             clear_snapshot(FTM_STATUS_USER_TERM);
+            if (!s_probe_session) record_regular_session(false);
             s_probe_session = false;
         }
         return;
@@ -284,7 +320,7 @@ void radar_ftm_tick(void) {
     wifi_ftm_initiator_cfg_t cfg = {
         .frm_count = probe ? FTM_PROBE_FRAMES : FTM_FRAMES_PER_SESSION,
         .burst_period = 0,
-        .channel = FTM_AP_CHANNEL,
+        .channel = radar_espnow_peer_channel(),
         .use_get_report_api = true,
     };
     memcpy(cfg.resp_mac, mac, sizeof(cfg.resp_mac));
@@ -299,6 +335,7 @@ void radar_ftm_tick(void) {
         s_last_session_us = now;
         s_session_deadline_us = now + FTM_SESSION_TIMEOUT_US;
         s_session_busy = true;
+        radar_espnow_ftm_session_started();
         // 会话成功建立:恢复此前为建立会话而暂停的扫描。
         if (s_coex_active) {
             s_coex_active = false;
@@ -306,6 +343,7 @@ void radar_ftm_tick(void) {
             ESP_LOGI(TAG, "coex: BLE scan resumed");
         }
     } else {
+        if (!probe) record_regular_session(false);
         s_probe_session = false;
         s_backoff_until_us = now + FTM_BACKOFF_US;
         s_last_status = -(int)err;  // 负值 = initiate 阶段 esp_err_t

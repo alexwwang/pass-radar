@@ -2,6 +2,7 @@
 
 > 简体中文: [pass-radar-device-test-guide.zh_CN.md](pass-radar-device-test-guide.zh_CN.md)
 > You need two cards and about 40 minutes. No special tools.
+> The default flow is solo: fix one card at the target point and carry the other; only items marked **O2** need two people at the same time and are optional enhancements.
 > Firmware to flash (one file, both cards): `build/pass-radar_<版本>.bin`
 
 ## What this tests, in one breath
@@ -45,6 +46,22 @@ Three words you will see on screen:
 
 ## The tests
 
+### Staffing labels
+
+- **S (Solo)**: default and required. One person can complete it by fixing the target card on a table, tripod, or distance marker and carrying the other card.
+- **O2 (Optional two-person)**: requires two people to hold, move, or observe both cards at the same time. It is an enhancement, not a blocker. If unavailable, record `NOT RUN (O2 optional)`, never PASS.
+
+| Item | Default staffing | Solo method |
+| --- | --- | --- |
+| T1–T5, T7–T12 | S | Fix the target card and carry the test card; read logs afterward if needed |
+| T6 both cards sweep | O2 | Skip without a second person; with two people, each person holds and rotates one card |
+| New D-01–D-04, D-06–D-20 | S | Pair/fix both cards first, then only move, raise, or shield the card carried by the operator |
+| New D-05 token | S (O2 recommended) | Fix both cards and read both counters afterward; two people may observe simultaneously |
+| New F-01–F-06, F-08–F-17 | S | Fix one card at the marked point and carry the other |
+| New F-07 mirrored dual sweep | O2 | Two people hold the cards and sweep simultaneously |
+
+Use [v3 test design and cases](pass-radar-v3-测试设计与用例.md) for the complete inputs, outputs, and statistical rules for the new D/F cases.
+
 ### T1 — Smoke test (2 min, indoors)
 
 **Do:** Turn both on, stand 3–5 m apart, wait 30 s.
@@ -74,22 +91,17 @@ still 20 s and read the screen.
 
 ### T5 — Direction sweep, outside (10 min)
 
-**Do:** Have a friend hold the other card in some direction. Press OK on
-yours, rotate your whole body once over 4 s, read the result page.
-Repeat for 8 directions × 2 rounds.
-The other card will **auto-start its own sweep** (expected — ignore it); for
-solo testing just put it on a table.
+**Do:** Fix the other card at a marked direction. Press OK on yours, rotate your whole body once over 4 s, and read the result page.
+Repeat for 8 directions × 2 rounds. The other card will **auto-start its own sweep** (expected — ignore it).
+A second person may hold the target card, but this is not required for solo acceptance.
 **Pass:** `Angle:` within ±15° of the true direction, every round.
 **Note:** every `Angle: x+/-y deg` pair.
 
-### T6 — Both cards sweep together (5 min, new in v2.1)
+### T6 — Both cards sweep together (5 min, new in v2.1, O2 optional)
 
-**Do:** Both cards on the main page. You press OK on one. Watch the other.
-**Pass:** The other card **starts sweeping by itself within a second** (it
-follows the leader). Both rotate; both result pages point at each other with
-roughly mirrored angles; the `+/-` disagreement should be smaller than when
-one card sweeps alone.
-**Note:** whether the follower started, and the two angles.
+**Do:** Both cards on the main page. You press OK on one. If a second tester is available, both people hold one card and sweep at the same time; otherwise skip this item and record `NOT RUN (O2 optional)`.
+**Pass:** The other card **starts sweeping by itself within a second** (it follows the leader). With two testers, both result pages point at each other with roughly mirrored angles; the `+/-` disagreement should be smaller than when one card sweeps alone.
+**Note:** follower start and both angles; never record a skipped O2 item as PASS.
 
 ### T7 — Sweep too fast on purpose (5 min, new in v2.1)
 
@@ -151,7 +163,7 @@ child app and launch it.
 | T3 outside ladder | ☐ | |
 | T4 inside ladder | ☐ | |
 | T5 sweep 8 dirs | ☐ | |
-| T6 both sweep | ☐ | |
+| T6 both sweep (O2) | ☐ / NOT RUN | Record both-person result, or `NOT RUN (O2 optional)` |
 | T7 early stop | ☐ | |
 | T8 FAR walk | ☐ | FAR/BLE switches at: |
 | T9 hidden card | ☐ | |

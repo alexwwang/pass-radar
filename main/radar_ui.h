@@ -4,7 +4,7 @@
 // 所有 LVGL 操作必须在 LVGL 任务(lv_timer)或持有 bsp_lvgl_lock 的上下文中执行。
 //
 // v2:主页面显示融合距离与置信度标记(FTM/双向/单链路),
-//     结果页显示角度分歧(±)、距离置信度,新增 1m 标定页。
+//     结果页显示相对起始方向、顺时针角度分歧(+/-),新增 1m 标定页。
 
 #include "bsp_button.h"
 #include "radar_fusion.h"
@@ -14,7 +14,7 @@
 typedef enum {
     RADAR_PAGE_MAIN = 0,   // 实时追踪:融合距离 + 置信度 + 链路状态
     RADAR_PAGE_SWEEPING,   // 扫盘中:4s 倒计时 + 动画
-    RADAR_PAGE_RESULT,     // 结果:角度(±分歧) + 距离 + 置信度
+    RADAR_PAGE_RESULT,     // 结果:相对方位 + 顺时针角度(+/-分歧)
     RADAR_PAGE_CALIB,      // 1m 标定中
     RADAR_PAGE_DEBUG,      // 诊断/回归:v1/v2 管线 A/B 对比
 } radar_page_t;
@@ -28,7 +28,11 @@ typedef struct {
     bool  ftm_valid;
     float ftm_dist_m;
     float ftm_spread_m;
+    float ftm_hist_spread_m;
+    float ftm_success_rate;
     unsigned ftm_bursts;
+    unsigned ftm_hist_count;
+    bool ftm_calibrated;
     unsigned ftm_probe_attempts;
     unsigned ftm_probe_successes;
     int   ftm_last_status;  // 无有效快照时的失败原因(status 或 -esp_err_t)
@@ -63,7 +67,7 @@ void radar_ui_update_sweep_progress(float progress);
 
 // 切换到结果页面。
 // angle_deg < 0 或 weak_signal 时显示 "OUT OF RANGE"。
-// spread_deg:信道投票最大分歧(角精度估计);conf:融合置信度。
+// spread_deg:信道投票最大分歧(ASCII +/- 角精度估计);conf:融合置信度。
 void radar_ui_show_result(int angle_deg, float distance_m,
                           radar_confidence_t conf, float spread_deg,
                           bool weak_signal);

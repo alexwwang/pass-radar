@@ -13,7 +13,7 @@
 | 层 | 运行环境 | 触发方式 | 覆盖 |
 | --- | --- | --- | --- |
 | U host 单测 | 电脑，`cc -std=c11 -Wall -Wextra -Werror` | `./tools/validate.sh --static` | 所有纯逻辑：融合、等级、扫盘测角、FTM 逻辑、遮挡特征、诊断缓冲 |
-| I 模拟器 | passport-sim（`CONFIG_RADAR_SIM_BUILD`） | `tools/sim/radar-screen-test.mjs` | 页面布局、区间/扇区/寻的页渲染 |
+| I 模拟器 | passport-sim（加载正式固件） | `tools/sim/radar-screen-test.mjs` | 固件引导与首帧渲染；不验 BLE、无线测量或按键交互 |
 | D 机上自测 | 两张卡、室内桌面 | 诊断页 + 日志 | FTM 调通、令牌、CSI 帧、BLE 惰性、内存 |
 | F 外场统计 | 室外/室内/遮挡场地 | 人工按矩阵执行 | 精度 p50/p90、离谱率 |
 | R 回归 | 每次发版 | 上述子集 | v1/v2 行为不退化 |
@@ -54,6 +54,34 @@ unsigned synth_rssi_series(float mean, float sigma_fast, float sigma_slow, float
 ```
 
 随机数用固定种子的 LCG（`seed = seed*1103515245+12345`），保证可重复。
+
+### 1.3 真机测试人力分级
+
+真机项目分为两类：
+
+- **S（Solo，单人必测）**：一人可以完成。第二张卡可以固定放在桌面、三脚架或标记点；需要查看另一张卡时，先固定场景，再通过屏幕录屏、串口日志或测试后读取结果完成检查。S 项目是进入下一阶段的默认验收项。
+- **O2（Optional two-person，两人可选）**：需要两个人同时持卡、移动或观察两端状态。O2 用于增强双端一致性证据，不阻塞单人验收；有第二名测试者时再执行。
+
+| 范围 | 单人可完成（S） | 两人协同可选（O2） |
+| --- | --- | --- |
+| U / I / R | 全部 host、passport-sim 和回归用例 | 无需两人 |
+| D 机上自测 | D-01~D-04、D-06~D-20；D-05 可用两张固定卡和事后日志完成 | D-05 同时观察两端 FTM token/计数时更适合两人 |
+| F 外场统计 | F-01~F-06、F-08~F-17；一张卡固定，另一张卡由测试者携带即可 | F-07 双端互扫镜像，要求两人分别持卡并同时完成方向动作 |
+| 旧版 T 用例 | T1~T5、T7~T12；另一张卡固定即可 | T6 双端同扫 |
+
+单人测试的固定方式必须写入记录，例如“目标卡固定在 15 m 标记点，操作者携带本卡”。不能因为只有一人就把第二张卡拿在手中随意移动，否则距离、方向和遮挡结果不可复现。涉及两张卡同时操作的 D-05/F-07/T6，默认标为 O2；没有第二个人时跳过并记录 `NOT RUN (O2 optional)`，不得把跳过写成 PASS。
+
+### 1.4 单人优先执行顺序
+
+真机资源有限时按以下顺序执行：
+
+1. **安装与安全**：D-14、T12，确认 meta-pass 槽位、启动、LONG2 回退和重启回滚。
+2. **单人基础链路**：D-01~D-04、D-07~D-10、D-13、D-15。
+3. **单人功能闭环**：D-16~D-20；其中目标卡固定，操作者只移动/举高本端卡。
+4. **单人外场统计**：F-01~F-06、F-08~F-17。
+5. **可选协同增强**：D-05、F-07、T6，仅在有第二名测试者时执行。
+
+单人执行不降低通过标准；只改变持卡方式和观察方式。两人协同项目只能增加证据，不能替代单人基础链路、安装安全和回滚测试。
 
 ---
 
@@ -186,17 +214,16 @@ unsigned synth_rssi_series(float mean, float sigma_fast, float sigma_slow, float
 
 ## 3. 模拟器用例（I）
 
-passport-sim 无射频，用 `radar_espnow.c` 中 `sim_feed_peer()` 与 `radar_ftm.c` 中 `sim_ftm_inject_snapshot()` 注入。v3 需扩展注入器：可通过编译期宏选择场景。
+passport-sim 当前不提供 Wi-Fi/ESP-NOW/FTM/CSI/BLE 射频模型；检测到固件进入 BLE ROM 后会暂停并禁止模拟交互。因此模拟器测试只加载正式固件并验证 **boot 与首帧渲染**。无线数据、距离、方向、FTM、CSI、BLE、遮挡分类及按键交互必须以 host 测试或真机测试为准；缺少射频输入时，正式固件应显示无对端/降级状态，不得卡死或崩溃。
 
-| ID | 注入场景 | 检查（截图对比） |
+passport-sim currently has no Wi-Fi/ESP-NOW/FTM/CSI/BLE radio model. When the firmware enters the unsupported BLE ROM path, the simulator pauses and disables interaction. The simulator scope is therefore limited to **production-firmware boot and first-frame rendering**; wireless measurements and button interaction are verified by host or device tests.
+
+| ID | 场景 / Scenario | 检查 / Acceptance |
 | --- | --- | --- |
-| I-01 | L0、FTM 3.8 m | 主页 `DIST 3.8 m (3.3~4.3) [HI] L0` |
-| I-02 | L2、无 FTM、rssi_d 12 | `DIST ≤ 19 m  [LOW] L2  遮挡?` |
-| I-03 | 扫盘 spread 9 | 结果页射线 + `Angle 315 +/-9` |
-| I-04 | 扫盘 spread 60 | 结果页扇区（arc ±60°） |
-| I-05 | 寻的页 level 0.2/0.9 | 箭头与信号条渲染；无字形方框 |
-| I-06 | 诊断页第 2 屏 | 8 行日志可见，无溢出 |
-| I-07 | 扫盘页 progress 0.375 | 指针在 135°，拍数 `3/8` |
+| I-01 | 加载正式固件 / Load production firmware | 在限定周期内完成 boot，模拟器不报加载错误 / boots without a load error |
+| I-02 | 应用首帧 / Application first frame | 产生 240×320 非纯色显示帧 / emits a non-solid 240×320 frame |
+| I-03 | BLE 缺失 / BLE unavailable | 记录为 simulator 已知限制，不作为固件失败 / recorded as a simulator limitation, not a firmware failure |
+| I-04 | 按键交互 / Button interaction | 不在 passport-sim 中执行；改由真机或支持射频的测试环境验证 / not run in passport-sim; verify on device or a capable test environment |
 
 ---
 
@@ -236,15 +263,15 @@ passport-sim 无射频，用 `radar_espnow.c` 中 `sim_feed_peer()` 与 `radar_f
 - 每个测点 **≥20 次独立读数**。距离读数：每 3 s 抄一次主页点值；方向读数：每次扫盘一次。
 - 指标：p50、p90、**离谱率**（距离误差 >2× 真值或方向误差 >60° 的比例）。
 - 真值：距离用激光测距仪或卷尺；方向用手机罗盘或地面标线（8 方向）。
-- 人：至少 2 位不同体型测试者各做一半。
+- 人力：默认由 1 位测试者完成，目标卡固定、测试卡由操作者携带；仅 F-07 需要两人同时持卡，属于 O2 可选增强项。若做 F-07，建议两位不同体型测试者各做一半，但不作为单人验收前置条件。
 - 记录模板见 §6。
 
 ### 5.2 用例矩阵
 
 | ID | 场景 | 测点 | 目标（p50 / p90 / 离谱率） | 里程碑 |
 | --- | --- | --- | --- | --- |
-| F-01 室外距离阶梯 LOS | 空地，两人持卡胸前 | 1/3/5/8/12/15 m | ≤1 m / ≤1.5 m / <5% | M1 |
-| F-02 室外中距 | 同上 | 20/30/45 m | ≤15% / ≤30% / <5%；45 m 处观察两射线折点效果（与 v2 单一 n 对比） | M1 |
+| F-01 室外距离阶梯 LOS | 空地，一卡固定、一人持卡胸前 | 1/3/5/8/12/15 m | ≤1 m / ≤1.5 m / <5% | M1 |
+| F-02 室外中距 | 同上，一卡固定 | 20/30/45 m | ≤15% / ≤30% / <5%；45 m 处观察两射线折点效果（与 v2 单一 n 对比） | M1 |
 | F-03 室外远距 LOS | 同上，见远距文档 | 60/80/100 m | 报出等级 L0/L1 且距离 ≤50% 误差；100 m 不 OOR（1 Mbps） | P2 |
 | F-04 室外定向 8 方向 | 15 m，节拍器开 | 8 方向 × 3 轮 | ≤15° / ≤25° / <5% | M2 |
 | F-05 节拍器 A/B | 同一人同一方向 | 开/关各 10 次 | 开启后 p50 改善 ≥30% | M2 |
@@ -324,7 +351,7 @@ obstruct 分类显示:   excess_loss:   K:   sel:   p2p_1s/10s:   hint:
 
 - `tests/test_radar_fusion.c`、`tests/test_radar_sweep.c` —— `CHECK()` 宏与用例组织方式的参照（§1.1）
 - `tools/validate.sh` —— host 测试登记与固件校验入口（§1.1、R-01）
-- `tools/sim/radar-screen-test.mjs`、`main/Kconfig.projbuild`（`RADAR_SIM_BUILD`） —— 模拟器用例 I-01~I-07 的运行方式（§3）
+- `tools/sim/radar-screen-test.mjs` —— 使用正式固件执行模拟器启动/按键回归（§3）
 - [双卡实测指南（v2.1）](pass-radar-device-test-guide.zh_CN.md) —— T1~T12 回归基线（R-04）
 - [AI 硬件开发指南 §13 构建与验收](../hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.zh_CN.md) —— 通用上板验收与内存观察项（D-13）
 - [v3 实现指南 §9](pass-radar-v3-详细设计与实现指南.md#9-参考资料)、[v3.1 实施指南 §14](pass-radar-v3.1-远距与遮挡实施指南.md#14-参考资料) —— 被测算法的定义与来源

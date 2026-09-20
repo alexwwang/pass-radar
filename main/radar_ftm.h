@@ -14,9 +14,12 @@ typedef struct {
     bool valid;
     bool calibrated;
     wifi_ftm_status_t status;
-    float distance_m;
-    float spread_m;
+    float distance_m;       // 最近窗口 P25 距离
+    float last_session_m;   // 本次 session 中值
+    float spread_m;         // 本次 session IQR
+    float hist_spread_m;     // 最近 session 距离范围
     uint8_t valid_bursts;
+    uint8_t hist_count;
     int rssi;
     int64_t timestamp_us;
     uint8_t target_mac[RADAR_FTM_MAC_LEN];
@@ -48,6 +51,11 @@ unsigned radar_ftm_probe_attempts(void);
 unsigned radar_ftm_probe_successes(void);
 void radar_ftm_set_offset_m(float offset_m);
 float radar_ftm_offset_m(void);
+void radar_ftm_set_calibrated(bool calibrated);
+bool radar_ftm_is_calibrated(void);
+
+// 最近常规 FTM session 的成功率；探针 session 不计入。
+float radar_ftm_success_rate(void);
 
 // 兼容查询接口。
 bool radar_ftm_valid(void);

@@ -1,22 +1,6 @@
 menu "pass-radar"
 
-    config RADAR_SIM_BUILD
-        bool "Simulator build (passport-sim): no RF TX, synthetic peer data"
-        default n
-        help
-            Only for passport-sim (QEMU-wasm) page-layout verification.
-            QEMU has no radio model: esp_now_send() spins forever in ROM,
-            so the TX path is compiled out and a synthetic peer (ESP-NOW
-            packets, FTM snapshot, BLE RSSI, sweep samples) feeds the
-            fusion/UI pipeline. Production firmware must keep this off.
-
-    config RADAR_SIM_SCENARIO
-        int "passport-sim synthetic scenario"
-        range 0 2
-        default 0
-        depends on RADAR_SIM_BUILD
-        help
-            0=stable LOS with calibrated FTM, 1=static attenuation without
-            FTM, 2=dynamic foliage fading. This only changes simulator input.
+    # passport-sim intentionally does not select a separate firmware build.
+    # The production image must degrade safely when radio peripherals are absent.
 
 endmenu
