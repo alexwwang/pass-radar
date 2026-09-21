@@ -1,6 +1,7 @@
 #include "radar_capture.h"
 
 #include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "nvs.h"
@@ -42,6 +43,16 @@ typedef struct __attribute__((packed)) {
 _Static_assert(sizeof(capture_storage_header_t) == 76,
                "capture storage header layout changed");
 #define CAPTURE_BUFFER_MAX (sizeof(capture_storage_header_t) + RADAR_CAPTURE_CODEC_MAX_PAYLOAD)
+#define CAPTURE_MEMORY_SAFETY_MARGIN 2048u
+#define CAPTURE_HEAP_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+
+static void log_memory_budget(const char *stage, size_t required) {
+    size_t free_bytes = heap_caps_get_free_size(CAPTURE_HEAP_CAPS);
+    size_t largest = heap_caps_get_largest_free_block(CAPTURE_HEAP_CAPS);
+    ESP_LOGI(TAG, "CAPTURE_MEM stage=%s free=%u largest=%u required=%u margin=%u",
+             stage, (unsigned)free_bytes, (unsigned)largest, (unsigned)required,
+             (unsigned)CAPTURE_MEMORY_SAFETY_MARGIN);
+}
 
 // Capture storage is allocated on demand, after radio/BLE initialization.
 // Keeping these buffers out of BSS preserves the startup heap required by
@@ -50,25 +61,42 @@ static radar_capture_record_t *s_records;
 static uint8_t *s_scratch;
 
 static bool ensure_records(void) {
+    size_t required = RADAR_CAPTURE_MAX_RECORDS * sizeof(*s_records);
     if (!s_records) {
+        log_memory_budget("records-before", required);
+        if (heap_caps_get_largest_free_block(CAPTURE_HEAP_CAPS) <
+            required + CAPTURE_MEMORY_SAFETY_MARGIN) {
+            ESP_LOGE(TAG, "Capture record buffer rejected: insufficient contiguous heap");
+            return false;
+        }
         s_records = calloc(RADAR_CAPTURE_MAX_RECORDS, sizeof(*s_records));
     }
     if (!s_records) {
+        log_memory_budget("records-failed", required);
         ESP_LOGE(TAG, "Capture record buffer allocation failed");
         return false;
     }
+    log_memory_budget("records-after", 0);
     return true;
 }
 
 static bool ensure_scratch(void) {
     if (!s_scratch) {
+        log_memory_budget("scratch-before", CAPTURE_BUFFER_MAX);
+        if (heap_caps_get_largest_free_block(CAPTURE_HEAP_CAPS) <
+            CAPTURE_BUFFER_MAX + CAPTURE_MEMORY_SAFETY_MARGIN) {
+            ESP_LOGE(TAG, "Capture scratch rejected: insufficient contiguous heap");
+            return false;
+        }
         s_scratch = malloc(CAPTURE_BUFFER_MAX);
     }
     if (!s_scratch) {
+        log_memory_budget("scratch-failed", CAPTURE_BUFFER_MAX);
         ESP_LOGE(TAG, "Capture scratch allocation failed bytes=%u",
                  (unsigned)CAPTURE_BUFFER_MAX);
         return false;
     }
+    log_memory_budget("scratch-after", 0);
     return true;
 }
 
@@ -210,6 +238,7 @@ esp_err_t radar_capture_start(float target_distance_m) {
         s_phase == RADAR_CAPTURE_COUNTDOWN || s_phase == RADAR_CAPTURE_SETTLE ||
         s_phase == RADAR_CAPTURE_RUNNING) return ESP_ERR_INVALID_STATE;
     if (!ensure_records()) {
+        log_memory_budget("start-failed", RADAR_CAPTURE_MAX_RECORDS * sizeof(*s_records));
         ESP_LOGE(TAG, "CAPTURE_START FAIL RAM");
         return ESP_ERR_NO_MEM;
     }
