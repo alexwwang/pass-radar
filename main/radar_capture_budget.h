@@ -20,12 +20,17 @@
 
 static inline bool radar_capture_budget_fits(size_t largest_free_block,
                                              size_t required_bytes) {
-    return largest_free_block >= required_bytes +
-                                   RADAR_CAPTURE_BUDGET_SAFETY_MARGIN;
+    return required_bytes <= largest_free_block &&
+           RADAR_CAPTURE_BUDGET_SAFETY_MARGIN <=
+               largest_free_block - required_bytes;
 }
 
 static inline size_t radar_capture_budget_required(size_t record_count,
                                                    size_t record_bytes,
                                                    size_t scratch_bytes) {
-    return record_count * record_bytes + scratch_bytes;
+    if (record_count != 0 &&
+        record_bytes > SIZE_MAX / record_count) return SIZE_MAX;
+    size_t records = record_count * record_bytes;
+    if (scratch_bytes > SIZE_MAX - records) return SIZE_MAX;
+    return records + scratch_bytes;
 }

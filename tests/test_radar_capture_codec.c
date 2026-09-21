@@ -83,6 +83,10 @@ static void test_memory_budget(void) {
     CHECK(radar_capture_budget_fits(RADAR_CAPTURE_BUDGET_MEASURED_MIN_LARGEST,
                                     required),
           "compact budget must fit measured block");
+    CHECK(radar_capture_budget_required(SIZE_MAX, 2, 0) == SIZE_MAX,
+          "budget multiplication overflow must saturate");
+    CHECK(!radar_capture_budget_fits(SIZE_MAX, SIZE_MAX),
+          "budget margin overflow must not report fit");
     printf("  capture_memory_budget: PASS (%zu bytes + %u margin)\n",
            required, RADAR_CAPTURE_BUDGET_SAFETY_MARGIN);
 }
