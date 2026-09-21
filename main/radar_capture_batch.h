@@ -104,24 +104,33 @@ typedef struct {
 } radar_capture_batch_capture_meta_t;
 
 static inline size_t radar_capture_batch_align(size_t value) {
-    return (value + RADAR_CAPTURE_BATCH_SECTOR_SIZE - 1u) &
-           ~(RADAR_CAPTURE_BATCH_SECTOR_SIZE - 1u);
+    const size_t mask = RADAR_CAPTURE_BATCH_SECTOR_SIZE - 1u;
+    if (value > SIZE_MAX - mask) return 0;
+    return (value + mask) & ~mask;
 }
 
 static inline size_t radar_capture_batch_commit_offset(size_t record_offset,
                                                         size_t payload_length) {
     // Header and payload are written as independent padded blocks.
-    return record_offset +
-           radar_capture_batch_align(sizeof(radar_capture_batch_capture_header_t)) +
-           radar_capture_batch_align(payload_length);
+    size_t header_span = radar_capture_batch_align(
+        sizeof(radar_capture_batch_capture_header_t));
+    size_t payload_span = radar_capture_batch_align(payload_length);
+    if (header_span == 0 || payload_span == 0 ||
+        record_offset > SIZE_MAX - header_span ||
+        record_offset + header_span > SIZE_MAX - payload_span) return 0;
+    return record_offset + header_span + payload_span;
 }
 
 static inline size_t radar_capture_batch_capture_span(size_t payload_length) {
     // Each write_padded() call occupies its own 4 KiB-aligned span. The
     // commit marker is written after the padded payload, so aligning the
     // combined byte count would underestimate the next record offset.
-    return radar_capture_batch_commit_offset(0, payload_length) +
-           radar_capture_batch_align(sizeof(radar_capture_batch_commit_t));
+    size_t commit_offset = radar_capture_batch_commit_offset(0, payload_length);
+    size_t commit_span = radar_capture_batch_align(
+        sizeof(radar_capture_batch_commit_t));
+    if (commit_offset == 0 || commit_span == 0 ||
+        commit_offset > SIZE_MAX - commit_span) return 0;
+    return commit_offset + commit_span;
 }
 
 static inline bool radar_capture_batch_capacity_fits(size_t capture_count,

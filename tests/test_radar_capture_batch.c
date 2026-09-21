@@ -19,6 +19,12 @@ int main(void) {
     CHECK(sizeof(radar_capture_batch_capture_header_t) == 112,
           "capture header size");
     CHECK(radar_capture_batch_align(0) == 0, "zero alignment");
+    CHECK(radar_capture_batch_align(SIZE_MAX) == 0,
+          "alignment overflow rejected");
+    CHECK(radar_capture_batch_capture_span(SIZE_MAX) == 0,
+          "capture span overflow rejected");
+    CHECK(!radar_capture_batch_capacity_fits(1, SIZE_MAX),
+          "oversized payload capacity rejected");
     CHECK(radar_capture_batch_commit_offset(0, 1466) == 8192,
           "observed payload commit offset follows padded header and payload");
     CHECK(radar_capture_batch_capture_span(1466) == 12288,

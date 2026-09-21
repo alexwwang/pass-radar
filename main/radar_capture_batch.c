@@ -184,13 +184,15 @@ static esp_err_t find_partition(void) {
 }
 
 static esp_err_t write_aligned(size_t offset, const void *data, size_t length) {
-    if (!data || !s_partition || offset + length > s_data_size ||
-        (offset & 3u) != 0 || (length & 3u) != 0) return ESP_ERR_INVALID_ARG;
+    if (!data || !s_partition || offset > s_data_size ||
+        length > s_data_size - offset || (offset & 3u) != 0 ||
+        (length & 3u) != 0) return ESP_ERR_INVALID_ARG;
     return esp_partition_write(s_partition, offset, data, length);
 }
 
 static esp_err_t read_bytes(size_t offset, void *data, size_t length) {
-    if (!data || !s_partition || offset + length > s_data_size) {
+    if (!data || !s_partition || offset > s_data_size ||
+        length > s_data_size - offset) {
         return ESP_ERR_INVALID_ARG;
     }
     return esp_partition_read(s_partition, offset, data, length);
@@ -279,7 +281,7 @@ bool radar_capture_batch_can_append(size_t max_payload_length) {
         s_capture_count >= RADAR_CAPTURE_BATCH_MAX_CAPTURES ||
         s_next_offset > s_data_size) return false;
     size_t span = radar_capture_batch_capture_span(max_payload_length);
-    return span <= s_data_size - s_next_offset;
+    return span != 0 && span <= s_data_size - s_next_offset;
 }
 
 esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *meta,
@@ -294,8 +296,9 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
         s_capture_count >= s_expected_captures ||
         s_capture_count >= RADAR_CAPTURE_BATCH_MAX_CAPTURES ||
         s_next_offset > s_data_size ||
-        s_next_offset + radar_capture_batch_capture_span(payload_length) >
-            s_data_size) return ESP_ERR_INVALID_STATE;
+        radar_capture_batch_capture_span(payload_length) == 0 ||
+        radar_capture_batch_capture_span(payload_length) >
+            s_data_size - s_next_offset) return ESP_ERR_INVALID_STATE;
 
     radar_capture_batch_capture_header_t header = {
         .magic = RADAR_CAPTURE_BATCH_CAPTURE_MAGIC,
