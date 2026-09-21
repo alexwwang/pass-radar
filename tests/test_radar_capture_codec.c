@@ -87,6 +87,28 @@ static void test_memory_budget(void) {
            required, RADAR_CAPTURE_BUDGET_SAFETY_MARGIN);
 }
 
+static void test_malformed_ranges(void) {
+    radar_capture_record_t input;
+    radar_capture_record_t output;
+    uint8_t payload[RADAR_CAPTURE_CODEC_MAX_PAYLOAD];
+    fill_record(&input, 0);
+    input.elapsed_ms = 1;
+    size_t encoded = radar_capture_codec_encode(&input, 1, payload,
+                                                sizeof(payload));
+    CHECK(encoded > 2, "single record should encode for malformed test");
+    // Replace the one-byte elapsed value after TAG_FIRST with an oversized
+    // five-byte uint32 varint while preserving the remaining fields.
+    memmove(payload + 6, payload + 2, encoded - 2);
+    payload[1] = 0x80;
+    payload[2] = 0x80;
+    payload[3] = 0x80;
+    payload[4] = 0x80;
+    payload[5] = 0x0f;
+    CHECK(!radar_capture_codec_decode(payload, encoded + 4, &output, 1, 1),
+          "out-of-range uint16 field must be rejected");
+    puts("  capture_codec_range_validation: PASS");
+}
+
 static void test_repeat_and_corruption(void) {
     radar_capture_record_t input[8];
     radar_capture_record_t output[8];
@@ -105,6 +127,7 @@ int main(void) {
     test_round_trip();
     test_max_capture_budget();
     test_memory_budget();
+    test_malformed_ranges();
     test_repeat_and_corruption();
     if (failures) {
         fprintf(stderr, "FAILED: %d check(s)\n", failures);

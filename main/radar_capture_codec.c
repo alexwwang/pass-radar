@@ -31,6 +31,8 @@ static bool get_varint(const uint8_t *data, size_t length, size_t *offset,
     unsigned shift = 0;
     while (*offset < length && shift <= 28) {
         uint8_t byte = data[(*offset)++];
+        // A uint32 varint's fifth byte may carry only four payload bits.
+        if (shift == 28 && (byte & 0x70u) != 0) return false;
         result |= (uint32_t)(byte & 0x7fu) << shift;
         if ((byte & 0x80u) == 0) {
             *value = result;
@@ -59,11 +61,32 @@ static bool put_delta(uint8_t *out, size_t capacity, size_t *offset,
     return put_signed(out, capacity, offset, current - previous);
 }
 
-static bool get_delta(const uint8_t *data, size_t length, size_t *offset,
-                      int32_t previous, int32_t *current) {
+static bool get_signed_bounded(const uint8_t *data, size_t length,
+                               size_t *offset, int32_t minimum,
+                               int32_t maximum, int32_t *value) {
+    if (!get_signed(data, length, offset, value) ||
+        *value < minimum || *value > maximum) return false;
+    return true;
+}
+
+static bool get_unsigned_bounded(const uint8_t *data, size_t length,
+                                 size_t *offset, uint32_t maximum,
+                                 uint32_t *value) {
+    if (!get_varint(data, length, offset, value) || *value > maximum) {
+        return false;
+    }
+    return true;
+}
+
+static bool get_delta_bounded(const uint8_t *data, size_t length,
+                              size_t *offset, int32_t previous,
+                              int32_t minimum, int32_t maximum,
+                              int32_t *current) {
     int32_t delta;
     if (!get_signed(data, length, offset, &delta)) return false;
-    *current = previous + delta;
+    int64_t candidate = (int64_t)previous + delta;
+    if (candidate < minimum || candidate > maximum) return false;
+    *current = (int32_t)candidate;
     return true;
 }
 
@@ -132,49 +155,62 @@ static bool read_record(const uint8_t *data, size_t length, size_t *offset,
     uint32_t unsigned_value;
     int32_t signed_value;
     if (first) {
-        if (!get_varint(data, length, offset, &unsigned_value)) return false;
+        if (!get_unsigned_bounded(data, length, offset, UINT16_MAX,
+                                  &unsigned_value)) return false;
         record->elapsed_ms = (uint16_t)unsigned_value;
-        if (!get_signed(data, length, offset, &signed_value)) return false;
+        if (!get_signed_bounded(data, length, offset, INT8_MIN, INT8_MAX,
+                                &signed_value)) return false;
         record->local_rssi = (int8_t)signed_value;
-        if (!get_signed(data, length, offset, &signed_value)) return false;
+        if (!get_signed_bounded(data, length, offset, INT8_MIN, INT8_MAX,
+                                &signed_value)) return false;
         record->peer_rssi = (int8_t)signed_value;
-        if (!get_varint(data, length, offset, &unsigned_value)) return false;
+        if (!get_unsigned_bounded(data, length, offset, UINT8_MAX,
+                                  &unsigned_value)) return false;
         record->flags = (uint8_t)unsigned_value;
-        if (!get_signed(data, length, offset, &signed_value)) return false;
+        if (!get_signed_bounded(data, length, offset, INT16_MIN, INT16_MAX,
+                                &signed_value)) return false;
         record->ftm_status = (int16_t)signed_value;
-        if (!get_varint(data, length, offset, &unsigned_value)) return false;
+        if (!get_unsigned_bounded(data, length, offset, UINT16_MAX,
+                                  &unsigned_value)) return false;
         record->ftm_distance_cm = (uint16_t)unsigned_value;
-        if (!get_varint(data, length, offset, &unsigned_value)) return false;
+        if (!get_unsigned_bounded(data, length, offset, UINT16_MAX,
+                                  &unsigned_value)) return false;
         record->ftm_spread_cm = (uint16_t)unsigned_value;
-        if (!get_varint(data, length, offset, &unsigned_value)) return false;
+        if (!get_unsigned_bounded(data, length, offset, UINT16_MAX,
+                                  &unsigned_value)) return false;
         record->ftm_session_count = (uint16_t)unsigned_value;
-        if (!get_signed(data, length, offset, &signed_value)) return false;
+        if (!get_signed_bounded(data, length, offset, INT8_MIN, INT8_MAX,
+                                &signed_value)) return false;
         record->ble_rssi = (int8_t)signed_value;
-        if (!get_varint(data, length, offset, &unsigned_value)) return false;
+        if (!get_unsigned_bounded(data, length, offset, UINT16_MAX,
+                                  &unsigned_value)) return false;
         record->ble_age_ms = (uint16_t)unsigned_value;
-        if (!get_varint(data, length, offset, &unsigned_value)) return false;
+        if (!get_unsigned_bounded(data, length, offset, UINT16_MAX,
+                                  &unsigned_value)) return false;
         record->csi_frames = (uint16_t)unsigned_value;
-        if (!get_varint(data, length, offset, &unsigned_value)) return false;
+        if (!get_unsigned_bounded(data, length, offset, UINT8_MAX,
+                                  &unsigned_value)) return false;
         record->env_level = (uint8_t)unsigned_value;
         record->reserved = 0;
         return true;
     }
 
-#define GET_DELTA(field, type) \
-    if (!get_delta(data, length, offset, previous->field, &signed_value)) return false; \
+#define GET_DELTA(field, type, minimum, maximum) \
+    if (!get_delta_bounded(data, length, offset, previous->field, \
+                           (minimum), (maximum), &signed_value)) return false; \
     record->field = (type)signed_value
-    GET_DELTA(elapsed_ms, uint16_t);
-    GET_DELTA(local_rssi, int8_t);
-    GET_DELTA(peer_rssi, int8_t);
-    GET_DELTA(flags, uint8_t);
-    GET_DELTA(ftm_status, int16_t);
-    GET_DELTA(ftm_distance_cm, uint16_t);
-    GET_DELTA(ftm_spread_cm, uint16_t);
-    GET_DELTA(ftm_session_count, uint16_t);
-    GET_DELTA(ble_rssi, int8_t);
-    GET_DELTA(ble_age_ms, uint16_t);
-    GET_DELTA(csi_frames, uint16_t);
-    GET_DELTA(env_level, uint8_t);
+    GET_DELTA(elapsed_ms, uint16_t, 0, UINT16_MAX);
+    GET_DELTA(local_rssi, int8_t, INT8_MIN, INT8_MAX);
+    GET_DELTA(peer_rssi, int8_t, INT8_MIN, INT8_MAX);
+    GET_DELTA(flags, uint8_t, 0, UINT8_MAX);
+    GET_DELTA(ftm_status, int16_t, INT16_MIN, INT16_MAX);
+    GET_DELTA(ftm_distance_cm, uint16_t, 0, UINT16_MAX);
+    GET_DELTA(ftm_spread_cm, uint16_t, 0, UINT16_MAX);
+    GET_DELTA(ftm_session_count, uint16_t, 0, UINT16_MAX);
+    GET_DELTA(ble_rssi, int8_t, INT8_MIN, INT8_MAX);
+    GET_DELTA(ble_age_ms, uint16_t, 0, UINT16_MAX);
+    GET_DELTA(csi_frames, uint16_t, 0, UINT16_MAX);
+    GET_DELTA(env_level, uint8_t, 0, UINT8_MAX);
 #undef GET_DELTA
     record->reserved = 0;
     return true;
