@@ -16,6 +16,10 @@ int main(void) {
           "full usable ota_2 capacity");
     CHECK(sizeof(radar_capture_batch_header_t) == 128,
           "batch header size");
+    CHECK(radar_capture_batch_data_offset() == 0x1000u,
+          "first capture starts on an erase-sector boundary");
+    CHECK(radar_capture_batch_capacity_fits(78, 8192),
+          "78 worst-case captures fit with aligned batch header");
     CHECK(sizeof(radar_capture_batch_capture_header_t) == 112,
           "capture header size");
     CHECK(radar_capture_batch_align(0) == 0, "zero alignment");

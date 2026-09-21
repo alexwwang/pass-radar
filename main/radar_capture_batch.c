@@ -40,7 +40,8 @@ bool radar_capture_batch_header_valid(const radar_capture_batch_header_t *header
         header->header_size != sizeof(*header) ||
         header->expected_captures > RADAR_CAPTURE_BATCH_MAX_CAPTURES ||
         header->committed_captures > header->expected_captures ||
-        header->next_offset < sizeof(*header) ||
+        header->next_offset < radar_capture_batch_data_offset() ||
+        (header->next_offset & (RADAR_CAPTURE_BATCH_SECTOR_SIZE - 1u)) != 0 ||
         header->next_offset > RADAR_CAPTURE_BATCH_FLASH_SIZE) return false;
     radar_capture_batch_header_t copy = *header;
     uint32_t expected = copy.header_crc32;
@@ -93,7 +94,7 @@ static esp_err_t discard_uncommitted_tail(size_t offset) {
 }
 
 static esp_err_t scan_committed_records(void) {
-    size_t offset = sizeof(radar_capture_batch_header_t);
+    size_t offset = radar_capture_batch_data_offset();
     uint32_t count = 0;
     radar_capture_batch_capture_header_t capture;
     radar_capture_batch_commit_t commit;
@@ -237,7 +238,7 @@ esp_err_t radar_capture_batch_open(void) {
         s_batch_id = 0;
         s_expected_captures = 0;
         s_capture_count = 0;
-        s_next_offset = sizeof(radar_capture_batch_header_t);
+        s_next_offset = radar_capture_batch_data_offset();
         return ESP_OK;
     }
     s_active = true;
@@ -275,7 +276,7 @@ esp_err_t radar_capture_batch_begin(uint32_t batch_id, uint32_t expected_capture
         .batch_id = batch_id,
         .expected_captures = expected_captures,
         .committed_captures = 0,
-        .next_offset = sizeof(header),
+        .next_offset = radar_capture_batch_data_offset(),
     };
     header.header_crc32 = radar_capture_batch_crc32(&header, sizeof(header));
     // Recompute with the checksum field zeroed, then store the checksum.
@@ -287,7 +288,7 @@ esp_err_t radar_capture_batch_begin(uint32_t batch_id, uint32_t expected_capture
     s_batch_id = batch_id;
     s_expected_captures = expected_captures;
     s_capture_count = 0;
-    s_next_offset = sizeof(header);
+    s_next_offset = radar_capture_batch_data_offset();
     ESP_LOGI(TAG, "batch begin id=%lu expected=%lu",
              (unsigned long)batch_id, (unsigned long)expected_captures);
     return ESP_OK;
@@ -378,7 +379,7 @@ esp_err_t radar_capture_batch_export(radar_capture_batch_record_cb callback,
                                       void *context) {
     if (!s_open || !s_active || !callback) return ESP_ERR_INVALID_ARG;
 
-    size_t offset = sizeof(radar_capture_batch_header_t);
+    size_t offset = radar_capture_batch_data_offset();
     uint32_t exported = 0;
     radar_capture_batch_capture_header_t header;
     radar_capture_batch_commit_t commit;
@@ -441,7 +442,7 @@ esp_err_t radar_capture_batch_erase(void) {
         s_batch_id = 0;
         s_expected_captures = 0;
         s_capture_count = 0;
-        s_next_offset = sizeof(radar_capture_batch_header_t);
+        s_next_offset = radar_capture_batch_data_offset();
     }
     return err;
 }

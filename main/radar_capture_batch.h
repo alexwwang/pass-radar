@@ -121,6 +121,10 @@ static inline size_t radar_capture_batch_commit_offset(size_t record_offset,
     return record_offset + header_span + payload_span;
 }
 
+static inline size_t radar_capture_batch_data_offset(void) {
+    return radar_capture_batch_align(sizeof(radar_capture_batch_header_t));
+}
+
 static inline size_t radar_capture_batch_capture_span(size_t payload_length) {
     // Each write_padded() call occupies its own 4 KiB-aligned span. The
     // commit marker is written after the padded payload, so aligning the
@@ -136,12 +140,13 @@ static inline size_t radar_capture_batch_capture_span(size_t payload_length) {
 static inline bool radar_capture_batch_capacity_fits(size_t capture_count,
                                                      size_t payload_length) {
     if (capture_count > RADAR_CAPTURE_BATCH_MAX_CAPTURES) return false;
+    size_t data_offset = radar_capture_batch_data_offset();
     size_t span = radar_capture_batch_capture_span(payload_length);
-    if (span == 0 || capture_count >
-        (RADAR_CAPTURE_BATCH_FLASH_SIZE - sizeof(radar_capture_batch_header_t)) /
-        span) return false;
-    return sizeof(radar_capture_batch_header_t) + capture_count * span <=
-           RADAR_CAPTURE_BATCH_FLASH_SIZE;
+    if (data_offset == 0 || span == 0 || data_offset > RADAR_CAPTURE_BATCH_FLASH_SIZE ||
+        capture_count > (RADAR_CAPTURE_BATCH_FLASH_SIZE - data_offset) / span) {
+        return false;
+    }
+    return data_offset + capture_count * span <= RADAR_CAPTURE_BATCH_FLASH_SIZE;
 }
 uint32_t radar_capture_batch_crc32(const void *data, size_t length);
 uint32_t radar_capture_batch_record_crc32(
