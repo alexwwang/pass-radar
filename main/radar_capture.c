@@ -22,7 +22,6 @@ static const char *TAG = "radar_capture";
 #define CAPTURE_NVS_NS "radar_capture"
 #define CAPTURE_NVS_KEY_A "latest_a"
 #define CAPTURE_NVS_KEY_B "latest_b"
-#define CAPTURE_STORAGE_MAX 12288u
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -42,6 +41,7 @@ typedef struct __attribute__((packed)) {
 
 _Static_assert(sizeof(capture_storage_header_t) == 76,
                "capture storage header layout changed");
+#define CAPTURE_BUFFER_MAX (sizeof(capture_storage_header_t) + RADAR_CAPTURE_CODEC_MAX_PAYLOAD)
 
 // Capture storage is allocated on demand, after radio/BLE initialization.
 // Keeping these buffers out of BSS preserves the startup heap required by
@@ -49,21 +49,31 @@ _Static_assert(sizeof(capture_storage_header_t) == 76,
 static radar_capture_record_t *s_records;
 static uint8_t *s_scratch;
 
-static bool ensure_storage(void) {
+static bool ensure_records(void) {
     if (!s_records) {
         s_records = calloc(RADAR_CAPTURE_MAX_RECORDS, sizeof(*s_records));
     }
-    if (!s_scratch) {
-        s_scratch = malloc(CAPTURE_STORAGE_MAX);
-    }
-    if (!s_records || !s_scratch) {
-        free(s_records);
-        free(s_scratch);
-        s_records = NULL;
-        s_scratch = NULL;
+    if (!s_records) {
+        ESP_LOGE(TAG, "Capture record buffer allocation failed");
         return false;
     }
     return true;
+}
+
+static bool ensure_scratch(void) {
+    if (!s_scratch) {
+        s_scratch = malloc(CAPTURE_BUFFER_MAX);
+    }
+    if (!s_scratch) {
+        ESP_LOGE(TAG, "Capture scratch allocation failed bytes=%u",
+                 (unsigned)CAPTURE_BUFFER_MAX);
+        return false;
+    }
+    return true;
+}
+
+static bool ensure_storage(void) {
+    return ensure_records() && ensure_scratch();
 }
 static radar_capture_phase_t s_phase;
 static float s_target_m;
@@ -115,11 +125,11 @@ static bool read_key(const char *key, capture_storage_header_t *header,
     if (!key || !header || !payload ||
         nvs_open(CAPTURE_NVS_NS, NVS_READONLY, &handle) != ESP_OK) return false;
 
-    size_t blob_size = CAPTURE_STORAGE_MAX;
+    size_t blob_size = CAPTURE_BUFFER_MAX;
     esp_err_t err = nvs_get_blob(handle, key, s_scratch, &blob_size);
     nvs_close(handle);
     if (err != ESP_OK || blob_size < sizeof(*header) ||
-        blob_size > CAPTURE_STORAGE_MAX) return false;
+        blob_size > CAPTURE_BUFFER_MAX) return false;
 
     memcpy(header, s_scratch, sizeof(*header));
     if (!valid_header(header) ||
@@ -150,7 +160,7 @@ static bool read_latest(capture_storage_header_t *header, uint8_t *payload,
 static uint32_t latest_generation(void) {
     capture_storage_header_t header;
     return read_latest(&header, s_scratch + sizeof(capture_storage_header_t),
-                       CAPTURE_STORAGE_MAX - sizeof(capture_storage_header_t))
+                       CAPTURE_BUFFER_MAX - sizeof(capture_storage_header_t))
                ? header.generation : 0;
 }
 
@@ -199,7 +209,10 @@ esp_err_t radar_capture_start(float target_distance_m) {
     if (!isfinite(target_distance_m) || target_distance_m <= 0.0f ||
         s_phase == RADAR_CAPTURE_COUNTDOWN || s_phase == RADAR_CAPTURE_SETTLE ||
         s_phase == RADAR_CAPTURE_RUNNING) return ESP_ERR_INVALID_STATE;
-    if (!ensure_storage()) return ESP_ERR_NO_MEM;
+    if (!ensure_records()) {
+        ESP_LOGE(TAG, "CAPTURE_START FAIL RAM");
+        return ESP_ERR_NO_MEM;
+    }
     memset(s_records, 0,
            RADAR_CAPTURE_MAX_RECORDS * sizeof(*s_records));
     s_target_m = target_distance_m;
@@ -291,7 +304,7 @@ esp_err_t radar_capture_save(void) {
     size_t payload_length = radar_capture_codec_encode(
         s_records, s_record_count,
         s_scratch + sizeof(capture_storage_header_t),
-        CAPTURE_STORAGE_MAX - sizeof(capture_storage_header_t));
+        CAPTURE_BUFFER_MAX - sizeof(capture_storage_header_t));
     if (payload_length == 0 || payload_length > RADAR_CAPTURE_CODEC_MAX_PAYLOAD) {
         ESP_LOGE(TAG, "CAPTURE_SAVE FAIL ENCODE");
         return ESP_ERR_NO_MEM;
@@ -328,9 +341,9 @@ esp_err_t radar_capture_save(void) {
         header.firmware_version[sizeof(header.firmware_version) - 1u] = '\0';
     }
     size_t blob_length = sizeof(header) + payload_length;
-    if (blob_length > CAPTURE_STORAGE_MAX) {
+    if (blob_length > CAPTURE_BUFFER_MAX) {
         ESP_LOGE(TAG, "CAPTURE_SAVE FAIL NVS_SPACE blob=%u max=%u",
-                 (unsigned)blob_length, (unsigned)CAPTURE_STORAGE_MAX);
+                 (unsigned)blob_length, (unsigned)CAPTURE_BUFFER_MAX);
         return ESP_ERR_NO_MEM;
     }
     memcpy(s_scratch, &header, sizeof(header));
@@ -354,7 +367,7 @@ esp_err_t radar_capture_save(void) {
     capture_storage_header_t verified;
     if (!read_key(key_for_generation(generation), &verified,
                   s_scratch + sizeof(capture_storage_header_t),
-                  CAPTURE_STORAGE_MAX - sizeof(capture_storage_header_t)) ||
+                  CAPTURE_BUFFER_MAX - sizeof(capture_storage_header_t)) ||
         verified.generation != generation ||
         !radar_capture_codec_decode(s_scratch + sizeof(capture_storage_header_t),
                                     verified.compressed_length,
@@ -386,7 +399,7 @@ esp_err_t radar_capture_export_saved(void) {
         return ESP_ERR_NO_MEM;
     }
     if (!read_latest(&header, s_scratch + sizeof(capture_storage_header_t),
-                     CAPTURE_STORAGE_MAX - sizeof(capture_storage_header_t)) ||
+                     CAPTURE_BUFFER_MAX - sizeof(capture_storage_header_t)) ||
         !radar_capture_codec_decode(s_scratch + sizeof(capture_storage_header_t),
                                     header.compressed_length,
                                     s_records, RADAR_CAPTURE_MAX_RECORDS,
