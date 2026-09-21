@@ -38,6 +38,10 @@ static volatile bool s_paused;
 static volatile bool s_session_busy;
 static bool s_initialized;
 static bool s_handler_registered;
+// ESP32-C3 firmware may expose FTM responder but not initiator support.
+// Once the driver reports NOT_SUPPORTED, stop retrying for this boot and
+// let the fusion layer use RSSI without repeatedly disturbing BLE coexistence.
+static bool s_initiator_unsupported;
 static int64_t s_last_session_us;
 static int64_t s_session_deadline_us;
 static int64_t s_backoff_until_us;
@@ -240,6 +244,7 @@ esp_err_t radar_ftm_init(void) {
     s_session_count = 0;
     s_coex_kick_count = 0;
     s_coex_active = false;
+    s_initiator_unsupported = false;
     s_coex_start_us = 0;
     s_calibrated = false;
     s_history_count = 0;
@@ -297,7 +302,8 @@ void radar_ftm_pause(bool paused) {
 }
 
 void radar_ftm_tick(void) {
-    if (!s_initialized || s_paused || !radar_espnow_ftm_can_initiate()) return;
+    if (!s_initialized || s_paused || s_initiator_unsupported ||
+        !radar_espnow_ftm_can_initiate()) return;
     int64_t now = esp_timer_get_time();
 
     // 共存保持超时:恢复扫描,允许下一轮按需再次触发。
@@ -370,6 +376,17 @@ void radar_ftm_tick(void) {
         s_probe_session = false;
         s_backoff_until_us = now + FTM_BACKOFF_US;
         s_last_status = -(int)err;  // 负值 = initiate 阶段 esp_err_t
+        if (err == ESP_ERR_NOT_SUPPORTED) {
+            // This is a capability result, not a transient radio failure.
+            // Do not retry forever or repeatedly pause BLE scanning.
+            s_initiator_unsupported = true;
+            if (s_coex_active) {
+                s_coex_active = false;
+                radar_ble_pause(false);
+            }
+            ESP_LOGW(TAG, "FTM initiator unsupported; disabling FTM for this boot, using RSSI");
+            return;
+        }
         ESP_LOGW(TAG, "FTM initiate failed: %s", esp_err_to_name(err));
         if (++s_coex_kick_count >= FTM_COEX_KICK_LIMIT && !s_coex_active) {
             radar_ble_pause(true);

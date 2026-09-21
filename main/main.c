@@ -685,9 +685,13 @@ static void ble_init_task(void *arg) {
     // BLE is optional. Keep it out of the Wi-Fi/radio setup task so a missing
     // controller (for example in a board simulator) cannot hold up the rest
     // of the application.
+    ESP_LOGI(TAG, "BLE task start");
     esp_err_t err = radar_ble_init();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "BLE sentinel unavailable; continuing without BLE");
+        ESP_LOGW(TAG, "BLE sentinel unavailable: %s; continuing without BLE",
+                 esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "BLE init returned OK; waiting for host sync");
     }
     vTaskDelete(NULL);
 }
