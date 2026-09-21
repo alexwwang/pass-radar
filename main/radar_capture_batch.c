@@ -138,10 +138,14 @@ static esp_err_t scan_committed_records(void) {
     return ESP_OK;
 }
 
-static bool partition_is_erased(const esp_partition_t *partition) {
+static bool partition_data_is_erased(const esp_partition_t *partition,
+                                      size_t data_size) {
     uint8_t probe[RADAR_CAPTURE_BATCH_SECTOR_SIZE];
-    if (!partition || partition->size < sizeof(probe)) return false;
-    for (size_t offset = 0; offset < partition->size; offset += sizeof(probe)) {
+    if (!partition || data_size < sizeof(probe) || data_size > partition->size ||
+        (data_size & (RADAR_CAPTURE_BATCH_SECTOR_SIZE - 1u)) != 0) {
+        return false;
+    }
+    for (size_t offset = 0; offset < data_size; offset += sizeof(probe)) {
         if (esp_partition_read(partition, offset, probe, sizeof(probe)) != ESP_OK) {
             return false;
         }
@@ -165,7 +169,8 @@ static esp_err_t find_partition(void) {
     // Accept either an erased slot or a slot already initialized by this
     // batch format. Any other content is treated as an occupied firmware/data
     // slot and is never erased or appended over.
-    if (!partition_is_erased(slot2)) {
+    size_t data_size = slot2->size - RADAR_CAPTURE_BATCH_NAME_SECTOR_SIZE;
+    if (!partition_data_is_erased(slot2, data_size)) {
         radar_capture_batch_header_t existing;
         if (esp_partition_read(slot2, 0, &existing, sizeof(existing)) != ESP_OK ||
             !radar_capture_batch_header_valid(&existing)) {
