@@ -154,7 +154,9 @@ static esp_err_t scan_committed_records(void) {
 
 static bool partition_data_is_erased(const esp_partition_t *partition,
                                       size_t data_size) {
-    uint8_t probe[RADAR_CAPTURE_BATCH_SECTOR_SIZE];
+    // This function runs during radar_capture_init() on the small ESP-IDF
+    // main task stack. Never place a full erase sector on that stack.
+    static uint8_t probe[RADAR_CAPTURE_BATCH_SECTOR_SIZE];
     if (!partition || data_size < sizeof(probe) || data_size > partition->size ||
         (data_size & (RADAR_CAPTURE_BATCH_SECTOR_SIZE - 1u)) != 0) {
         return false;
