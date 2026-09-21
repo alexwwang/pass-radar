@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 static const char *TAG = "radar_capture_batch";
 static const esp_partition_t *s_partition;
@@ -62,6 +63,14 @@ bool radar_capture_batch_capture_header_valid(
     return header && header->magic == RADAR_CAPTURE_BATCH_CAPTURE_MAGIC &&
            header->version == RADAR_CAPTURE_BATCH_FORMAT_VERSION &&
            header->header_size == sizeof(*header) &&
+           header->batch_id != 0 && header->run_id != 0 &&
+           header->scene_id < RADAR_CAPTURE_BATCH_SCENE_MAX &&
+           isfinite(header->target_distance_m) &&
+           header->target_distance_m > 0.0f &&
+           header->target_distance_m <= 655.34f &&
+           isfinite(header->measured_distance_m) &&
+           (header->measured_distance_m < 0.0f ||
+            header->measured_distance_m <= 655.34f) &&
            header->record_count > 0 &&
            header->record_count <= RADAR_CAPTURE_BATCH_MAX_RECORDS &&
            header->payload_length > 0 &&
@@ -294,6 +303,11 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
                                      uint32_t payload_crc32) {
     if (!s_open || !s_active || !meta || !payload ||
         meta->batch_id != s_batch_id || meta->run_id != s_capture_count + 1u ||
+        meta->scene_id >= RADAR_CAPTURE_BATCH_SCENE_MAX ||
+        !isfinite(meta->target_distance_m) || meta->target_distance_m <= 0.0f ||
+        meta->target_distance_m > 655.34f ||
+        !isfinite(meta->measured_distance_m) ||
+        (meta->measured_distance_m >= 0.0f && meta->measured_distance_m > 655.34f) ||
         meta->record_count == 0 ||
         meta->record_count > RADAR_CAPTURE_BATCH_MAX_RECORDS ||
         payload_length == 0 || payload_length > RADAR_CAPTURE_BATCH_MAX_PAYLOAD ||
