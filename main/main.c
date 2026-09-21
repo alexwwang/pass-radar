@@ -21,6 +21,7 @@
 #include "bsp_i2c.h"
 #include "bsp_pins.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -87,6 +88,14 @@ static int64_t s_walk_armed_ms;
 static bool s_diag_peer_recorded;
 static volatile bool s_radio_ready;
 static unsigned s_capture_target_index;
+static unsigned s_capture_menu_item;
+static bool s_capture_erase_confirm;
+static char s_capture_action_status[32];
+
+// 内存遥测只观察 Capture 使用的 INTERNAL|8BIT 堆，不改变分配策略。
+#define RADAR_MEM_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+static uint32_t s_mem_min_free = UINT32_MAX;
+static int64_t s_mem_last_log_ms;
 #define WALK_ARMED 1u
 #define WALK_DONE 2u
 #define WALK_CAP_M 25.0f
@@ -200,6 +209,16 @@ static void poll_tick(lv_timer_t *t) {
     (void)t;
     radar_page_t page = radar_ui_current_page();
     int64_t now_ms = esp_timer_get_time() / 1000;
+    size_t mem_free = heap_caps_get_free_size(RADAR_MEM_CAPS);
+    size_t mem_largest = heap_caps_get_largest_free_block(RADAR_MEM_CAPS);
+    if (mem_free < s_mem_min_free) s_mem_min_free = (uint32_t)mem_free;
+    if (s_mem_last_log_ms == 0 || now_ms - s_mem_last_log_ms >= 1000) {
+        s_mem_last_log_ms = now_ms;
+        ESP_LOGI(TAG, "MEM_STATS stage=IDLE free=%u largest=%u min=%u",
+                 (unsigned)mem_free, (unsigned)mem_largest,
+                 (unsigned)s_mem_min_free);
+    }
+
     radar_fusion_set_breakpoint_m(now_ms < s_raised_until_ms
                                   ? RADAR_TWO_RAY_BREAK_RAISED_M
                                   : RADAR_TWO_RAY_BREAK_M);
@@ -251,6 +270,15 @@ static void poll_tick(lv_timer_t *t) {
                                  s_last_vote_spread,
                                  radar_obstruct_class_label(s_obstruct_class),
                                  radar_hint_label(s_obstruct_hint));
+    } else if (page == RADAR_PAGE_CAPTURE_MENU) {
+        radar_ui_update_capture_menu(
+            radar_capture_scene_name(),
+            radar_capture_targets_m[s_capture_target_index],
+            radar_capture_batch_count(),
+            radar_capture_batch_space_status(),
+            s_capture_menu_item,
+            s_capture_erase_confirm,
+            s_capture_action_status);
     } else if (page == RADAR_PAGE_CAPTURE) {
         radar_ftm_snapshot_t snap = {0};
         bool ftm_valid = radar_ftm_get_snapshot(&snap);
@@ -309,7 +337,14 @@ static void poll_tick(lv_timer_t *t) {
             .tx_ref_sym = s_tx_ref_sym,
             .vote_spread_deg = s_last_vote_spread,
             .capture_target_m = radar_capture_targets_m[s_capture_target_index],
+            .capture_scene_name = radar_capture_scene_name(),
+            .mem_free_bytes = (uint32_t)heap_caps_get_free_size(RADAR_MEM_CAPS),
+            .mem_largest_bytes = (uint32_t)heap_caps_get_largest_free_block(RADAR_MEM_CAPS),
+            .mem_min_free_bytes = s_mem_min_free == UINT32_MAX
+                ? (uint32_t)heap_caps_get_minimum_free_size(RADAR_MEM_CAPS)
+                : s_mem_min_free,
             .capture_export_status = radar_capture_export_status(),
+            .capture_batch_status = radar_capture_batch_space_status(),
         };
         radar_ftm_snapshot_t snap;
         if (radar_ftm_get_snapshot(&snap)) {
@@ -642,23 +677,85 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         break;
 
     case RADAR_PAGE_DEBUG:
-        // Debug 页:UP/DOWN 选择目标距离,OK 启动固定窗口 Capture。
-        if (btn == BSP_BTN_UP && ev == BSP_BTN_CLICK) {
-            s_capture_target_index =
-                (s_capture_target_index + 1u) % RADAR_CAPTURE_TARGET_COUNT;
-        } else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_CLICK) {
-            s_capture_target_index =
-                (s_capture_target_index + RADAR_CAPTURE_TARGET_COUNT - 1u) %
-                RADAR_CAPTURE_TARGET_COUNT;
-        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
-            if (radar_capture_start(radar_capture_targets_m[s_capture_target_index]) == ESP_OK) {
-                radar_ui_show_capture(radar_capture_targets_m[s_capture_target_index]);
-            }
-        } else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_LONG) {
-            // Re-export the newest valid NVS capture; never erase it here.
-            (void)radar_capture_export_saved();
+        // UP 双击是 DEBUG 模式的独占进入/退出手势；不用于进入 Capture。
+        // DEBUG 页面显示 CAPTURE [OK] 入口，OK 短按进入二级菜单。
+        if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+            radar_ui_show_capture_menu();
         } else if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
             radar_ui_show_main();
+        }
+        break;
+
+    case RADAR_PAGE_CAPTURE_MENU:
+        if (s_capture_erase_confirm) {
+            if (btn == BSP_BTN_DOWN && ev == BSP_BTN_CLICK) {
+                s_capture_erase_confirm = false;
+                snprintf(s_capture_action_status, sizeof(s_capture_action_status),
+                         "ERASE CANCELLED");
+            } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+                esp_err_t err = radar_capture_begin_new_batch();
+                s_capture_erase_confirm = false;
+                snprintf(s_capture_action_status, sizeof(s_capture_action_status),
+                         "NEW BATCH %s", esp_err_to_name(err));
+            }
+            break;
+        }
+        if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) &&
+            ev == BSP_BTN_CLICK) {
+            const unsigned item_count = 7u;
+            if (btn == BSP_BTN_UP) {
+                s_capture_menu_item =
+                    (s_capture_menu_item + item_count - 1u) % item_count;
+            } else {
+                s_capture_menu_item = (s_capture_menu_item + 1u) % item_count;
+            }
+        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+            switch (s_capture_menu_item) {
+            case 0:
+                radar_capture_set_scene((radar_capture_scene() + 1u) %
+                                         RADAR_CAPTURE_BATCH_SCENE_MAX);
+                break;
+            case 1:
+                s_capture_target_index =
+                    (s_capture_target_index + 1u) % RADAR_CAPTURE_TARGET_COUNT;
+                break;
+            case 2: {
+                esp_err_t err = radar_capture_start(
+                    radar_capture_targets_m[s_capture_target_index]);
+                if (err == ESP_OK) {
+                    s_capture_action_status[0] = '\0';
+                    radar_ui_show_capture(
+                        radar_capture_targets_m[s_capture_target_index]);
+                } else {
+                    snprintf(s_capture_action_status,
+                             sizeof(s_capture_action_status), "START %s",
+                             esp_err_to_name(err));
+                }
+                break;
+            }
+            case 3: {
+                esp_err_t err = radar_capture_export_saved();
+                snprintf(s_capture_action_status,
+                         sizeof(s_capture_action_status), "EXPORT %s",
+                         esp_err_to_name(err));
+                break;
+            }
+            case 4:
+                s_capture_erase_confirm = true;
+                break;
+            case 5:
+                snprintf(s_capture_action_status,
+                         sizeof(s_capture_action_status), "COUNT %lu %s",
+                         (unsigned long)radar_capture_batch_count(),
+                         radar_capture_batch_space_status());
+                break;
+            default:
+                radar_ui_show_debug();
+                break;
+            }
+        } else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_LONG) {
+            // Keep the existing shortcut for field use: export the whole batch.
+            (void)radar_capture_export_saved();
         }
         break;
 
@@ -666,10 +763,10 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         if (btn == BSP_BTN_OK && (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG)) {
             if (radar_capture_phase() == RADAR_CAPTURE_SUMMARY ||
                 radar_capture_phase() == RADAR_CAPTURE_INVALID) {
-                radar_ui_show_debug();
+                radar_ui_show_capture_menu();
             } else {
                 radar_capture_abort();
-                radar_ui_show_debug();
+                radar_ui_show_capture_menu();
             }
         }
         break;
@@ -711,6 +808,12 @@ static void radio_init_task(void *arg) {
 
     s_radio_ready = true;
     radar_diag_persist_stage(RADAR_DIAG_STAGE_RADIO_READY, 0, -127, 0);
+    ESP_LOGI(TAG, "MEM_STATS stage=RADIO_READY free=%u largest=%u min=%u",
+             (unsigned)heap_caps_get_free_size(RADAR_MEM_CAPS),
+             (unsigned)heap_caps_get_largest_free_block(RADAR_MEM_CAPS),
+             (unsigned)(s_mem_min_free == UINT32_MAX
+                            ? heap_caps_get_minimum_free_size(RADAR_MEM_CAPS)
+                            : s_mem_min_free));
     float calib;
     if (radar_espnow_calib_load(&calib) == ESP_OK &&
         isfinite(calib) && calib >= -60.0f && calib <= -30.0f) {

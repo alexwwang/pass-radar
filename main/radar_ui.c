@@ -54,6 +54,7 @@ static lv_obj_t *s_calib_bar;
 
 // 诊断页面对象
 static lv_obj_t *s_debug_label;
+static lv_obj_t *s_capture_menu_label;
 static lv_obj_t *s_capture_label;
 
 // ---------- 坐标转换 ----------
@@ -212,8 +213,16 @@ static void build_calib_page(void) {
     lv_screen_load(s_scr);
 }
 
-static void build_capture_page(void) {
+static void build_capture_menu_page(void) {
     s_scr = ui_pixel_screen_create("CAPTURE");
+    s_capture_menu_label = add_info_label(s_scr, 58, &lv_font_montserrat_14);
+    lv_obj_set_width(s_capture_menu_label, 230);
+    lv_label_set_text(s_capture_menu_label, "CAPTURE MENU");
+    lv_screen_load(s_scr);
+}
+
+static void build_capture_page(void) {
+    s_scr = ui_pixel_screen_create("CAPTURE RUN");
     s_capture_label = add_info_label(s_scr, 92, &lv_font_montserrat_14);
     lv_obj_set_width(s_capture_label, 230);
     lv_label_set_text(s_capture_label, "TARGET --");
@@ -250,6 +259,7 @@ static void page_teardown(void) {
         s_result_sector = NULL;
         s_calib_bar = NULL;
         s_debug_label = NULL;
+        s_capture_menu_label = NULL;
         s_capture_label = NULL;
     }
 }
@@ -449,6 +459,53 @@ void radar_ui_show_debug(void) {
     build_debug_page();
 }
 
+void radar_ui_show_capture_menu(void) {
+    page_teardown();
+    s_page = RADAR_PAGE_CAPTURE_MENU;
+    build_capture_menu_page();
+}
+
+void radar_ui_update_capture_menu(const char *scene_name, float target_distance_m,
+                                  unsigned batch_count, const char *batch_status,
+                                  unsigned selected_item, bool confirm_erase,
+                                  const char *action_status) {
+    if (s_page != RADAR_PAGE_CAPTURE_MENU || !s_capture_menu_label) return;
+    static const char *const items[] = {
+        "SCENE", "DIST", "START CAPTURE", "EXPORT BATCH",
+        "NEW BATCH", "BATCH STATUS", "BACK",
+    };
+    const unsigned item_count = sizeof(items) / sizeof(items[0]);
+    if (selected_item >= item_count) selected_item = 0;
+    char text[256];
+    if (confirm_erase) {
+        (void)snprintf(text, sizeof(text),
+                       "ERASE CURRENT BATCH?\\nOK YES / DOWN CANCEL\\n"
+                       "COUNT %u  %s", batch_count,
+                       batch_status ? batch_status : "BATCH N/A");
+    } else {
+        char menu_lines[192];
+        (void)snprintf(menu_lines, sizeof(menu_lines),
+                       "%cSCENE       %s\\n%cDIST        %.1fm\\n"
+                       "%cSTART CAPTURE\\n%cEXPORT BATCH\\n%cNEW BATCH\\n"
+                       "%cBATCH STATUS\\n%cBACK",
+                       selected_item == 0 ? '>' : ' ',
+                       scene_name ? scene_name : "O-LOS",
+                       selected_item == 1 ? '>' : ' ',
+                       (double)target_distance_m,
+                       selected_item == 2 ? '>' : ' ',
+                       selected_item == 3 ? '>' : ' ',
+                       selected_item == 4 ? '>' : ' ',
+                       selected_item == 5 ? '>' : ' ',
+                       selected_item == 6 ? '>' : ' ');
+        (void)snprintf(text, sizeof(text),
+                       "CAPTURE MENU\\n%s\\nCOUNT %u %s\\n%s",
+                       menu_lines, batch_count,
+                       batch_status ? batch_status : "BATCH N/A",
+                       action_status ? action_status : "OK SELECT  UP/DOWN MOVE");
+    }
+    lv_label_set_text(s_capture_menu_label, text);
+}
+
 void radar_ui_show_capture(float target_distance_m) {
     page_teardown();
     s_page = RADAR_PAGE_CAPTURE;
@@ -510,7 +567,8 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
             (void)snprintf(export_line, sizeof(export_line), "%s",
                            info->capture_export_status);
         } else {
-            (void)snprintf(export_line, sizeof(export_line), "DOWN LONG: EXPORT");
+            (void)snprintf(export_line, sizeof(export_line),
+                           "CAPTURE [OK]  UP2 EXIT");
         }
         if (info->fr && info->fr->conf != RADAR_CONF_OOR &&
             info->fr->distance_m > 0.0f) {
@@ -519,7 +577,8 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
                 "v1 %d.%d m | v2 %s%d.%d m [%s]\n"
                 "%s\n"
                 "%s\n"
-                "env %d n%.1f tx %.0f sp%.0f cap%.1fm\n"
+                "env %d n%.1f tx %.0f sp%.0f CAP %s %.1fm\n"
+                "MEM I%uK L%uK M%uK\n"
                 "%s",
                 (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
                 info->fr->conf == RADAR_CONF_HIGH ? "" : "~",
@@ -529,14 +588,19 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
                 (int)info->env,
                 (double)radar_env_path_loss_n(info->env),
                 (double)info->tx_ref_sym, (double)info->vote_spread_deg,
+                info->capture_scene_name ? info->capture_scene_name : "O-LOS",
                 (double)info->capture_target_m,
+                (unsigned)(info->mem_free_bytes / 1024u),
+                (unsigned)(info->mem_largest_bytes / 1024u),
+                (unsigned)(info->mem_min_free_bytes / 1024u),
                 export_line);
         } else {
             (void)snprintf(debug_text, sizeof(debug_text),
                 "v1 %d.%d m | v2 OUT OF RANGE\n"
                 "%s\n"
                 "%s\n"
-                "env %d n%.1f tx %.0f sp%.0f cap%.1fm\n"
+                "env %d n%.1f tx %.0f sp%.0f CAP %s %.1fm\n"
+                "MEM I%uK L%uK M%uK\n"
                 "%s",
                 (int)info->v1_dist_m, (int)(info->v1_dist_m * 10.0f) % 10,
                 ftm,
@@ -544,7 +608,11 @@ void radar_ui_update_debug(const radar_debug_info_t *info) {
                 (int)info->env,
                 (double)radar_env_path_loss_n(info->env),
                 (double)info->tx_ref_sym, (double)info->vote_spread_deg,
+                info->capture_scene_name ? info->capture_scene_name : "O-LOS",
                 (double)info->capture_target_m,
+                (unsigned)(info->mem_free_bytes / 1024u),
+                (unsigned)(info->mem_largest_bytes / 1024u),
+                (unsigned)(info->mem_min_free_bytes / 1024u),
                 export_line);
         }
         lv_label_set_text(s_debug_label, debug_text);

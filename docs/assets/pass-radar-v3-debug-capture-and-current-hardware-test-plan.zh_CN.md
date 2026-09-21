@@ -4,7 +4,7 @@
 
 日期：2026-09-20
 固件范围：由 `./tools/validate.sh --firmware` 生成的当前正式镜像
-状态：基本真机回归已完成；Debug Capture MVP 已实现，等待真机验证。
+状态：基本真机回归已完成。Debug Capture 是开发者专用的标定功能；普通用户不需要它、不需要 slot2 数据存储，也不在设备上修改模型。
 
 ## 1. 结论与范围
 
@@ -266,24 +266,25 @@ FTM_SESSION end=... result=TIMEOUT status=...
 
 ## 10. 已实现的 Debug Capture MVP
 
-当前正式镜像已经实现第一版静态距离采集闭环：
+当前开发者版本已经实现第一版静态距离采集闭环；该路径不属于普通用户操作：
 
 ```text
-Debug 目标标签选择 -> COUNTDOWN 3 秒 -> SETTLE 5 秒 -> CAPTURE 30 秒
-                  -> SUMMARY -> 压缩 NVS 保存 -> USB CSV 输出
+DEBUG -> CAPTURE 菜单 -> 选择 SCENE/DIST -> COUNTDOWN 3 秒
+      -> SETTLE 5 秒 -> CAPTURE 30 秒 -> SUMMARY
+      -> 追加到空 slot2 批次 -> USB CSV 导出
 ```
 
-在 Debug 页使用 UP/DOWN 选择预设目标标签，按 OK 启动采集。目标值只是分类标签，不能当作真实测量值。采集页显示阶段、耗时、记录数、有效性；批量写入成功后显示 `SAVED CSV`。采集完成后按 OK 返回 Debug；采集进行中按 OK 会中止并将本次标记为无效。在 Debug 页 DOWN 长按可以重复导出 NVS 中最新一代有效记录，但不会清除记录。
+Debug 页面显示 `CAPTURE [OK]`；OK 进入独立的 Capture 菜单。UP/DOWN 导航菜单，OK 修改 SCENE/DIST 或执行 START/EXPORT/NEW BATCH/BATCH STATUS/BACK。目标值只是分类标签，不能当作真实测量值。重复运行使用新的 `run_id` 追加保存。DOWN 长按仅在 Capture 菜单内作为导出快捷键，不会清除数据。
 
-MVP 在 RAM 中最多保存 128 条观测，采样周期为 250 ms。采集结束后将记录编码并一次性写入现有 NVS namespace，回读 payload 后使用 CRC32 校验，并通过 USB 输出固定 CSV 表头和 `CAPTURE_CSV` 数据行。写入失败会将本次采集标记为无效。当前 MVP 在保存后立即导出，并支持通过 Debug 页 DOWN 长按重复导出 NVS 中最新一代有效记录。当前故意不提供清除动作，避免误删原始证据。
+开发者 Capture 路径在 RAM 中最多保存 128 条观测，采样周期为 250 ms；完成后编码并追加写入空 slot2 批次，带有每条 Capture 的 commit marker 和 CRC。重复运行使用新的 `run_id`，全部保留。导出时读取当前批次全部记录，通过 USB 输出 `CAPTURE_META`/`CAPTURE_CSV`。新建批次必须明确操作并二次确认后才允许擦除当前批次。
 
-MVP 当前保存可用的原始 RSSI、对端存活、FTM 状态/距离/分歧/session 数、BLE 状态/RSSI/年龄、CSI 帧数和环境等级。NVS header 和 `CAPTURE_META` 行现在还包含固件版本、采集 ID、boot sequence、复位原因、目标标签、记录数和 CRC32。正式用于最终参数调优前，还需要补充 token 字段、遮挡分类、信道，以及持久重复导出/清除控制。
+开发者批次保存可用的原始 RSSI、对端存活、FTM 状态/距离/分歧/session 数、BLE 状态/RSSI/年龄、CSI 帧数和环境等级。批次元数据还包含固件版本、采集 ID、batch/run/scene 标签、boot sequence、复位原因、目标标签、记录数和 CRC32。最终模型拟合仍在电脑端由开发者完成，普通用户不在设备上调参。
 
-之前的 MVP 实现写入项目自有的 `radar_capture` 数据分区。现有 meta-pass 分区表中没有这个分区，因此最近一次真机测试虽然完成了 RAM 采集，却出现了 `CAPTURE_SAVE failed: partition missing`。当前实现已经改为复用 meta-pass 现有的 `nvs` 分区；这条新路径仍需下一次真机测试验收。
+当前开发者路径在 pass-radar 运行于 slot0 或 slot1 时，使用现有空的 `ota_2` 槽作为原始 Capture 存储，范围为 `0x560000–0x7FD000`（最后 4 KiB 保留给 slot 显示名）。如果 slot2 已被占用或就是当前运行分区，Capture 会拒绝开始，不擦除固件。普通产品运行不依赖该存储区。
 
-## 11. 已实现的与 meta-pass 兼容的压缩 NVS 存储
+## 11. 历史压缩 NVS 方案（开发者批次版本已取代）
 
-下一版存储实现将复用 meta-pass 现有的 `nvs` 分区，不新增分区，也不修改 `cardid` 或任何 OTA 槽位。使用独立 namespace 和 key，避免与已有标定、诊断数据冲突：
+早期 MVP 曾复用 meta-pass 现有的 `nvs` 分区作为最近两条记录的恢复缓存。该设计仅作为历史兼容背景保留；开发者完整矩阵 Capture 现在使用空 slot2 批次区，不依赖 NVS 保存完整历史：
 
 ```text
 namespace: radar_capture
@@ -316,7 +317,7 @@ reset_reason
 payload_crc32
 ```
 
-当前未解包的 C 结构中，128 条记录约占 4.7 KB。紧凑字段预计可降到约 2.6～3.2 KB；差分/变长/RLE 还可能进一步减少，但发布前必须使用真实样本和最坏情况样本测得最大长度。最终 NVS blob 放不下时必须拒绝保存，并输出 `CAPTURE_SAVE FAIL NVS_SPACE`。
+当前 Capture 记录已经改为 packed 20-byte 定点结构。128 条记录的原始缓冲为 2560 bytes；包含 76-byte header 和 8192-byte codec 上限时，最坏分配预算为 10828 bytes。运行时如果最大连续块无法满足预算加 1536-byte 安全余量，则拒绝保存，并按原因输出 `CAPTURE_SAVE FAIL RAM` 或 `CAPTURE_SAVE FAIL NVS_SPACE`。
 
 保存和导出契约如下：
 
@@ -328,7 +329,7 @@ payload_crc32
 6. 重复导出时选择 generation 最新且有效的一份，解码后输出 CSV；
 7. 写入、回读、解码或 CRC 任一步失败时，保留上一代有效数据并报告失败。
 
-该方案针对当前 meta-pass 布局设计，但仍必须在运行时检查 NVS 可用条目，因为 meta-pass 可能已经占用 0x6000 字节 NVS 分区的一部分。压缩 NVS 格式已经在当前源码和正式构建中实现。编解码已通过 host 测试，固件门禁也已通过；但在 meta-pass 真机产生 `CAPTURE_SAVE OK` 并成功完成重复导出前，不能称为硬件验收通过。
+当前开发者批次实现会在运行时选择空闲且不是当前运行分区的 slot2，保留最后一个显示名扇区，追加保存全部已提交 run，并导出完整批次。如果 slot2 已占用或就是当前运行分区，Capture 会安全拒绝。NVS 双 key 路径不是完整户外矩阵的存储路径。
 
 ## 12. 编译环境和正式固件命令
 
@@ -433,8 +434,8 @@ CAPTURE_SAVE 结果
 
 下一步顺序：
 
-1. 在当前 meta-pass 布局上验证第 11 节已经实现的压缩 NVS；
-2. 在当前 meta-pass 布局上验证 NVS 容量、双 key 恢复、回读 CRC 和 CSV 导出；
+1. 在当前 meta-pass 布局上验证开发者专用的 slot2 批次实现；
+2. 验证 slot2 容量、追加/重启恢复、每条 Capture CRC 和完整批次 CSV 导出；
 3. 在一个实际测量距离上验证 Capture MVP；
 4. 确认 USB CSV 表头、记录数、CRC/保存状态，以及 38 秒流程内无重启；
 5. 补充 token/遮挡/信道字段和需要明确确认的清除控制；

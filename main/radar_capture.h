@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "radar_capture_batch.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -36,6 +37,10 @@ extern const float radar_capture_targets_m[RADAR_CAPTURE_TARGET_COUNT];
 
 void radar_capture_init(void);
 esp_err_t radar_capture_start(float target_distance_m);
+esp_err_t radar_capture_begin_new_batch(void);
+void radar_capture_set_scene(uint16_t scene_id);
+uint16_t radar_capture_scene(void);
+const char *radar_capture_scene_name(void);
 void radar_capture_abort(void);
 void radar_capture_tick(const radar_capture_observation_t *observation);
 radar_capture_phase_t radar_capture_phase(void);

@@ -1,6 +1,6 @@
 #include "../main/radar_capture_codec.h"
+#include "../main/radar_capture_budget.h"
 
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -21,12 +21,12 @@ static void fill_record(radar_capture_record_t *record, unsigned i) {
     record->peer_rssi = (int8_t)(-61 - (i % 4));
     record->flags = (i / 8u) & 0x0fu;
     record->ftm_status = (i % 17u == 0) ? 5 : 0;
-    record->ftm_distance_m = 7.03f + (float)(i % 4u) * 0.01f;
-    record->ftm_spread_m = (float)(i % 3u) * 0.23f;
+    record->ftm_distance_cm = (uint16_t)(703u + (i % 4u));
+    record->ftm_spread_cm = (uint16_t)((i % 3u) * 23u);
     record->ftm_session_count = (uint16_t)(32u + i);
     record->ble_rssi = (int8_t)(-74 + (int)(i % 3u));
-    record->ble_age_ms = (int32_t)((i % 12u) * 1000u);
-    record->csi_frames = 100u + i * 2u;
+    record->ble_age_ms = (uint16_t)((i % 12u) * 1000u);
+    record->csi_frames = (uint16_t)(100u + i * 2u);
     record->env_level = (uint8_t)(i / 32u);
 }
 
@@ -46,9 +46,9 @@ static void test_round_trip(void) {
         CHECK(output[i].local_rssi == input[i].local_rssi, "local RSSI mismatch at %u", i);
         CHECK(output[i].peer_rssi == input[i].peer_rssi, "peer RSSI mismatch at %u", i);
         CHECK(output[i].flags == input[i].flags, "flags mismatch at %u", i);
-        CHECK(fabsf(output[i].ftm_distance_m - input[i].ftm_distance_m) <= 0.01f,
+        CHECK(output[i].ftm_distance_cm == input[i].ftm_distance_cm,
               "distance mismatch at %u", i);
-        CHECK(fabsf(output[i].ftm_spread_m - input[i].ftm_spread_m) <= 0.01f,
+        CHECK(output[i].ftm_spread_cm == input[i].ftm_spread_cm,
               "spread mismatch at %u", i);
         CHECK(output[i].ble_age_ms == input[i].ble_age_ms, "age mismatch at %u", i);
     }
@@ -65,6 +65,26 @@ static void test_max_capture_budget(void) {
     CHECK(encoded < sizeof(input), "128-record capture should be smaller than raw payload");
     printf("  capture_codec_max_budget: PASS (%zu/%zu bytes)\n",
            encoded, sizeof(input));
+}
+
+static void test_memory_budget(void) {
+    size_t required = radar_capture_budget_required(
+        RADAR_CAPTURE_BUDGET_MAX_RECORDS,
+        RADAR_CAPTURE_BUDGET_RAW_RECORD_BYTES,
+        RADAR_CAPTURE_BUDGET_STORAGE_HEADER_BYTES +
+            RADAR_CAPTURE_BUDGET_CODEC_MAX_PAYLOAD);
+    CHECK(required == RADAR_CAPTURE_BUDGET_ALLOC_BYTES,
+          "budget calculation mismatch: %zu", required);
+    size_t original_required = RADAR_CAPTURE_BUDGET_MAX_RECORDS * 32u +
+                               RADAR_CAPTURE_BUDGET_STORAGE_HEADER_BYTES +
+                               RADAR_CAPTURE_BUDGET_CODEC_MAX_PAYLOAD;
+    CHECK(RADAR_CAPTURE_BUDGET_MEASURED_MIN_LARGEST < original_required + 2048u,
+          "original raw-record budget must not fit measured block");
+    CHECK(radar_capture_budget_fits(RADAR_CAPTURE_BUDGET_MEASURED_MIN_LARGEST,
+                                    required),
+          "compact budget must fit measured block");
+    printf("  capture_memory_budget: PASS (%zu bytes + %u margin)\n",
+           required, RADAR_CAPTURE_BUDGET_SAFETY_MARGIN);
 }
 
 static void test_repeat_and_corruption(void) {
@@ -84,6 +104,7 @@ static void test_repeat_and_corruption(void) {
 int main(void) {
     test_round_trip();
     test_max_capture_budget();
+    test_memory_budget();
     test_repeat_and_corruption();
     if (failures) {
         fprintf(stderr, "FAILED: %d check(s)\n", failures);

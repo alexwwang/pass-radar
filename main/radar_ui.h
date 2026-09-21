@@ -18,6 +18,7 @@ typedef enum {
     RADAR_PAGE_RESULT,     // 结果:相对方位 + 顺时针角度(+/-分歧)
     RADAR_PAGE_CALIB,      // 1m 标定中
     RADAR_PAGE_DEBUG,      // 诊断/回归:v1/v2 管线 A/B 对比
+    RADAR_PAGE_CAPTURE_MENU, // Debug二级Capture菜单
     RADAR_PAGE_CAPTURE,    // 静态距离自动采集
 } radar_page_t;
 
@@ -51,12 +52,22 @@ typedef struct {
     float tx_ref_sym;       // 当前 1m 对称参考(标定值)
     float vote_spread_deg;  // 最近一次扫盘投票/融合分歧
     float capture_target_m; // 当前 Debug Capture 目标标签
+    const char *capture_scene_name; // 当前场景标签
+    uint32_t mem_free_bytes; // INTERNAL|8BIT 当前空闲堆
+    uint32_t mem_largest_bytes; // INTERNAL|8BIT 当前最大连续块
+    uint32_t mem_min_free_bytes; // 本次启动以来最低空闲堆
     const char *capture_export_status; // DOWN 长按重复导出反馈（空串=无）
+    const char *capture_batch_status; // 批次剩余空间状态
 } radar_debug_info_t;
 
 // 切换到诊断页并刷新(由 main.c 调用;入口=追踪页 UP 长按)。
 void radar_ui_show_debug(void);
 void radar_ui_update_debug(const radar_debug_info_t *info);
+void radar_ui_show_capture_menu(void);
+void radar_ui_update_capture_menu(const char *scene_name, float target_distance_m,
+                                  unsigned batch_count, const char *batch_status,
+                                  unsigned selected_item, bool confirm_erase,
+                                  const char *action_status);
 void radar_ui_show_capture(float target_distance_m);
 void radar_ui_update_capture(const char *phase, float target_distance_m,
                             uint32_t elapsed_ms, unsigned record_count,
