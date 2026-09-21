@@ -479,15 +479,15 @@ void radar_ui_update_capture_menu(const char *scene_name, float target_distance_
     char text[256];
     if (confirm_erase) {
         (void)snprintf(text, sizeof(text),
-                       "ERASE CURRENT BATCH?\\nOK YES / DOWN CANCEL\\n"
+                       "ERASE CURRENT BATCH?\nOK YES / DOWN CANCEL\n"
                        "COUNT %u  %s", batch_count,
                        batch_status ? batch_status : "BATCH N/A");
     } else {
         char menu_lines[192];
         (void)snprintf(menu_lines, sizeof(menu_lines),
-                       "%cSCENE       %s\\n%cDIST        %.1fm\\n"
-                       "%cSTART CAPTURE\\n%cEXPORT BATCH\\n%cNEW BATCH\\n"
-                       "%cBATCH STATUS\\n%cBACK",
+                       "%cSCENE       %s\n%cDIST        %.1fm\n"
+                       "%cSTART CAPTURE\n%cEXPORT BATCH\n%cNEW BATCH\n"
+                       "%cBATCH STATUS\n%cBACK",
                        selected_item == 0 ? '>' : ' ',
                        scene_name ? scene_name : "O-LOS",
                        selected_item == 1 ? '>' : ' ',
@@ -498,7 +498,7 @@ void radar_ui_update_capture_menu(const char *scene_name, float target_distance_
                        selected_item == 5 ? '>' : ' ',
                        selected_item == 6 ? '>' : ' ');
         (void)snprintf(text, sizeof(text),
-                       "CAPTURE MENU\\n%s\\nCOUNT %u %s\\n%s",
+                       "CAPTURE MENU\n%s\nCOUNT %u %s\n%s",
                        menu_lines, batch_count,
                        batch_status ? batch_status : "BATCH N/A",
                        action_status ? action_status : "OK SELECT  UP/DOWN MOVE");

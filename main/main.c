@@ -687,6 +687,11 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         break;
 
     case RADAR_PAGE_CAPTURE_MENU:
+        if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
+            s_capture_erase_confirm = false;
+            radar_ui_show_main();
+            break;
+        }
         if (s_capture_erase_confirm) {
             if (btn == BSP_BTN_DOWN && ev == BSP_BTN_CLICK) {
                 s_capture_erase_confirm = false;
@@ -760,7 +765,10 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         break;
 
     case RADAR_PAGE_CAPTURE:
-        if (btn == BSP_BTN_OK && (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG)) {
+        if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
+            radar_capture_abort();
+            radar_ui_show_main();
+        } else if (btn == BSP_BTN_OK && (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG)) {
             if (radar_capture_phase() == RADAR_CAPTURE_SUMMARY ||
                 radar_capture_phase() == RADAR_CAPTURE_INVALID) {
                 radar_ui_show_capture_menu();
