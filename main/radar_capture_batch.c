@@ -111,6 +111,8 @@ static esp_err_t scan_committed_records(void) {
             offset + radar_capture_batch_capture_span(capture.payload_length) >
                 s_data_size) {
             err = discard_uncommitted_tail(offset);
+            s_capture_count = count;
+            s_next_offset = offset;
             free(payload);
             return err;
         }
@@ -120,6 +122,8 @@ static esp_err_t scan_committed_records(void) {
         if (err != ESP_OK || commit.magic != RADAR_CAPTURE_BATCH_COMMIT_MAGIC ||
             commit.batch_id != capture.batch_id || commit.run_id != capture.run_id) {
             err = discard_uncommitted_tail(offset);
+            s_capture_count = count;
+            s_next_offset = offset;
             free(payload);
             return err;
         }
