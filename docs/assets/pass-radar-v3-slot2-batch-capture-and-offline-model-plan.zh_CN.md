@@ -4,7 +4,7 @@ English version: `pass-radar-v3-slot2-batch-capture-and-offline-model-plan.md`
 
 日期：2026-09-21
 适用目标：在户外一次完成全部测试，回到电脑后一次性读取，不要求中途下载。
-状态：已为开发者/现场标定版本实现。本功能不是普通用户功能，普通产品运行不依赖它。
+状态：开发者/现场标定版本已经实现户外 Capture MVP。第 3.3 节定义的完整室内/室外条件标签方案是下一阶段实现目标。本功能不是普通用户功能，普通产品运行不依赖它。
 
 ## 1. 用户场景和设计目标
 
@@ -66,6 +66,106 @@ English version: `pass-radar-v3-slot2-batch-capture-and-offline-model-plan.md`
 
 每个 Capture 仍只允许一个距离、一个场景、一个固定姿态和一个约 38 秒窗口。
 
+### 3.3 完整条件标签设计
+
+`O-` 前缀只保留给第一阶段户外采集，并不表示所有 Capture 都只能是户外场景。室内数据必须使用独立的条件命名空间，不能通过显示字符串推断后混入户外标签。
+
+每条原始 Capture 必须同时保存两组相互独立的标签：
+
+```text
+TEST CONDITION（Capture 前由开发者设置的测试条件）
+condition_scene_id       稳定的组合 ID，例如 O-LOS 或 I-MULTIPATH
+condition_environment    OUTDOOR 或 INDOOR
+condition_obstruction   NONE / HUMAN_STATIC / HUMAN_DYNAMIC / FOLIAGE / WALL / METAL
+condition_propagation   LOS / NLOS / MULTIPATH
+
+DEVICE OBSERVATION（根据采集到的无线数据自动计算）
+observed_level           L0_LOS / L1_INDOOR / L2_NLOS / L3_LOST
+observed_obstruction     NONE_LOS / FAR_LOS / ATTENUATING_STATIC /
+                         FOLIAGE_DYNAMIC / REFLECTION / UNKNOWN
+```
+
+菜单和电脑端解析器使用以下稳定的组合条件 ID：
+
+| ID | 环境 | 遮挡 | 传播特征 | 阶段 |
+| --- | --- | --- | --- | --- |
+| O-LOS | 室外 | 无 | LOS | 户外基线 |
+| O-HUMAN | 室外 | 静态人体 | NLOS | 户外遮挡 |
+| O-DYNAMIC | 室外 | 动态人体 | NLOS | 户外遮挡 |
+| O-FOLIAGE | 室外 | 植被 | NLOS | 户外遮挡 |
+| O-WALL | 室外 | 墙体/围栏 | NLOS | 户外遮挡 |
+| O-METAL | 室外 | 金属围栏/结构 | MULTIPATH/NLOS | 户外遮挡 |
+| O-MULTIPATH | 室外 | 无或未知 | MULTIPATH | 户外多径 |
+| I-LOS | 室内 | 无 | LOS | 室内基线 |
+| I-HUMAN | 室内 | 静态人体 | NLOS | 室内遮挡 |
+| I-DYNAMIC | 室内 | 动态人体 | NLOS | 室内遮挡 |
+| I-WALL | 室内 | 墙体/隔断 | NLOS | 室内遮挡 |
+| I-METAL | 室内 | 金属/家具 | MULTIPATH | 室内多径 |
+| I-MULTIPATH | 室内 | 无或未知 | MULTIPATH | 室内多径 |
+
+以上是菜单预设，不是所有有效组合的全集；上面的结构化维度和组合 ID 规则才是权威定义。
+
+#### ELI5 操作规则
+
+按下 START 前，先用最简单的问题确认条件：
+
+| 问题 | 字段 | 判断规则 |
+| --- | --- | --- |
+| 两张卡在哪里？ | environment | 建筑物内部 = INDOOR；空地/公园/道路 = OUTDOOR。 |
+| 两张卡中间有什么？ | obstruction | 没有 = NONE；静止的人 = HUMAN_STATIC；移动的人 = HUMAN_DYNAMIC；树丛/树木 = FOLIAGE；墙/围栏/隔断 = WALL；大型金属物体 = METAL。 |
+| 主要信号路径怎么走？ | propagation | 能直接看见且路径无遮挡 = LOS；直达路径穿过或绕过障碍 = NLOS；存在明显回波或多个可能路径 = MULTIPATH。 |
+| 空间是什么形状？ | room_geometry | ROOM、CORRIDOR、OPEN_HALL、CORNER、STAIR 或 OUTDOOR_OPEN。 |
+| 空间有多大？ | room_size | SMALL、MEDIUM 或 LARGE；尽量在测试记录中填写实际尺寸。 |
+| 主要表面是什么？ | material | SOFT、MIXED、HARD 或 METAL_GLASS。 |
+| 空间有多拥挤？ |furniture_density
+boundary
+card_height_class
+card_pose
+observed_level
+observed_obstruction
+
+ | LOW、MEDIUM 或 HIGH；只统计大型反射体/遮挡物。 |
+| 附近有重要边界吗？ | boundary | OPEN、WALL_NEAR、CORNER、DOORWAY 或 PARTITION。 |
+| 卡片怎么拿？ | card_height/card_pose | 记录高度，以及 UPRIGHT、FLAT 或 MIXED；重复测试保持一致。 |
+
+不要因为室内没有人就把所有测试都写成 `I-LOS`。走廊、墙角、金属柜和明显回波都必须保留上下文。看到异常结果后也不要反过来修改条件标签：条件标签描述测量前的实际布置，`observed_*` 字段描述设备采集后观察到的无线现象。如果换了房间、家具布局、卡片高度或姿态，就应使用新的 `room_id/layout_id` 条件。
+
+建议的室内起始场景：
+
+```text
+I-LOS + ROOM + MIXED + MEDIUM
+I-LOS + CORRIDOR + HARD
+I-MULTIPATH + CORNER 或 METAL_GLASS
+I-WALL + PARTITION 或 WALL_NEAR
+```
+
+当前 78 次户外矩阵使用 O-LOS、O-HUMAN、O-DYNAMIC、O-FOLIAGE 和 O-WALL。开始室内、金属或多径采集前，必须先把其他条件 ID 加入固件。设备必须同时保存组合 ID 和拆解维度，电脑端不能依赖字符串解析标签。
+
+### 3.4 一个统一的室内/室外混合批次
+
+室内和室外不是两个 Capture 阶段，也不是两套存储格式，而是一个统一批次中的独立条件维度。采集顺序自由：开发者可以先采集室内，再在同一批次中继续采集室外。
+
+条件使用稳定的 16 位组合 ID 编码，而不是只能表示 12 个固定标签：
+
+```text
+condition_scene_id = (environment << 8) | (obstruction << 4) | propagation
+```
+
+拆解后的维度仍是电脑端分析的权威字段。UI 提供常用组合，记录格式则支持所有有效的环境/遮挡/传播组合，不需要再次修改二进制结构。
+
+原来的 78 次户外 Capture 仍是计划中的一个子集，不再是整个批次的最大值。批次容量门禁根据 slot2 实际空间和最坏 Capture span 计算。室内和室外记录可以任意顺序追加，直到剩余空间不足以完整容纳下一次 Capture；此时必须在倒计时开始前拒绝新的 Capture，不能覆盖或静默丢弃已有条件数据。
+
+批次生命周期统一为：
+
+```text
+NEW BATCH
+  -> 按任意顺序追加室内和/或室外 Capture
+  -> 完成整套活动后一次性导出
+  -> 电脑端将可疑 run 标记为 SUSPECT/REJECTED，不修改原始记录
+```
+
+如果预定总次数超过容量，必须在明确的活动边界导出当前批次，再由用户明确创建新批次。这是容量限制，不是室内/室外设计上的拆分。
+
 ## 4. slot2 数据布局
 
 meta-pass 分区表确认：
@@ -99,11 +199,10 @@ Capture data size:  0x29D000 = 2736128 bytes
 
 ```text
 每个 Capture 最坏物理占用：header 对齐 4096 + payload 对齐 8192 + commit 对齐 4096 = 16384 bytes
-78 次：78 × 16384 = 1277952 bytes
-批次头和边界余量：约 4 KiB
-总预算：约 1250 KiB
+Capture 数据从对齐后的批次头 4096 bytes 之后开始。
+slot2 理论最坏容量为 167 条 Capture；实现会保留安全余量，并在运行时显示准确的剩余容量。
 slot2 数据区：2736128 bytes
-完成 78 条最坏 Capture 后剩余约 1.45 MiB
+室内和室外记录共享同一追加式容量；切换环境不会重置或覆盖当前批次。
 ```
 
 如果未来单次 payload 超过上限、记录字段增加或应用边界增长，固件必须拒绝继续追加并显示空间不足，不能覆盖已提交数据。
@@ -128,7 +227,19 @@ magic
 format_version
 batch_id
 run_id
-scene_id
+condition_scene_id
+condition_environment
+condition_obstruction
+condition_propagation
+room_geometry
+room_size
+material
+furniture_density
+boundary
+card_height_class
+card_pose
+observed_level
+observed_obstruction
 target_distance_label_m
 measured_distance_m
 capture_id
@@ -269,6 +380,8 @@ CRC全部通过
 3. 将 Capture 保存接入批次追加区；
 4. 增加批次导出和完整性摘要；
 5. 增加在线候选摘要，不改变正式模型；
-6. 增加 host 批次编码、恢复、容量和 CRC 测试；
-7. 在不擦除 NVS 的情况下进行真机单批次验证；
-8. 再执行 24/78 次户外矩阵。
+6. 增加完整条件标签和设备观察分类字段；
+7. 增加 host 批次编码、恢复、容量、标签一致性和 CRC 测试；
+8. 在不擦除 NVS 的情况下进行带标签的真机单批次验证；
+9. 再执行 24/78 次户外矩阵；
+10. 验证统一的室内/室外混合批次；可以先采集室内，再不改变批次格式地继续采集室外。

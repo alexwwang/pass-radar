@@ -111,7 +111,16 @@ static unsigned s_record_count;
 static bool s_data_valid;
 static bool s_save_succeeded;
 static uint32_t s_capture_id;
-static uint16_t s_scene_id = RADAR_CAPTURE_SCENE_LOS;
+static uint16_t s_scene_id = RADAR_CAPTURE_SCENE_O_LOS;
+static uint8_t s_room_geometry = RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
+static uint8_t s_room_size = RADAR_CAPTURE_ROOM_SIZE_LARGE;
+static uint8_t s_material = RADAR_CAPTURE_MATERIAL_MIXED;
+static uint8_t s_furniture_density = RADAR_CAPTURE_FURNITURE_LOW;
+static uint8_t s_boundary = RADAR_CAPTURE_BOUNDARY_OPEN;
+static uint8_t s_card_height = RADAR_CAPTURE_CARD_HEIGHT_CHEST;
+static uint8_t s_card_pose = RADAR_CAPTURE_CARD_POSE_UPRIGHT;
+static uint8_t s_observed_level = RADAR_CAPTURE_OBS_LEVEL_L3_LOST;
+static uint8_t s_observed_obstruction = RADAR_CAPTURE_OBS_CLASS_UNKNOWN;
 // Screen feedback for the DOWN long-press re-export: "" = never attempted,
 // otherwise a short status string cleared on the next Debug-page entry.
 static char s_export_status[16];
@@ -346,10 +355,25 @@ static esp_err_t export_batch_record(
     };
     strncpy(header.firmware_version, "slot2-batch",
             sizeof(header.firmware_version) - 1u);
-    ESP_LOGI(TAG, "BATCH_CAPTURE_SCENE batch=%lu run=%lu scene=%s",
+    ESP_LOGI(TAG,
+             "BATCH_CAPTURE_CONDITION batch=%lu run=%lu scene=%s env=%u obs=%u "
+             "prop=%u room=%u size=%u material=%u furniture=%u boundary=%u "
+             "height=%u pose=%u observed_level=%u observed_obstruction=%u",
              (unsigned long)batch_header->batch_id,
              (unsigned long)batch_header->run_id,
-             radar_capture_scene_label(batch_header->scene_id));
+             radar_capture_scene_label(batch_header->scene_id),
+             (unsigned)batch_header->condition_environment,
+             (unsigned)batch_header->condition_obstruction,
+             (unsigned)batch_header->condition_propagation,
+             (unsigned)batch_header->room_geometry,
+             (unsigned)batch_header->room_size,
+             (unsigned)batch_header->material,
+             (unsigned)batch_header->furniture_density,
+             (unsigned)batch_header->boundary,
+             (unsigned)batch_header->card_height,
+             (unsigned)batch_header->card_pose,
+             (unsigned)batch_header->observed_level,
+             (unsigned)batch_header->observed_obstruction);
     emit_csv("BATCH_CAPTURE_META", "BATCH_CAPTURE_CSV", &header, s_records);
     export_context->count++;
     return ESP_OK;
@@ -407,6 +431,8 @@ esp_err_t radar_capture_start(float target_distance_m) {
     s_record_count = 0;
     s_data_valid = false;
     s_save_succeeded = false;
+    s_observed_level = RADAR_CAPTURE_OBS_LEVEL_L3_LOST;
+    s_observed_obstruction = RADAR_CAPTURE_OBS_CLASS_UNKNOWN;
     // run_id must remain unique within the active batch across reboots.
     // Aborted runs are not committed, so the next start may reuse the next
     // committed ordinal without creating a visible gap.
@@ -475,6 +501,8 @@ void radar_capture_tick(const radar_capture_observation_t *observation) {
     record->csi_frames = observation->csi_frames > UINT16_MAX
         ? UINT16_MAX : (uint16_t)observation->csi_frames;
     record->env_level = observation->environment_level;
+    s_observed_level = observation->observed_level;
+    s_observed_obstruction = observation->observed_obstruction;
     s_last_sample_us = now;
 }
 
@@ -491,12 +519,57 @@ esp_err_t radar_capture_begin_new_batch(void) {
 }
 
 void radar_capture_set_scene(uint16_t scene_id) {
-    if (scene_id < RADAR_CAPTURE_BATCH_SCENE_MAX) s_scene_id = scene_id;
+    uint8_t environment = (uint8_t)radar_capture_scene_environment(scene_id);
+    uint8_t obstruction = (uint8_t)radar_capture_scene_obstruction(scene_id);
+    uint8_t propagation = (uint8_t)radar_capture_scene_propagation(scene_id);
+    if (environment <= RADAR_CAPTURE_ENV_INDOOR &&
+        obstruction <= RADAR_CAPTURE_OBSTRUCTION_METAL &&
+        propagation <= RADAR_CAPTURE_PROPAGATION_MULTIPATH &&
+        scene_id == (uint16_t)((environment << 8) | (obstruction << 4) | propagation)) {
+        s_scene_id = scene_id;
+        s_room_geometry = environment == RADAR_CAPTURE_ENV_INDOOR
+            ? RADAR_CAPTURE_ROOM_GEOMETRY_ROOM
+            : RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
+        s_boundary = RADAR_CAPTURE_BOUNDARY_OPEN;
+        s_material = RADAR_CAPTURE_MATERIAL_MIXED;
+        s_furniture_density = environment == RADAR_CAPTURE_ENV_INDOOR
+            ? RADAR_CAPTURE_FURNITURE_MEDIUM : RADAR_CAPTURE_FURNITURE_LOW;
+    }
 }
 
 uint16_t radar_capture_scene(void) { return s_scene_id; }
 const char *radar_capture_scene_name(void) {
     return radar_capture_scene_label(s_scene_id);
+}
+
+const char *radar_capture_context_name(void) {
+    if (s_room_geometry == RADAR_CAPTURE_ROOM_GEOMETRY_CORRIDOR) return "CORRIDOR";
+    if (s_room_geometry == RADAR_CAPTURE_ROOM_GEOMETRY_OPEN_HALL) return "OPEN_HALL";
+    if (s_room_geometry == RADAR_CAPTURE_ROOM_GEOMETRY_CORNER) return "CORNER";
+    if (s_material == RADAR_CAPTURE_MATERIAL_METAL_GLASS) return "METAL_GLASS";
+    return s_room_geometry == RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN
+        ? "OUTDOOR_OPEN" : "ROOM";
+}
+
+void radar_capture_set_context(uint8_t room_geometry, uint8_t room_size,
+                               uint8_t material, uint8_t furniture_density,
+                               uint8_t boundary, uint8_t card_height,
+                               uint8_t card_pose) {
+    if (room_geometry <= RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN &&
+        room_size <= RADAR_CAPTURE_ROOM_SIZE_LARGE &&
+        material <= RADAR_CAPTURE_MATERIAL_METAL_GLASS &&
+        furniture_density <= RADAR_CAPTURE_FURNITURE_HIGH &&
+        boundary <= RADAR_CAPTURE_BOUNDARY_PARTITION &&
+        card_height <= RADAR_CAPTURE_CARD_HEIGHT_OVERHEAD &&
+        card_pose <= RADAR_CAPTURE_CARD_POSE_MIXED) {
+        s_room_geometry = room_geometry;
+        s_room_size = room_size;
+        s_material = material;
+        s_furniture_density = furniture_density;
+        s_boundary = boundary;
+        s_card_height = card_height;
+        s_card_pose = card_pose;
+    }
 }
 
 uint32_t radar_capture_elapsed_ms(void) {
@@ -621,6 +694,18 @@ esp_err_t radar_capture_save(void) {
         .run_id = s_capture_id,
         .capture_id = s_capture_id,
         .scene_id = s_scene_id,
+        .condition_environment = (uint8_t)radar_capture_scene_environment(s_scene_id),
+        .condition_obstruction = (uint8_t)radar_capture_scene_obstruction(s_scene_id),
+        .condition_propagation = (uint8_t)radar_capture_scene_propagation(s_scene_id),
+        .observed_level = s_observed_level,
+        .observed_obstruction = s_observed_obstruction,
+        .room_geometry = s_room_geometry,
+        .room_size = s_room_size,
+        .material = s_material,
+        .furniture_density = s_furniture_density,
+        .boundary = s_boundary,
+        .card_height = s_card_height,
+        .card_pose = s_card_pose,
         .target_distance_m = verified.target_distance_m,
         .measured_distance_m = -1.0f,
         .record_count = verified.record_count,

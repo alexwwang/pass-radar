@@ -39,8 +39,19 @@ int main(void) {
           "worst payload span includes header/payload/commit sectors");
     CHECK(radar_capture_batch_capacity_fits(78, 8192),
           "78 worst-case captures fit slot2 data area");
-    CHECK(!radar_capture_batch_capacity_fits(79, 8192),
-          "79 worst-case captures exceed slot2 data area");
+    CHECK(radar_capture_batch_capacity_fits(160, 8192),
+          "160 worst-case captures fit unified batch capacity");
+    CHECK(!radar_capture_batch_capacity_fits(161, 8192),
+          "161 captures exceed the configured batch limit");
+    CHECK(RADAR_CAPTURE_SCENE_I_LOS == (1u << 8),
+          "indoor LOS scene encoding is stable");
+    CHECK(RADAR_CAPTURE_SCENE_O_FOLIAGE ==
+              ((RADAR_CAPTURE_OBSTRUCTION_FOLIAGE << 4) |
+               RADAR_CAPTURE_PROPAGATION_NLOS),
+          "foliage scene encoding is stable");
+    CHECK(RADAR_CAPTURE_SCENE_I_MULTIPATH ==
+              ((1u << 8) | RADAR_CAPTURE_PROPAGATION_MULTIPATH),
+          "multipath scene encoding is stable");
     CHECK(radar_capture_batch_capacity_fits(78, 1466),
           "78 observed-size captures fit slot2 data area");
 

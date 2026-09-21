@@ -30,6 +30,8 @@ typedef struct {
     int32_t ble_age_ms;
     uint32_t csi_frames;
     uint8_t environment_level;
+    uint8_t observed_level;
+    uint8_t observed_obstruction;
 } radar_capture_observation_t;
 
 #define RADAR_CAPTURE_TARGET_COUNT 8
@@ -41,6 +43,11 @@ esp_err_t radar_capture_begin_new_batch(void);
 void radar_capture_set_scene(uint16_t scene_id);
 uint16_t radar_capture_scene(void);
 const char *radar_capture_scene_name(void);
+const char *radar_capture_context_name(void);
+void radar_capture_set_context(uint8_t room_geometry, uint8_t room_size,
+                               uint8_t material, uint8_t furniture_density,
+                               uint8_t boundary, uint8_t card_height,
+                               uint8_t card_pose);
 void radar_capture_abort(void);
 void radar_capture_tick(const radar_capture_observation_t *observation);
 radar_capture_phase_t radar_capture_phase(void);

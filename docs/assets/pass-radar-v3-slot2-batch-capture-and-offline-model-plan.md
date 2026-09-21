@@ -4,7 +4,7 @@ Chinese version: `pass-radar-v3-slot2-batch-capture-and-offline-model-plan.zh_CN
 
 Date: 2026-09-21
 Goal: complete the outdoor campaign in one field session and read the full dataset once back at the computer.
-Status: Implemented for developer/field-calibration builds. This is not a normal-user feature and is not required for ordinary product operation.
+Status: Outdoor Capture MVP is implemented for developer/field-calibration builds. The complete indoor/outdoor condition-label schema defined in section 3.3 is the next implementation target. This is not a normal-user feature and is not required for ordinary product operation.
 
 ## 1. User scenario and design goal
 
@@ -60,6 +60,106 @@ Total Captures: 8 × 3 = 24
 
 Each Capture remains exactly one distance, one scene, one fixed pose, and one approximately 38-second window.
 
+### 3.3 Complete condition-label design
+
+The `O-` prefix is reserved for the first outdoor campaign; it does not mean that all Capture data is outdoor-only. Indoor data must use a separate condition namespace and must never be mixed into an outdoor label by inference from a display string.
+
+Each raw Capture must carry two independent label groups:
+
+```text
+TEST CONDITION (set by the developer before Capture)
+condition_scene_id       stable composite ID, for example O-LOS or I-MULTIPATH
+condition_environment    OUTDOOR or INDOOR
+condition_obstruction   NONE / HUMAN_STATIC / HUMAN_DYNAMIC / FOLIAGE / WALL / METAL
+condition_propagation   LOS / NLOS / MULTIPATH
+
+DEVICE OBSERVATION (computed from the recorded radio data)
+observed_level           L0_LOS / L1_INDOOR / L2_NLOS / L3_LOST
+observed_obstruction     NONE_LOS / FAR_LOS / ATTENUATING_STATIC /
+                         FOLIAGE_DYNAMIC / REFLECTION / UNKNOWN
+```
+
+The menu presets and host parser use labels such as:
+
+| ID | Environment | Obstruction | Propagation | Phase |
+| --- | --- | --- | --- | --- |
+| O-LOS | outdoor | none | LOS | outdoor baseline |
+| O-HUMAN | outdoor | static human | NLOS | outdoor obstruction |
+| O-DYNAMIC | outdoor | dynamic human | NLOS | outdoor obstruction |
+| O-FOLIAGE | outdoor | foliage | NLOS | outdoor obstruction |
+| O-WALL | outdoor | wall/fence | NLOS | outdoor obstruction |
+| O-METAL | outdoor | metal fence/structure | MULTIPATH/NLOS | outdoor obstruction |
+| O-MULTIPATH | outdoor | none or unknown | MULTIPATH | outdoor multipath |
+| I-LOS | indoor | none | LOS | indoor baseline |
+| I-HUMAN | indoor | static human | NLOS | indoor obstruction |
+| I-DYNAMIC | indoor | dynamic human | NLOS | indoor obstruction |
+| I-WALL | indoor | wall/partition | NLOS | indoor obstruction |
+| I-METAL | indoor | metal/furniture | MULTIPATH | indoor multipath |
+| I-MULTIPATH | indoor | none or unknown | MULTIPATH | indoor multipath |
+
+These are menu presets, not the complete universe of valid combinations. The structured dimensions and composite-ID rule above are authoritative.
+
+#### ELI5 operator rules
+
+Before pressing START, answer these simple questions:
+
+| Question | Field | Rule |
+| --- | --- | --- |
+| Where are the cards? | environment | Inside a building = INDOOR; open yard/park/road = OUTDOOR. |
+| What is between them? | obstruction | Nothing = NONE; still person = HUMAN_STATIC; moving person = HUMAN_DYNAMIC; bushes/trees = FOLIAGE; wall/fence/partition = WALL; large metal object = METAL. |
+| How does the main signal path go? | propagation | Clear direct view = LOS; direct path crosses/goes around an obstacle = NLOS; strong echoes or several plausible paths = MULTIPATH. |
+| What is the space shape? | room_geometry | ROOM, CORRIDOR, OPEN_HALL, CORNER, STAIR, or OUTDOOR_OPEN. |
+| How large is it? | room_size | SMALL, MEDIUM, or LARGE; use measured dimensions in the test record. |
+| What surfaces dominate? | material | SOFT, MIXED, HARD, or METAL_GLASS. |
+| How crowded is it? |furniture_density
+boundary
+card_height_class
+card_pose
+observed_level
+observed_obstruction
+
+ | LOW, MEDIUM, or HIGH; count only large reflectors/blockers. |
+| Is a boundary close? | boundary | OPEN, WALL_NEAR, CORNER, DOORWAY, or PARTITION. |
+| How are cards held? | card_height/card_pose | Record height and UPRIGHT, FLAT, or MIXED; keep them fixed for repeats. |
+
+Do not label every indoor test `I-LOS`. A corridor, corner, metal cabinet, or strong echo must keep its context fields. Do not change a condition label after seeing a surprising result: the condition describes the setup before measurement, while `observed_*` fields describe what the radio later reported. A different room, furniture layout, card height, or pose is a new `room_id/layout_id` condition.
+
+Recommended indoor starting set:
+
+```text
+I-LOS + ROOM + MIXED + MEDIUM
+I-LOS + CORRIDOR + HARD
+I-MULTIPATH + CORNER or METAL_GLASS
+I-WALL + PARTITION or WALL_NEAR
+```
+
+The current 78-Capture outdoor matrix uses O-LOS, O-HUMAN, O-DYNAMIC, O-FOLIAGE, and O-WALL. The other condition IDs must be added before indoor or metal/multipath collection begins. The device must write both the composite ID and its decomposed dimensions, so host analysis never has to parse labels.
+
+### 3.4 One unified mixed-condition batch
+
+Indoor and outdoor are not separate Capture phases or separate storage formats. They are independent condition dimensions in one unified batch. Collection order is free: the developer may start with indoor scenes, then continue with outdoor scenes in the same batch.
+
+A condition is encoded as a stable 16-bit composite ID rather than a fixed list of only 12 labels:
+
+```text
+condition_scene_id = (environment << 8) | (obstruction << 4) | propagation
+```
+
+The decomposed fields remain authoritative for host analysis. The UI provides the planned common combinations, while the record format remains able to represent every valid environment/obstruction/propagation combination without changing the binary format.
+
+The original 78 outdoor Captures remain a planned subset, not the batch maximum. The batch capacity gate is calculated from the actual slot2 region and the worst-case Capture span. Indoor and outdoor records may be appended in any order until the next complete Capture no longer fits. At that point the UI must refuse a new Capture before countdown; it must never overwrite or silently discard a previous condition.
+
+The batch therefore has this lifecycle:
+
+```text
+NEW BATCH
+  -> indoor and/or outdoor Capture records in any order
+  -> export once after the complete campaign
+  -> host marks runs SUSPECT/REJECTED without changing raw records
+```
+
+If the planned total exceeds the available capacity, the developer must export the current batch and explicitly create a new batch at a campaign boundary. This is a capacity constraint, not an indoor/outdoor design split.
+
 ## 4. slot2 data layout
 
 The meta-pass partition table confirms:
@@ -93,11 +193,10 @@ A current Capture has approximately 99–100 records and an observed compressed 
 
 ```text
 One Capture worst-case physical span: aligned header 4096 + aligned payload 8192 + aligned commit 4096 = 16384 bytes
-78 Captures: 78 × 16384 = 1277952 bytes
-Batch header and boundary reserve: approximately 4 KiB
-Total budget: approximately 1250 KiB
+Capture data begins after the aligned batch header at 4096 bytes.
+Theoretical worst-case slot2 capacity: 167 Capture records; the implementation keeps a safety reserve and reports the exact remaining capacity at runtime.
 slot2 data region: 2736128 bytes
-Remaining after 78 worst-case Captures: approximately 1.45 MiB
+Indoor and outdoor records share this same append-only capacity; changing environment does not reset or overwrite the batch.
 ```
 
 If a payload exceeds the defined limit, fields grow, or the application boundary moves, the firmware must stop appending and report insufficient space. It must never overwrite committed data.
@@ -122,7 +221,19 @@ magic
 format_version
 batch_id
 run_id
-scene_id
+condition_scene_id
+condition_environment
+condition_obstruction
+condition_propagation
+room_geometry
+room_size
+material
+furniture_density
+boundary
+card_height_class
+card_pose
+observed_level
+observed_obstruction
 target_distance_label_m
 measured_distance_m
 capture_id
@@ -258,6 +369,8 @@ Approved. It provides:
 3. connect Capture save to the append-only batch area;
 4. add batch export and integrity summaries;
 5. add online candidate summaries without changing the active model;
-6. add host batch encoding, recovery, capacity, and CRC tests;
-7. hardware-test one batch without erasing NVS;
-8. then run the 24/78-Capture outdoor matrix.
+6. add the complete condition-label schema and observed-class fields;
+7. add host batch encoding, recovery, capacity, label-consistency, and CRC tests;
+8. hardware-test one labelled batch without erasing NVS;
+9. run the 24/78-Capture outdoor matrix;
+10. validate the unified mixed-condition batch, beginning with indoor records if desired and continuing with outdoor records without changing batch format.

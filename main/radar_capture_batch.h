@@ -24,22 +24,141 @@ typedef int esp_err_t;
 #define RADAR_CAPTURE_BATCH_FLASH_SIZE \
     (RADAR_CAPTURE_BATCH_SLOT2_SIZE - RADAR_CAPTURE_BATCH_NAME_SECTOR_SIZE)
 #define RADAR_CAPTURE_BATCH_SECTOR_SIZE 0x1000u
-#define RADAR_CAPTURE_BATCH_MAX_CAPTURES 78u
+#define RADAR_CAPTURE_BATCH_MAX_CAPTURES 160u
+#define RADAR_CAPTURE_BATCH_MENU_SCENE_MAX 12u
 #define RADAR_CAPTURE_BATCH_MAX_RECORDS 128u
 #define RADAR_CAPTURE_BATCH_MAX_PAYLOAD 8192u
 #define RADAR_CAPTURE_BATCH_MAGIC 0x52434231u /* RCB1 */
 #define RADAR_CAPTURE_BATCH_CAPTURE_MAGIC 0x52434331u /* RCC1 */
 #define RADAR_CAPTURE_BATCH_COMMIT_MAGIC 0x52434f4bu /* RCOK */
-#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 1u
-#define RADAR_CAPTURE_BATCH_SCENE_MAX 5u
+#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 2u
+#define RADAR_CAPTURE_BATCH_SCENE_MAX 0x1000u
 
 typedef enum {
-    RADAR_CAPTURE_SCENE_LOS = 0,
-    RADAR_CAPTURE_SCENE_HUMAN = 1,
-    RADAR_CAPTURE_SCENE_DYNAMIC = 2,
-    RADAR_CAPTURE_SCENE_FOLIAGE = 3,
-    RADAR_CAPTURE_SCENE_WALL = 4,
+    RADAR_CAPTURE_ENV_OUTDOOR = 0,
+    RADAR_CAPTURE_ENV_INDOOR = 1,
+} radar_capture_environment_id_t;
+
+typedef enum {
+    RADAR_CAPTURE_OBSTRUCTION_NONE = 0,
+    RADAR_CAPTURE_OBSTRUCTION_HUMAN_STATIC = 1,
+    RADAR_CAPTURE_OBSTRUCTION_HUMAN_DYNAMIC = 2,
+    RADAR_CAPTURE_OBSTRUCTION_FOLIAGE = 3,
+    RADAR_CAPTURE_OBSTRUCTION_WALL = 4,
+    RADAR_CAPTURE_OBSTRUCTION_METAL = 5,
+} radar_capture_obstruction_id_t;
+
+typedef enum {
+    RADAR_CAPTURE_PROPAGATION_LOS = 0,
+    RADAR_CAPTURE_PROPAGATION_NLOS = 1,
+    RADAR_CAPTURE_PROPAGATION_MULTIPATH = 2,
+} radar_capture_propagation_id_t;
+
+typedef enum {
+    RADAR_CAPTURE_SCENE_O_LOS = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
+                                 (RADAR_CAPTURE_OBSTRUCTION_NONE << 4) |
+                                 RADAR_CAPTURE_PROPAGATION_LOS,
+    RADAR_CAPTURE_SCENE_O_HUMAN_STATIC = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
+                                         (RADAR_CAPTURE_OBSTRUCTION_HUMAN_STATIC << 4) |
+                                         RADAR_CAPTURE_PROPAGATION_NLOS,
+    RADAR_CAPTURE_SCENE_O_HUMAN_DYNAMIC = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
+                                          (RADAR_CAPTURE_OBSTRUCTION_HUMAN_DYNAMIC << 4) |
+                                          RADAR_CAPTURE_PROPAGATION_NLOS,
+    RADAR_CAPTURE_SCENE_O_FOLIAGE = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
+                                    (RADAR_CAPTURE_OBSTRUCTION_FOLIAGE << 4) |
+                                    RADAR_CAPTURE_PROPAGATION_NLOS,
+    RADAR_CAPTURE_SCENE_O_WALL = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
+                                 (RADAR_CAPTURE_OBSTRUCTION_WALL << 4) |
+                                 RADAR_CAPTURE_PROPAGATION_NLOS,
+    RADAR_CAPTURE_SCENE_O_METAL = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
+                                  (RADAR_CAPTURE_OBSTRUCTION_METAL << 4) |
+                                  RADAR_CAPTURE_PROPAGATION_MULTIPATH,
+    RADAR_CAPTURE_SCENE_O_MULTIPATH = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
+                                      (RADAR_CAPTURE_OBSTRUCTION_NONE << 4) |
+                                      RADAR_CAPTURE_PROPAGATION_MULTIPATH,
+    RADAR_CAPTURE_SCENE_I_LOS = (RADAR_CAPTURE_ENV_INDOOR << 8) |
+                                (RADAR_CAPTURE_OBSTRUCTION_NONE << 4) |
+                                RADAR_CAPTURE_PROPAGATION_LOS,
+    RADAR_CAPTURE_SCENE_I_HUMAN_STATIC = (RADAR_CAPTURE_ENV_INDOOR << 8) |
+                                         (RADAR_CAPTURE_OBSTRUCTION_HUMAN_STATIC << 4) |
+                                         RADAR_CAPTURE_PROPAGATION_NLOS,
+    RADAR_CAPTURE_SCENE_I_HUMAN_DYNAMIC = (RADAR_CAPTURE_ENV_INDOOR << 8) |
+                                          (RADAR_CAPTURE_OBSTRUCTION_HUMAN_DYNAMIC << 4) |
+                                          RADAR_CAPTURE_PROPAGATION_NLOS,
+    RADAR_CAPTURE_SCENE_I_WALL = (RADAR_CAPTURE_ENV_INDOOR << 8) |
+                                 (RADAR_CAPTURE_OBSTRUCTION_WALL << 4) |
+                                 RADAR_CAPTURE_PROPAGATION_NLOS,
+    RADAR_CAPTURE_SCENE_I_METAL = (RADAR_CAPTURE_ENV_INDOOR << 8) |
+                                  (RADAR_CAPTURE_OBSTRUCTION_METAL << 4) |
+                                  RADAR_CAPTURE_PROPAGATION_MULTIPATH,
+    RADAR_CAPTURE_SCENE_I_MULTIPATH = (RADAR_CAPTURE_ENV_INDOOR << 8) |
+                                      (RADAR_CAPTURE_OBSTRUCTION_NONE << 4) |
+                                      RADAR_CAPTURE_PROPAGATION_MULTIPATH,
 } radar_capture_scene_id_t;
+
+typedef enum {
+    RADAR_CAPTURE_ROOM_GEOMETRY_ROOM = 0,
+    RADAR_CAPTURE_ROOM_GEOMETRY_CORRIDOR = 1,
+    RADAR_CAPTURE_ROOM_GEOMETRY_OPEN_HALL = 2,
+    RADAR_CAPTURE_ROOM_GEOMETRY_CORNER = 3,
+    RADAR_CAPTURE_ROOM_GEOMETRY_STAIR = 4,
+    RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN = 5,
+} radar_capture_room_geometry_t;
+
+typedef enum {
+    RADAR_CAPTURE_ROOM_SIZE_SMALL = 0,
+    RADAR_CAPTURE_ROOM_SIZE_MEDIUM = 1,
+    RADAR_CAPTURE_ROOM_SIZE_LARGE = 2,
+} radar_capture_room_size_t;
+
+typedef enum {
+    RADAR_CAPTURE_MATERIAL_SOFT = 0,
+    RADAR_CAPTURE_MATERIAL_MIXED = 1,
+    RADAR_CAPTURE_MATERIAL_HARD = 2,
+    RADAR_CAPTURE_MATERIAL_METAL_GLASS = 3,
+} radar_capture_material_t;
+
+typedef enum {
+    RADAR_CAPTURE_FURNITURE_LOW = 0,
+    RADAR_CAPTURE_FURNITURE_MEDIUM = 1,
+    RADAR_CAPTURE_FURNITURE_HIGH = 2,
+} radar_capture_furniture_density_t;
+
+typedef enum {
+    RADAR_CAPTURE_BOUNDARY_OPEN = 0,
+    RADAR_CAPTURE_BOUNDARY_WALL_NEAR = 1,
+    RADAR_CAPTURE_BOUNDARY_CORNER = 2,
+    RADAR_CAPTURE_BOUNDARY_DOORWAY = 3,
+    RADAR_CAPTURE_BOUNDARY_PARTITION = 4,
+} radar_capture_boundary_t;
+
+typedef enum {
+    RADAR_CAPTURE_CARD_HEIGHT_LOW = 0,
+    RADAR_CAPTURE_CARD_HEIGHT_CHEST = 1,
+    RADAR_CAPTURE_CARD_HEIGHT_OVERHEAD = 2,
+} radar_capture_card_height_t;
+
+typedef enum {
+    RADAR_CAPTURE_CARD_POSE_UPRIGHT = 0,
+    RADAR_CAPTURE_CARD_POSE_FLAT = 1,
+    RADAR_CAPTURE_CARD_POSE_MIXED = 2,
+} radar_capture_card_pose_t;
+
+typedef enum {
+    RADAR_CAPTURE_OBS_LEVEL_L0_LOS = 0,
+    RADAR_CAPTURE_OBS_LEVEL_L1_INDOOR = 1,
+    RADAR_CAPTURE_OBS_LEVEL_L2_NLOS = 2,
+    RADAR_CAPTURE_OBS_LEVEL_L3_LOST = 3,
+} radar_capture_observed_level_t;
+
+typedef enum {
+    RADAR_CAPTURE_OBS_CLASS_NONE_LOS = 0,
+    RADAR_CAPTURE_OBS_CLASS_FAR_LOS = 1,
+    RADAR_CAPTURE_OBS_CLASS_ATTENUATING_STATIC = 2,
+    RADAR_CAPTURE_OBS_CLASS_FOLIAGE_DYNAMIC = 3,
+    RADAR_CAPTURE_OBS_CLASS_REFLECTION = 4,
+    RADAR_CAPTURE_OBS_CLASS_UNKNOWN = 5,
+} radar_capture_observed_obstruction_t;
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -64,7 +183,19 @@ typedef struct __attribute__((packed)) {
     uint32_t run_id;
     uint32_t capture_id;
     uint16_t scene_id;
-    uint16_t reserved0;
+    uint8_t condition_environment;
+    uint8_t condition_obstruction;
+    uint8_t condition_propagation;
+    uint8_t observed_level;
+    uint8_t observed_obstruction;
+    uint8_t room_geometry;
+    uint8_t room_size;
+    uint8_t material;
+    uint8_t furniture_density;
+    uint8_t boundary;
+    uint8_t card_height;
+    uint8_t card_pose;
+    uint8_t reserved0;
     float target_distance_m;
     float measured_distance_m;
     uint32_t record_count;
@@ -74,7 +205,7 @@ typedef struct __attribute__((packed)) {
     uint32_t boot_sequence;
     uint32_t reset_reason;
     uint32_t record_crc32;
-    uint8_t reserved[52];
+    uint8_t reserved[41];
 } radar_capture_batch_capture_header_t;
 
 _Static_assert(sizeof(radar_capture_batch_capture_header_t) == 112,
@@ -95,6 +226,18 @@ typedef struct {
     uint32_t run_id;
     uint32_t capture_id;
     uint16_t scene_id;
+    uint8_t condition_environment;
+    uint8_t condition_obstruction;
+    uint8_t condition_propagation;
+    uint8_t observed_level;
+    uint8_t observed_obstruction;
+    uint8_t room_geometry;
+    uint8_t room_size;
+    uint8_t material;
+    uint8_t furniture_density;
+    uint8_t boundary;
+    uint8_t card_height;
+    uint8_t card_pose;
     float target_distance_m;
     float measured_distance_m;
     uint32_t record_count;
@@ -175,4 +318,9 @@ const char *radar_capture_batch_space_status(void);
 uint32_t radar_capture_batch_id(void);
 uint32_t radar_capture_batch_count(void);
 const char *radar_capture_scene_label(uint16_t scene_id);
+uint16_t radar_capture_scene_menu_id(unsigned index);
+unsigned radar_capture_scene_menu_count(void);
+radar_capture_environment_id_t radar_capture_scene_environment(uint16_t scene_id);
+radar_capture_obstruction_id_t radar_capture_scene_obstruction(uint16_t scene_id);
+radar_capture_propagation_id_t radar_capture_scene_propagation(uint16_t scene_id);
 size_t radar_capture_batch_used_bytes(void);

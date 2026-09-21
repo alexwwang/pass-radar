@@ -465,13 +465,14 @@ void radar_ui_show_capture_menu(void) {
     build_capture_menu_page();
 }
 
-void radar_ui_update_capture_menu(const char *scene_name, float target_distance_m,
-                                  unsigned batch_count, const char *batch_status,
+void radar_ui_update_capture_menu(const char *scene_name, const char *context_name,
+                                  float target_distance_m, unsigned batch_count,
+                                  const char *batch_status,
                                   unsigned selected_item, bool confirm_erase,
                                   const char *action_status) {
     if (s_page != RADAR_PAGE_CAPTURE_MENU || !s_capture_menu_label) return;
     static const char *const items[] = {
-        "SCENE", "DIST", "START CAPTURE", "EXPORT BATCH",
+        "SCENE", "DIST", "SPACE", "START CAPTURE", "EXPORT BATCH",
         "NEW BATCH", "BATCH STATUS", "BACK",
     };
     const unsigned item_count = sizeof(items) / sizeof(items[0]);
@@ -486,17 +487,19 @@ void radar_ui_update_capture_menu(const char *scene_name, float target_distance_
         char menu_lines[192];
         (void)snprintf(menu_lines, sizeof(menu_lines),
                        "%cSCENE       %s\n%cDIST        %.1fm\n"
-                       "%cSTART CAPTURE\n%cEXPORT BATCH\n%cNEW BATCH\n"
-                       "%cBATCH STATUS\n%cBACK",
+                       "%cSPACE       %s\n%cSTART CAPTURE\n%cEXPORT BATCH\n"
+                       "%cNEW BATCH\n%cBATCH STATUS\n%cBACK",
                        selected_item == 0 ? '>' : ' ',
                        scene_name ? scene_name : "O-LOS",
                        selected_item == 1 ? '>' : ' ',
                        (double)target_distance_m,
                        selected_item == 2 ? '>' : ' ',
+                       context_name ? context_name : "OUTDOOR_OPEN",
                        selected_item == 3 ? '>' : ' ',
                        selected_item == 4 ? '>' : ' ',
                        selected_item == 5 ? '>' : ' ',
-                       selected_item == 6 ? '>' : ' ');
+                       selected_item == 6 ? '>' : ' ',
+                       selected_item == 7 ? '>' : ' ');
         (void)snprintf(text, sizeof(text),
                        "CAPTURE MENU\n%s\nCOUNT %u %s\n%s",
                        menu_lines, batch_count,

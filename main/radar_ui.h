@@ -64,8 +64,9 @@ typedef struct {
 void radar_ui_show_debug(void);
 void radar_ui_update_debug(const radar_debug_info_t *info);
 void radar_ui_show_capture_menu(void);
-void radar_ui_update_capture_menu(const char *scene_name, float target_distance_m,
-                                  unsigned batch_count, const char *batch_status,
+void radar_ui_update_capture_menu(const char *scene_name, const char *context_name,
+                                  float target_distance_m, unsigned batch_count,
+                                  const char *batch_status,
                                   unsigned selected_item, bool confirm_erase,
                                   const char *action_status);
 void radar_ui_show_capture(float target_distance_m);
