@@ -33,6 +33,7 @@ int main(void) {
           "79 worst-case captures exceed slot2 data area");
     CHECK(radar_capture_batch_capacity_fits(78, 1466),
           "78 observed-size captures fit slot2 data area");
+
     if (failures != 0) return 1;
     puts("capture_batch_layout: PASS");
     return 0;

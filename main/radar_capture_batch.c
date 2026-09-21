@@ -11,6 +11,7 @@
 static const char *TAG = "radar_capture_batch";
 static const esp_partition_t *s_partition;
 static size_t s_data_size;
+static uint32_t s_expected_captures;
 
 static esp_err_t read_bytes(size_t offset, void *data, size_t length);
 static bool s_open;
@@ -46,13 +47,25 @@ bool radar_capture_batch_header_valid(const radar_capture_batch_header_t *header
     return expected == radar_capture_batch_crc32(&copy, sizeof(copy));
 }
 
+uint32_t radar_capture_batch_record_crc32(
+    const radar_capture_batch_capture_header_t *header,
+    const uint8_t *payload, size_t payload_length) {
+    if (!header || (!payload && payload_length != 0)) return 0;
+    radar_capture_batch_capture_header_t copy = *header;
+    copy.record_crc32 = 0;
+    return radar_capture_batch_crc32(&copy, sizeof(copy)) ^
+           radar_capture_batch_crc32(payload, payload_length);
+}
+
 bool radar_capture_batch_capture_header_valid(
     const radar_capture_batch_capture_header_t *header) {
     return header && header->magic == RADAR_CAPTURE_BATCH_CAPTURE_MAGIC &&
            header->version == RADAR_CAPTURE_BATCH_FORMAT_VERSION &&
            header->header_size == sizeof(*header) &&
            header->record_count > 0 &&
-           header->payload_length > 0;
+           header->record_count <= RADAR_CAPTURE_BATCH_MAX_RECORDS &&
+           header->payload_length > 0 &&
+           header->payload_length <= RADAR_CAPTURE_BATCH_MAX_PAYLOAD;
 }
 
 static bool is_erased(const uint8_t *data, size_t length) {
@@ -67,18 +80,32 @@ static esp_err_t scan_committed_records(void) {
     uint32_t count = 0;
     radar_capture_batch_capture_header_t capture;
     radar_capture_batch_commit_t commit;
+    uint8_t *payload = malloc(RADAR_CAPTURE_BATCH_MAX_PAYLOAD);
+    if (!payload) return ESP_ERR_NO_MEM;
 
-    while (count < RADAR_CAPTURE_BATCH_MAX_CAPTURES &&
+    while (count < s_expected_captures &&
            offset + sizeof(capture) + sizeof(commit) <= s_data_size) {
         esp_err_t err = read_bytes(offset, &capture, sizeof(capture));
         if (err != ESP_OK || is_erased((const uint8_t *)&capture, sizeof(capture))) {
             break;
         }
         if (!radar_capture_batch_capture_header_valid(&capture) ||
-            capture.batch_id != s_batch_id ||
+            capture.batch_id != s_batch_id || capture.run_id != count + 1u ||
             offset + radar_capture_batch_capture_span(capture.payload_length) >
                 s_data_size) {
-            break;
+            free(payload);
+            return ESP_ERR_INVALID_CRC;
+        }
+        err = read_bytes(offset + sizeof(capture), payload,
+                         capture.payload_length);
+        if (err != ESP_OK ||
+            radar_capture_batch_crc32(payload, capture.payload_length) !=
+                capture.payload_crc32 ||
+            radar_capture_batch_record_crc32(&capture, payload,
+                                              capture.payload_length) !=
+                capture.record_crc32) {
+            free(payload);
+            return ESP_ERR_INVALID_CRC;
         }
         size_t commit_offset = radar_capture_batch_commit_offset(
             offset, capture.payload_length);
@@ -86,11 +113,13 @@ static esp_err_t scan_committed_records(void) {
         if (err != ESP_OK || commit.magic != RADAR_CAPTURE_BATCH_COMMIT_MAGIC ||
             commit.batch_id != capture.batch_id || commit.run_id != capture.run_id ||
             commit.capture_crc32 != capture.record_crc32) {
-            break;
+            free(payload);
+            return ESP_ERR_INVALID_CRC;
         }
         offset += radar_capture_batch_capture_span(capture.payload_length);
         ++count;
     }
+    free(payload);
     s_capture_count = count;
     s_next_offset = offset;
     return ESP_OK;
@@ -98,12 +127,14 @@ static esp_err_t scan_committed_records(void) {
 
 static bool partition_is_erased(const esp_partition_t *partition) {
     uint8_t probe[RADAR_CAPTURE_BATCH_SECTOR_SIZE];
-    if (!partition || partition->size < sizeof(probe) ||
-        esp_partition_read(partition, 0, probe, sizeof(probe)) != ESP_OK) {
-        return false;
-    }
-    for (size_t i = 0; i < sizeof(probe); ++i) {
-        if (probe[i] != 0xffu) return false;
+    if (!partition || partition->size < sizeof(probe)) return false;
+    for (size_t offset = 0; offset < partition->size; offset += sizeof(probe)) {
+        if (esp_partition_read(partition, offset, probe, sizeof(probe)) != ESP_OK) {
+            return false;
+        }
+        for (size_t i = 0; i < sizeof(probe); ++i) {
+            if (probe[i] != 0xffu) return false;
+        }
     }
     return true;
 }
@@ -171,13 +202,20 @@ esp_err_t radar_capture_batch_open(void) {
     if (err != ESP_OK || !radar_capture_batch_header_valid(&header)) {
         s_active = false;
         s_batch_id = 0;
+        s_expected_captures = 0;
         s_capture_count = 0;
         s_next_offset = sizeof(radar_capture_batch_header_t);
         return ESP_OK;
     }
     s_active = true;
     s_batch_id = header.batch_id;
-    scan_committed_records();
+    s_expected_captures = header.expected_captures;
+    err = scan_committed_records();
+    if (err != ESP_OK) {
+        s_active = false;
+        ESP_LOGE(TAG, "batch recovery rejected err=%s", esp_err_to_name(err));
+        return err;
+    }
     ESP_LOGI(TAG, "batch open id=%lu committed=%lu next=%u",
              (unsigned long)s_batch_id, (unsigned long)s_capture_count,
              (unsigned)s_next_offset);
@@ -214,6 +252,7 @@ esp_err_t radar_capture_batch_begin(uint32_t batch_id, uint32_t expected_capture
     if (err != ESP_OK) return err;
     s_active = true;
     s_batch_id = batch_id;
+    s_expected_captures = expected_captures;
     s_capture_count = 0;
     s_next_offset = sizeof(header);
     ESP_LOGI(TAG, "batch begin id=%lu expected=%lu",
@@ -223,6 +262,7 @@ esp_err_t radar_capture_batch_begin(uint32_t batch_id, uint32_t expected_capture
 
 bool radar_capture_batch_can_append(size_t max_payload_length) {
     if (!s_open || !s_active || max_payload_length == 0 ||
+        s_capture_count >= s_expected_captures ||
         s_capture_count >= RADAR_CAPTURE_BATCH_MAX_CAPTURES ||
         s_next_offset > s_data_size) return false;
     size_t span = radar_capture_batch_capture_span(max_payload_length);
@@ -233,9 +273,12 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
                                      const uint8_t *payload, size_t payload_length,
                                      uint32_t payload_crc32) {
     if (!s_open || !s_active || !meta || !payload ||
-        meta->batch_id != s_batch_id || meta->record_count == 0 ||
-        meta->record_count > RADAR_CAPTURE_BATCH_MAX_CAPTURES ||
-        payload_length == 0 ||
+        meta->batch_id != s_batch_id || meta->run_id != s_capture_count + 1u ||
+        meta->record_count == 0 ||
+        meta->record_count > RADAR_CAPTURE_BATCH_MAX_RECORDS ||
+        payload_length == 0 || payload_length > RADAR_CAPTURE_BATCH_MAX_PAYLOAD ||
+        payload_crc32 != radar_capture_batch_crc32(payload, payload_length) ||
+        s_capture_count >= s_expected_captures ||
         s_capture_count >= RADAR_CAPTURE_BATCH_MAX_CAPTURES ||
         s_next_offset > s_data_size ||
         s_next_offset + radar_capture_batch_capture_span(payload_length) >
@@ -258,10 +301,8 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
         .boot_sequence = meta->boot_sequence,
         .reset_reason = meta->reset_reason,
     };
-    header.record_crc32 = 0;
-    header.record_crc32 = radar_capture_batch_crc32(&header, sizeof(header));
-    header.record_crc32 = radar_capture_batch_crc32(payload, payload_length) ^
-                          header.record_crc32;
+    header.record_crc32 = radar_capture_batch_record_crc32(
+        &header, payload, payload_length);
 
     size_t offset = s_next_offset;
     esp_err_t err = write_padded(offset, &header, sizeof(header));
@@ -305,11 +346,11 @@ esp_err_t radar_capture_batch_export(radar_capture_batch_record_cb callback,
     uint8_t *payload = NULL;
     size_t payload_capacity = 0;
 
-    while (exported < RADAR_CAPTURE_BATCH_MAX_CAPTURES &&
+    while (exported < s_expected_captures &&
            offset + sizeof(header) + sizeof(commit) <= s_data_size) {
         esp_err_t err = read_bytes(offset, &header, sizeof(header));
         if (err != ESP_OK || !radar_capture_batch_capture_header_valid(&header) ||
-            header.batch_id != s_batch_id) break;
+            header.batch_id != s_batch_id || header.run_id != exported + 1u) break;
         size_t commit_offset = radar_capture_batch_commit_offset(
             offset, header.payload_length);
         if (commit_offset + sizeof(commit) > s_data_size) break;
@@ -327,7 +368,11 @@ esp_err_t radar_capture_batch_export(radar_capture_batch_record_cb callback,
             radar_capture_batch_crc32(payload, header.payload_length) !=
                 header.payload_crc32) break;
         err = read_bytes(commit_offset, &commit, sizeof(commit));
-        if (err != ESP_OK || commit.magic != RADAR_CAPTURE_BATCH_COMMIT_MAGIC ||
+        if (err != ESP_OK ||
+            radar_capture_batch_record_crc32(&header, payload,
+                                              header.payload_length) !=
+                header.record_crc32 ||
+            commit.magic != RADAR_CAPTURE_BATCH_COMMIT_MAGIC ||
             commit.batch_id != header.batch_id || commit.run_id != header.run_id ||
             commit.capture_crc32 != header.record_crc32) break;
         err = callback(&header, payload, header.payload_length, context);
@@ -355,6 +400,7 @@ esp_err_t radar_capture_batch_erase(void) {
     if (err == ESP_OK) {
         s_active = false;
         s_batch_id = 0;
+        s_expected_captures = 0;
         s_capture_count = 0;
         s_next_offset = sizeof(radar_capture_batch_header_t);
     }

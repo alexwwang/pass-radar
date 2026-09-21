@@ -25,6 +25,8 @@ typedef int esp_err_t;
     (RADAR_CAPTURE_BATCH_SLOT2_SIZE - RADAR_CAPTURE_BATCH_NAME_SECTOR_SIZE)
 #define RADAR_CAPTURE_BATCH_SECTOR_SIZE 0x1000u
 #define RADAR_CAPTURE_BATCH_MAX_CAPTURES 78u
+#define RADAR_CAPTURE_BATCH_MAX_RECORDS 128u
+#define RADAR_CAPTURE_BATCH_MAX_PAYLOAD 8192u
 #define RADAR_CAPTURE_BATCH_MAGIC 0x52434231u /* RCB1 */
 #define RADAR_CAPTURE_BATCH_CAPTURE_MAGIC 0x52434331u /* RCC1 */
 #define RADAR_CAPTURE_BATCH_COMMIT_MAGIC 0x52434f4bu /* RCOK */
@@ -133,6 +135,9 @@ static inline bool radar_capture_batch_capacity_fits(size_t capture_count,
            RADAR_CAPTURE_BATCH_FLASH_SIZE;
 }
 uint32_t radar_capture_batch_crc32(const void *data, size_t length);
+uint32_t radar_capture_batch_record_crc32(
+    const radar_capture_batch_capture_header_t *header,
+    const uint8_t *payload, size_t payload_length);
 bool radar_capture_batch_header_valid(const radar_capture_batch_header_t *header);
 bool radar_capture_batch_capture_header_valid(
     const radar_capture_batch_capture_header_t *header);
