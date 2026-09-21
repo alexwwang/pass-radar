@@ -75,6 +75,14 @@ static bool is_erased(const uint8_t *data, size_t length) {
     return true;
 }
 
+static esp_err_t discard_uncommitted_tail(size_t offset) {
+    if (!s_partition || offset > s_data_size ||
+        (offset & (RADAR_CAPTURE_BATCH_SECTOR_SIZE - 1u)) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return esp_partition_erase_range(s_partition, offset, s_data_size - offset);
+}
+
 static esp_err_t scan_committed_records(void) {
     size_t offset = sizeof(radar_capture_batch_header_t);
     uint32_t count = 0;
@@ -93,6 +101,20 @@ static esp_err_t scan_committed_records(void) {
             capture.batch_id != s_batch_id || capture.run_id != count + 1u ||
             offset + radar_capture_batch_capture_span(capture.payload_length) >
                 s_data_size) {
+            err = discard_uncommitted_tail(offset);
+            free(payload);
+            return err;
+        }
+        size_t commit_offset = radar_capture_batch_commit_offset(
+            offset, capture.payload_length);
+        err = read_bytes(commit_offset, &commit, sizeof(commit));
+        if (err != ESP_OK || commit.magic != RADAR_CAPTURE_BATCH_COMMIT_MAGIC ||
+            commit.batch_id != capture.batch_id || commit.run_id != capture.run_id) {
+            err = discard_uncommitted_tail(offset);
+            free(payload);
+            return err;
+        }
+        if (commit.capture_crc32 != capture.record_crc32) {
             free(payload);
             return ESP_ERR_INVALID_CRC;
         }
@@ -104,15 +126,6 @@ static esp_err_t scan_committed_records(void) {
             radar_capture_batch_record_crc32(&capture, payload,
                                               capture.payload_length) !=
                 capture.record_crc32) {
-            free(payload);
-            return ESP_ERR_INVALID_CRC;
-        }
-        size_t commit_offset = radar_capture_batch_commit_offset(
-            offset, capture.payload_length);
-        err = read_bytes(commit_offset, &commit, sizeof(commit));
-        if (err != ESP_OK || commit.magic != RADAR_CAPTURE_BATCH_COMMIT_MAGIC ||
-            commit.batch_id != capture.batch_id || commit.run_id != capture.run_id ||
-            commit.capture_crc32 != capture.record_crc32) {
             free(payload);
             return ESP_ERR_INVALID_CRC;
         }
