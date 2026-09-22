@@ -290,12 +290,20 @@ static void poll_tick(lv_timer_t *t) {
             radar_capture_environment_label(s_capture_environment_index),
             radar_capture_link_label(s_capture_link_index),
             radar_capture_context_name(),
+            radar_capture_room_size_label(
+                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_ROOM_SIZE)),
             radar_capture_obstacle_label(
                 radar_capture_context_value(RADAR_CAPTURE_CONTEXT_OBSTACLE)),
             radar_capture_material_label(
                 radar_capture_context_value(RADAR_CAPTURE_CONTEXT_MATERIAL)),
+            radar_capture_furniture_label(
+                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_FURNITURE)),
             radar_capture_boundary_label(
                 radar_capture_context_value(RADAR_CAPTURE_CONTEXT_BOUNDARY)),
+            radar_capture_card_height_label(
+                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_CARD_HEIGHT)),
+            radar_capture_card_pose_label(
+                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_CARD_POSE)),
             radar_capture_targets_m[s_capture_target_index],
 
             radar_capture_batch_count(),
@@ -718,8 +726,13 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
             break;
         }
         if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) && ev == BSP_BTN_CLICK) {
-            unsigned count = s_capture_editor_field == RADAR_CAPTURE_CONTEXT_MATERIAL ? 4u :
-                             s_capture_editor_field == RADAR_CAPTURE_CONTEXT_BOUNDARY ? 5u : 6u;
+            unsigned count =
+                (s_capture_editor_field == RADAR_CAPTURE_CONTEXT_MATERIAL ||
+                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_FURNITURE ||
+                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_HEIGHT ||
+                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_POSE) ? 3u :
+                s_capture_editor_field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE ? 3u :
+                s_capture_editor_field == RADAR_CAPTURE_CONTEXT_BOUNDARY ? 5u : 6u;
             for (unsigned attempts = 0; attempts < count; ++attempts) {
                 s_capture_editor_index = btn == BSP_BTN_UP
                     ? (s_capture_editor_index + count - 1u) % count
@@ -764,7 +777,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         }
         if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) &&
             ev == BSP_BTN_CLICK) {
-            const unsigned item_count = 12u;
+            const unsigned item_count = 16u;
             if (btn == BSP_BTN_UP) {
                 s_capture_menu_item =
                     (s_capture_menu_item + item_count - 1u) % item_count;
@@ -804,27 +817,51 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 break;
             }
             case 4: {
+                s_capture_editor_field = RADAR_CAPTURE_CONTEXT_ROOM_SIZE;
+                s_capture_editor_index = radar_capture_context_value(s_capture_editor_field);
+                radar_ui_show_capture_editor(s_capture_editor_field);
+                break;
+            }
+            case 5: {
                 s_capture_editor_field = RADAR_CAPTURE_CONTEXT_OBSTACLE;
                 s_capture_editor_index = radar_capture_context_value(
                     s_capture_editor_field);
                 radar_ui_show_capture_editor(s_capture_editor_field);
                 break;
             }
-            case 5: {
+            case 6: {
                 s_capture_editor_field = RADAR_CAPTURE_CONTEXT_MATERIAL;
                 s_capture_editor_index = radar_capture_context_value(
                     s_capture_editor_field);
                 radar_ui_show_capture_editor(s_capture_editor_field);
                 break;
             }
-            case 6: {
+            case 7: {
+                s_capture_editor_field = RADAR_CAPTURE_CONTEXT_FURNITURE;
+                s_capture_editor_index = radar_capture_context_value(s_capture_editor_field);
+                radar_ui_show_capture_editor(s_capture_editor_field);
+                break;
+            }
+            case 8: {
                 s_capture_editor_field = RADAR_CAPTURE_CONTEXT_BOUNDARY;
                 s_capture_editor_index = radar_capture_context_value(
                     s_capture_editor_field);
                 radar_ui_show_capture_editor(s_capture_editor_field);
                 break;
             }
-            case 7: {
+            case 9: {
+                s_capture_editor_field = RADAR_CAPTURE_CONTEXT_CARD_HEIGHT;
+                s_capture_editor_index = radar_capture_context_value(s_capture_editor_field);
+                radar_ui_show_capture_editor(s_capture_editor_field);
+                break;
+            }
+            case 10: {
+                s_capture_editor_field = RADAR_CAPTURE_CONTEXT_CARD_POSE;
+                s_capture_editor_index = radar_capture_context_value(s_capture_editor_field);
+                radar_ui_show_capture_editor(s_capture_editor_field);
+                break;
+            }
+            case 11: {
                 esp_err_t err = radar_capture_start(
                     radar_capture_targets_m[s_capture_target_index]);
                 if (err == ESP_OK) {
@@ -838,17 +875,17 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 }
                 break;
             }
-            case 8: {
+            case 12: {
                 esp_err_t err = radar_capture_export_saved();
                 snprintf(s_capture_action_status,
                          sizeof(s_capture_action_status), "EXPORT %s",
                          esp_err_to_name(err));
                 break;
             }
-            case 9:
+            case 13:
                 s_capture_erase_confirm = true;
                 break;
-            case 10:
+            case 14:
                 snprintf(s_capture_action_status,
                          sizeof(s_capture_action_status), "COUNT %lu %s",
                          (unsigned long)radar_capture_batch_count(),

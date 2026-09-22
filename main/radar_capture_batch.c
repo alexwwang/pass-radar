@@ -611,6 +611,42 @@ const char *radar_capture_boundary_label(uint8_t boundary) {
     }
 }
 
+const char *radar_capture_room_size_label(uint8_t size) {
+    switch (size) {
+    case RADAR_CAPTURE_ROOM_SIZE_SMALL: return "SMALL";
+    case RADAR_CAPTURE_ROOM_SIZE_MEDIUM: return "MEDIUM";
+    case RADAR_CAPTURE_ROOM_SIZE_LARGE: return "LARGE";
+    default: return "UNKNOWN";
+    }
+}
+
+const char *radar_capture_furniture_label(uint8_t density) {
+    switch (density) {
+    case RADAR_CAPTURE_FURNITURE_LOW: return "LOW";
+    case RADAR_CAPTURE_FURNITURE_MEDIUM: return "MEDIUM";
+    case RADAR_CAPTURE_FURNITURE_HIGH: return "HIGH";
+    default: return "UNKNOWN";
+    }
+}
+
+const char *radar_capture_card_height_label(uint8_t height) {
+    switch (height) {
+    case RADAR_CAPTURE_CARD_HEIGHT_LOW: return "LOW";
+    case RADAR_CAPTURE_CARD_HEIGHT_CHEST: return "CHEST";
+    case RADAR_CAPTURE_CARD_HEIGHT_OVERHEAD: return "OVERHEAD";
+    default: return "UNKNOWN";
+    }
+}
+
+const char *radar_capture_card_pose_label(uint8_t pose) {
+    switch (pose) {
+    case RADAR_CAPTURE_CARD_POSE_UPRIGHT: return "UPRIGHT";
+    case RADAR_CAPTURE_CARD_POSE_FLAT: return "FLAT";
+    case RADAR_CAPTURE_CARD_POSE_MIXED: return "MIXED";
+    default: return "UNKNOWN";
+    }
+}
+
 const char *radar_capture_scene_label(uint16_t scene_id) {
     switch (scene_id) {
     case RADAR_CAPTURE_SCENE_I_LOS: return "I-LOS";

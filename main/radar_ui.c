@@ -218,7 +218,7 @@ static void build_calib_page(void) {
 
 static void build_capture_menu_page(void) {
     s_scr = ui_pixel_screen_create("CAPTURE");
-    s_capture_menu_label = add_info_label(s_scr, 52, &lv_font_montserrat_12);
+    s_capture_menu_label = add_info_label(s_scr, 52, &lv_font_montserrat_10);
     lv_obj_set_width(s_capture_menu_label, 230);
     lv_obj_set_height(s_capture_menu_label, 190);
     lv_label_set_text(s_capture_menu_label, "CAPTURE MENU");
@@ -481,9 +481,13 @@ void radar_ui_show_capture_menu(void) {
 static const char *capture_editor_title(radar_capture_context_field_t field) {
     switch (field) {
     case RADAR_CAPTURE_CONTEXT_SPACE: return "SPACE";
+    case RADAR_CAPTURE_CONTEXT_ROOM_SIZE: return "ROOM SIZE";
     case RADAR_CAPTURE_CONTEXT_OBSTACLE: return "OBSTACLE";
     case RADAR_CAPTURE_CONTEXT_MATERIAL: return "MATERIAL";
+    case RADAR_CAPTURE_CONTEXT_FURNITURE: return "FURNITURE";
     case RADAR_CAPTURE_CONTEXT_BOUNDARY: return "BOUNDARY";
+    case RADAR_CAPTURE_CONTEXT_CARD_HEIGHT: return "HEIGHT";
+    case RADAR_CAPTURE_CONTEXT_CARD_POSE: return "POSE";
     default: return "CONTEXT";
     }
 }
@@ -509,16 +513,24 @@ void radar_ui_update_capture_editor(radar_capture_context_field_t field,
         "ROOM", "CORRIDOR", "OPEN_HALL", "CORNER", "STAIR", "OUTDOOR_OPEN"};
     static const char *const obstacle[] = {
         "NONE", "HUMAN_STATIC", "HUMAN_DYNAMIC", "FOLIAGE", "WALL", "METAL"};
+    static const char *const room_size[] = {"SMALL", "MEDIUM", "LARGE"};
     static const char *const material[] = {"SOFT", "MIXED", "HARD", "METAL_GLASS"};
+    static const char *const furniture[] = {"LOW", "MEDIUM", "HIGH"};
     static const char *const boundary[] = {
         "OPEN", "WALL_NEAR", "CORNER", "DOORWAY", "PARTITION"};
+    static const char *const card_height[] = {"LOW", "CHEST", "OVERHEAD"};
+    static const char *const card_pose[] = {"UPRIGHT", "FLAT", "MIXED"};
     const char *const *values = NULL;
     unsigned count = 0;
     switch (field) {
     case RADAR_CAPTURE_CONTEXT_SPACE: values = space; count = 6; break;
+    case RADAR_CAPTURE_CONTEXT_ROOM_SIZE: values = room_size; count = 3; break;
     case RADAR_CAPTURE_CONTEXT_OBSTACLE: values = obstacle; count = 6; break;
     case RADAR_CAPTURE_CONTEXT_MATERIAL: values = material; count = 4; break;
+    case RADAR_CAPTURE_CONTEXT_FURNITURE: values = furniture; count = 3; break;
     case RADAR_CAPTURE_CONTEXT_BOUNDARY: values = boundary; count = 5; break;
+    case RADAR_CAPTURE_CONTEXT_CARD_HEIGHT: values = card_height; count = 3; break;
+    case RADAR_CAPTURE_CONTEXT_CARD_POSE: values = card_pose; count = 3; break;
     default: break;
     }
     if (!values) return;
@@ -544,18 +556,22 @@ void radar_ui_update_capture_editor(radar_capture_context_field_t field,
 void radar_ui_update_capture_menu(const char *environment_name,
                                   const char *link_name,
                                   const char *context_name,
+                                  const char *room_size_name,
                                   const char *obstacle_name,
                                   const char *material_name,
+                                  const char *furniture_name,
                                   const char *boundary_name,
+                                  const char *card_height_name,
+                                  const char *card_pose_name,
                                   float target_distance_m, unsigned batch_count,
                                   const char *batch_status,
                                   unsigned selected_item, bool confirm_erase,
                                   const char *action_status) {
     if (s_page != RADAR_PAGE_CAPTURE_MENU || !s_capture_menu_label) return;
     static const char *const items[] = {
-        "ENV", "LINK", "DIST", "SPACE", "OBSTACLE", "MATERIAL",
-        "BOUNDARY", "START CAPTURE", "EXPORT BATCH", "NEW BATCH",
-        "BATCH STATUS", "BACK",
+        "ENV", "LINK", "DIST", "SPACE", "ROOM SIZE", "OBSTACLE",
+        "MATERIAL", "FURNITURE", "BOUNDARY", "HEIGHT", "POSE",
+        "START CAPTURE", "EXPORT BATCH", "NEW BATCH", "BATCH STATUS", "BACK",
     };
     const unsigned item_count = sizeof(items) / sizeof(items[0]);
     if (selected_item >= item_count) selected_item = 0;
@@ -566,12 +582,13 @@ void radar_ui_update_capture_menu(const char *environment_name,
                        "COUNT %u  %s", batch_count,
                        batch_status ? batch_status : "BATCH N/A");
     } else {
-        char menu_lines[320];
+        char menu_lines[480];
         (void)snprintf(menu_lines, sizeof(menu_lines),
                        "%cENV         %s\n%cLINK        %s\n%cDIST        %.1fm\n"
-                       "%cSPACE       %s\n%cOBSTACLE    %s\n%cMATERIAL    %s\n"
-                       "%cBOUNDARY    %s\n%cSTART CAPTURE\n%cEXPORT BATCH\n"
-                       "%cNEW BATCH\n%cBATCH STATUS\n%cBACK",
+                       "%cSPACE       %s\n%cROOM SIZE   %s\n%cOBSTACLE    %s\n"
+                       "%cMATERIAL    %s\n%cFURNITURE   %s\n%cBOUNDARY    %s\n"
+                       "%cHEIGHT      %s\n%cPOSE        %s\n%cSTART CAPTURE\n"
+                       "%cEXPORT BATCH\n%cNEW BATCH\n%cBATCH STATUS\n%cBACK",
                        selected_item == 0 ? '>' : ' ',
                        environment_name ? environment_name : "OUTDOOR",
                        selected_item == 1 ? '>' : ' ',
@@ -581,16 +598,24 @@ void radar_ui_update_capture_menu(const char *environment_name,
                        selected_item == 3 ? '>' : ' ',
                        context_name ? context_name : "OUTDOOR_OPEN",
                        selected_item == 4 ? '>' : ' ',
-                       obstacle_name ? obstacle_name : "UNKNOWN",
+                       room_size_name ? room_size_name : "UNKNOWN",
                        selected_item == 5 ? '>' : ' ',
-                       material_name ? material_name : "UNKNOWN",
+                       obstacle_name ? obstacle_name : "UNKNOWN",
                        selected_item == 6 ? '>' : ' ',
-                       boundary_name ? boundary_name : "UNKNOWN",
+                       material_name ? material_name : "UNKNOWN",
                        selected_item == 7 ? '>' : ' ',
+                       furniture_name ? furniture_name : "UNKNOWN",
                        selected_item == 8 ? '>' : ' ',
+                       boundary_name ? boundary_name : "UNKNOWN",
                        selected_item == 9 ? '>' : ' ',
+                       card_height_name ? card_height_name : "UNKNOWN",
                        selected_item == 10 ? '>' : ' ',
-                       selected_item == 11 ? '>' : ' ');
+                       card_pose_name ? card_pose_name : "UNKNOWN",
+                       selected_item == 11 ? '>' : ' ',
+                       selected_item == 12 ? '>' : ' ',
+                       selected_item == 13 ? '>' : ' ',
+                       selected_item == 14 ? '>' : ' ',
+                       selected_item == 15 ? '>' : ' ');
         (void)snprintf(text, sizeof(text), "%s", menu_lines);
     }
     lv_label_set_text(s_capture_menu_label, text);
