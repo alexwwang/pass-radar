@@ -91,7 +91,10 @@ static volatile bool s_radio_ready;
 static unsigned s_capture_target_index;
 static unsigned s_capture_environment_index;
 static unsigned s_capture_link_index;
-static unsigned s_capture_context_index;
+static unsigned s_capture_space_index;
+static unsigned s_capture_obstacle_index;
+static unsigned s_capture_material_index;
+static unsigned s_capture_boundary_index;
 static unsigned s_capture_menu_item;
 static bool s_capture_erase_confirm;
 static char s_capture_action_status[32];
@@ -716,7 +719,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         }
         if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) &&
             ev == BSP_BTN_CLICK) {
-            const unsigned item_count = 9u;
+            const unsigned item_count = 12u;
             if (btn == BSP_BTN_UP) {
                 s_capture_menu_item =
                     (s_capture_menu_item + item_count - 1u) % item_count;
@@ -734,52 +737,64 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 s_capture_link_index = (s_capture_link_index + 1u) % 4u;
                 radar_capture_set_scene((uint16_t)((s_capture_environment_index << 8) |
                                                    (s_capture_link_index << 4)));
+                s_capture_space_index = s_capture_environment_index ==
+                    RADAR_CAPTURE_ENV_INDOOR
+                        ? RADAR_CAPTURE_ROOM_GEOMETRY_ROOM
+                        : RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
+                (void)radar_capture_set_context_field(
+                    RADAR_CAPTURE_CONTEXT_SPACE, (uint8_t)s_capture_space_index);
+                (void)radar_capture_set_context_field(
+                    RADAR_CAPTURE_CONTEXT_OBSTACLE,
+                    (uint8_t)s_capture_obstacle_index);
                 break;
             case 2:
                 s_capture_target_index =
                     (s_capture_target_index + 1u) % RADAR_CAPTURE_TARGET_COUNT;
                 break;
-            case 3:
-                s_capture_context_index = (s_capture_context_index + 1u) % 5u;
-                switch (s_capture_context_index) {
-                case 0: radar_capture_set_context(RADAR_CAPTURE_ROOM_GEOMETRY_ROOM,
-                                                   RADAR_CAPTURE_ROOM_SIZE_MEDIUM,
-                                                   RADAR_CAPTURE_MATERIAL_MIXED,
-                                                   RADAR_CAPTURE_FURNITURE_MEDIUM,
-                                                   RADAR_CAPTURE_BOUNDARY_OPEN,
-                                                   RADAR_CAPTURE_CARD_HEIGHT_CHEST,
-                                                   RADAR_CAPTURE_CARD_POSE_UPRIGHT); break;
-                case 1: radar_capture_set_context(RADAR_CAPTURE_ROOM_GEOMETRY_CORRIDOR,
-                                                   RADAR_CAPTURE_ROOM_SIZE_MEDIUM,
-                                                   RADAR_CAPTURE_MATERIAL_HARD,
-                                                   RADAR_CAPTURE_FURNITURE_LOW,
-                                                   RADAR_CAPTURE_BOUNDARY_WALL_NEAR,
-                                                   RADAR_CAPTURE_CARD_HEIGHT_CHEST,
-                                                   RADAR_CAPTURE_CARD_POSE_UPRIGHT); break;
-                case 2: radar_capture_set_context(RADAR_CAPTURE_ROOM_GEOMETRY_CORNER,
-                                                   RADAR_CAPTURE_ROOM_SIZE_SMALL,
-                                                   RADAR_CAPTURE_MATERIAL_METAL_GLASS,
-                                                   RADAR_CAPTURE_FURNITURE_HIGH,
-                                                   RADAR_CAPTURE_BOUNDARY_CORNER,
-                                                   RADAR_CAPTURE_CARD_HEIGHT_CHEST,
-                                                   RADAR_CAPTURE_CARD_POSE_UPRIGHT); break;
-                case 3: radar_capture_set_context(RADAR_CAPTURE_ROOM_GEOMETRY_OPEN_HALL,
-                                                   RADAR_CAPTURE_ROOM_SIZE_LARGE,
-                                                   RADAR_CAPTURE_MATERIAL_HARD,
-                                                   RADAR_CAPTURE_FURNITURE_LOW,
-                                                   RADAR_CAPTURE_BOUNDARY_OPEN,
-                                                   RADAR_CAPTURE_CARD_HEIGHT_CHEST,
-                                                   RADAR_CAPTURE_CARD_POSE_UPRIGHT); break;
-                default: radar_capture_set_context(RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN,
-                                                   RADAR_CAPTURE_ROOM_SIZE_LARGE,
-                                                   RADAR_CAPTURE_MATERIAL_MIXED,
-                                                   RADAR_CAPTURE_FURNITURE_LOW,
-                                                   RADAR_CAPTURE_BOUNDARY_OPEN,
-                                                   RADAR_CAPTURE_CARD_HEIGHT_CHEST,
-                                                   RADAR_CAPTURE_CARD_POSE_UPRIGHT); break;
-                }
+            case 3: {
+                const unsigned first = s_capture_environment_index == RADAR_CAPTURE_ENV_INDOOR
+                    ? RADAR_CAPTURE_ROOM_GEOMETRY_ROOM
+                    : RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
+                const unsigned last = s_capture_environment_index == RADAR_CAPTURE_ENV_INDOOR
+                    ? RADAR_CAPTURE_ROOM_GEOMETRY_CORNER
+                    : RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
+                s_capture_space_index = s_capture_space_index < first ||
+                    s_capture_space_index >= last ? first : s_capture_space_index + 1u;
+                (void)radar_capture_set_context_field(
+                    RADAR_CAPTURE_CONTEXT_SPACE, (uint8_t)s_capture_space_index);
                 break;
-            case 4: {
+            }
+            case 4:
+                do {
+                    s_capture_obstacle_index =
+                        (s_capture_obstacle_index + 1u) %
+                        (RADAR_CAPTURE_OBSTRUCTION_METAL + 1u);
+                } while (!radar_capture_context_option_available(
+                    (radar_capture_environment_id_t)s_capture_environment_index,
+                    (radar_capture_link_condition_id_t)s_capture_link_index,
+                    RADAR_CAPTURE_CONTEXT_OBSTACLE,
+                    (uint8_t)s_capture_obstacle_index));
+                (void)radar_capture_set_context_field(
+                    RADAR_CAPTURE_CONTEXT_OBSTACLE,
+                    (uint8_t)s_capture_obstacle_index);
+                break;
+            case 5:
+                s_capture_material_index =
+                    (s_capture_material_index + 1u) %
+                    (RADAR_CAPTURE_MATERIAL_METAL_GLASS + 1u);
+                (void)radar_capture_set_context_field(
+                    RADAR_CAPTURE_CONTEXT_MATERIAL,
+                    (uint8_t)s_capture_material_index);
+                break;
+            case 6:
+                s_capture_boundary_index =
+                    (s_capture_boundary_index + 1u) %
+                    (RADAR_CAPTURE_BOUNDARY_PARTITION + 1u);
+                (void)radar_capture_set_context_field(
+                    RADAR_CAPTURE_CONTEXT_BOUNDARY,
+                    (uint8_t)s_capture_boundary_index);
+                break;
+            case 7: {
                 esp_err_t err = radar_capture_start(
                     radar_capture_targets_m[s_capture_target_index]);
                 if (err == ESP_OK) {
@@ -793,17 +808,17 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 }
                 break;
             }
-            case 5: {
+            case 8: {
                 esp_err_t err = radar_capture_export_saved();
                 snprintf(s_capture_action_status,
                          sizeof(s_capture_action_status), "EXPORT %s",
                          esp_err_to_name(err));
                 break;
             }
-            case 6:
+            case 9:
                 s_capture_erase_confirm = true;
                 break;
-            case 7:
+            case 10:
                 snprintf(s_capture_action_status,
                          sizeof(s_capture_action_status), "COUNT %lu %s",
                          (unsigned long)radar_capture_batch_count(),

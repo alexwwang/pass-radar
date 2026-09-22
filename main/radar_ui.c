@@ -485,22 +485,24 @@ void radar_ui_update_capture_menu(const char *environment_name,
                                   const char *action_status) {
     if (s_page != RADAR_PAGE_CAPTURE_MENU || !s_capture_menu_label) return;
     static const char *const items[] = {
-        "ENV", "LINK", "DIST", "SPACE", "START CAPTURE",
-        "EXPORT BATCH", "NEW BATCH", "BATCH STATUS", "BACK",
+        "ENV", "LINK", "DIST", "SPACE", "OBSTACLE", "MATERIAL",
+        "BOUNDARY", "START CAPTURE", "EXPORT BATCH", "NEW BATCH",
+        "BATCH STATUS", "BACK",
     };
     const unsigned item_count = sizeof(items) / sizeof(items[0]);
     if (selected_item >= item_count) selected_item = 0;
-    char text[256];
+    char text[384];
     if (confirm_erase) {
         (void)snprintf(text, sizeof(text),
                        "ERASE CURRENT BATCH?\nOK YES / DOWN CANCEL\n"
                        "COUNT %u  %s", batch_count,
                        batch_status ? batch_status : "BATCH N/A");
     } else {
-        char menu_lines[192];
+        char menu_lines[320];
         (void)snprintf(menu_lines, sizeof(menu_lines),
                        "%cENV         %s\n%cLINK        %s\n%cDIST        %.1fm\n"
-                       "%cSPACE       %s\n%cSTART CAPTURE\n%cEXPORT BATCH\n"
+                       "%cSPACE       %s\n%cOBSTACLE    %s\n%cMATERIAL    %s\n"
+                       "%cBOUNDARY    %s\n%cSTART CAPTURE\n%cEXPORT BATCH\n"
                        "%cNEW BATCH\n%cBATCH STATUS\n%cBACK",
                        selected_item == 0 ? '>' : ' ',
                        environment_name ? environment_name : "OUTDOOR",
@@ -510,11 +512,14 @@ void radar_ui_update_capture_menu(const char *environment_name,
                        (double)target_distance_m,
                        selected_item == 3 ? '>' : ' ',
                        context_name ? context_name : "OUTDOOR_OPEN",
-                       selected_item == 4 ? '>' : ' ',
-                       selected_item == 5 ? '>' : ' ',
-                       selected_item == 6 ? '>' : ' ',
+                       selected_item == 4 ? '>' : ' ', "--",
+                       selected_item == 5 ? '>' : ' ', "--",
+                       selected_item == 6 ? '>' : ' ', "--",
                        selected_item == 7 ? '>' : ' ',
-                       selected_item == 8 ? '>' : ' ');
+                       selected_item == 8 ? '>' : ' ',
+                       selected_item == 9 ? '>' : ' ',
+                       selected_item == 10 ? '>' : ' ',
+                       selected_item == 11 ? '>' : ' ');
         (void)snprintf(text, sizeof(text), "CAPTURE MENU\n%s", menu_lines);
     }
     lv_label_set_text(s_capture_menu_label, text);
