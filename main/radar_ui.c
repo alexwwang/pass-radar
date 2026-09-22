@@ -582,41 +582,47 @@ void radar_ui_update_capture_menu(const char *environment_name,
                        "COUNT %u  %s", batch_count,
                        batch_status ? batch_status : "BATCH N/A");
     } else {
-        char menu_lines[480];
-        (void)snprintf(menu_lines, sizeof(menu_lines),
-                       "%cENV         %s\n%cLINK        %s\n%cDIST        %.1fm\n"
-                       "%cSPACE       %s\n%cROOM SIZE   %s\n%cOBSTACLE    %s\n"
-                       "%cMATERIAL    %s\n%cFURNITURE   %s\n%cBOUNDARY    %s\n"
-                       "%cHEIGHT      %s\n%cPOSE        %s\n%cSTART CAPTURE\n"
-                       "%cEXPORT BATCH\n%cNEW BATCH\n%cBATCH STATUS\n%cBACK",
-                       selected_item == 0 ? '>' : ' ',
-                       environment_name ? environment_name : "OUTDOOR",
-                       selected_item == 1 ? '>' : ' ',
-                       link_name ? link_name : "LOS",
-                       selected_item == 2 ? '>' : ' ',
-                       (double)target_distance_m,
-                       selected_item == 3 ? '>' : ' ',
-                       context_name ? context_name : "OUTDOOR_OPEN",
-                       selected_item == 4 ? '>' : ' ',
-                       room_size_name ? room_size_name : "UNKNOWN",
-                       selected_item == 5 ? '>' : ' ',
-                       obstacle_name ? obstacle_name : "UNKNOWN",
-                       selected_item == 6 ? '>' : ' ',
-                       material_name ? material_name : "UNKNOWN",
-                       selected_item == 7 ? '>' : ' ',
-                       furniture_name ? furniture_name : "UNKNOWN",
-                       selected_item == 8 ? '>' : ' ',
-                       boundary_name ? boundary_name : "UNKNOWN",
-                       selected_item == 9 ? '>' : ' ',
-                       card_height_name ? card_height_name : "UNKNOWN",
-                       selected_item == 10 ? '>' : ' ',
-                       card_pose_name ? card_pose_name : "UNKNOWN",
-                       selected_item == 11 ? '>' : ' ',
-                       selected_item == 12 ? '>' : ' ',
-                       selected_item == 13 ? '>' : ' ',
-                       selected_item == 14 ? '>' : ' ',
-                       selected_item == 15 ? '>' : ' ');
-        (void)snprintf(text, sizeof(text), "%s", menu_lines);
+        char menu_lines[320];
+        if (selected_item < 8u) {
+            (void)snprintf(menu_lines, sizeof(menu_lines),
+                           "%cENV         %s\n%cLINK        %s\n%cDIST        %.1fm\n"
+                           "%cSPACE       %s\n%cROOM SIZE   %s\n%cOBSTACLE    %s\n"
+                           "%cMATERIAL    %s\n%cFURNITURE   %s",
+                           selected_item == 0 ? '>' : ' ',
+                           environment_name ? environment_name : "OUTDOOR",
+                           selected_item == 1 ? '>' : ' ',
+                           link_name ? link_name : "LOS",
+                           selected_item == 2 ? '>' : ' ',
+                           (double)target_distance_m,
+                           selected_item == 3 ? '>' : ' ',
+                           context_name ? context_name : "OUTDOOR_OPEN",
+                           selected_item == 4 ? '>' : ' ',
+                           room_size_name ? room_size_name : "UNKNOWN",
+                           selected_item == 5 ? '>' : ' ',
+                           obstacle_name ? obstacle_name : "UNKNOWN",
+                           selected_item == 6 ? '>' : ' ',
+                           material_name ? material_name : "UNKNOWN",
+                           selected_item == 7 ? '>' : ' ',
+                           furniture_name ? furniture_name : "UNKNOWN");
+        } else {
+            (void)snprintf(menu_lines, sizeof(menu_lines),
+                           "%cBOUNDARY    %s\n%cHEIGHT      %s\n%cPOSE        %s\n"
+                           "%cSTART CAPTURE\n%cEXPORT BATCH\n%cNEW BATCH\n"
+                           "%cBATCH STATUS\n%cBACK",
+                           selected_item == 8 ? '>' : ' ',
+                           boundary_name ? boundary_name : "UNKNOWN",
+                           selected_item == 9 ? '>' : ' ',
+                           card_height_name ? card_height_name : "UNKNOWN",
+                           selected_item == 10 ? '>' : ' ',
+                           card_pose_name ? card_pose_name : "UNKNOWN",
+                           selected_item == 11 ? '>' : ' ',
+                           selected_item == 12 ? '>' : ' ',
+                           selected_item == 13 ? '>' : ' ',
+                           selected_item == 14 ? '>' : ' ',
+                           selected_item == 15 ? '>' : ' ');
+        }
+        (void)snprintf(text, sizeof(text), "PAGE %u/2\n%s",
+                       selected_item < 8u ? 1u : 2u, menu_lines);
     }
     lv_label_set_text(s_capture_menu_label, text);
     if (s_capture_count_label) {
