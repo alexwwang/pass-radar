@@ -719,10 +719,6 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         break;
 
     case RADAR_PAGE_CAPTURE_EDITOR:
-        if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
-            radar_ui_show_capture_menu();
-            break;
-        }
         if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) && ev == BSP_BTN_CLICK) {
             unsigned value_count =
                 (s_capture_editor_field == RADAR_CAPTURE_CONTEXT_MATERIAL ||

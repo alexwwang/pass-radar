@@ -548,7 +548,7 @@ void radar_ui_update_capture_editor(radar_capture_context_field_t field,
     }
     if (used > 0 && (size_t)used < sizeof(text)) {
         (void)snprintf(text + used, sizeof(text) - (size_t)used,
-                       "%cBACK\nOK SELECT  UP/DOWN MOVE  UP2 BACK",
+                       "%cBACK\nOK SELECT  UP/DOWN MOVE",
                        selected_value == count ? '>' : ' ');
     }
     lv_label_set_text(s_capture_editor_label, text);
