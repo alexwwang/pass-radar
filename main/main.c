@@ -721,8 +721,8 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     case RADAR_PAGE_CAPTURE_EDITOR:
         if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) && ev == BSP_BTN_CLICK) {
             unsigned value_count =
-                (s_capture_editor_field == RADAR_CAPTURE_CONTEXT_MATERIAL ||
-                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_FURNITURE ||
+                s_capture_editor_field == RADAR_CAPTURE_CONTEXT_MATERIAL ? 4u :
+                (s_capture_editor_field == RADAR_CAPTURE_CONTEXT_FURNITURE ||
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_HEIGHT ||
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_POSE ||
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE) ? 3u :
@@ -740,8 +740,8 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
             }
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
             unsigned value_count =
-                (s_capture_editor_field == RADAR_CAPTURE_CONTEXT_MATERIAL ||
-                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_FURNITURE ||
+                s_capture_editor_field == RADAR_CAPTURE_CONTEXT_MATERIAL ? 4u :
+                (s_capture_editor_field == RADAR_CAPTURE_CONTEXT_FURNITURE ||
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_HEIGHT ||
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_POSE ||
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE) ? 3u :
