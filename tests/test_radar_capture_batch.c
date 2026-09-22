@@ -88,6 +88,18 @@ int main(void) {
               RADAR_CAPTURE_ENV_INDOOR, RADAR_CAPTURE_LINK_STATIC_ATTENUATION) ==
               RADAR_CAPTURE_SCENE_I_STATIC,
           "condition scene ID matches core dimensions");
+    CHECK(radar_capture_condition_card_height_from_m(0.99f) ==
+              RADAR_CAPTURE_CARD_HEIGHT_LOW,
+          "height below one meter is low");
+    CHECK(radar_capture_condition_card_height_from_m(1.00f) ==
+              RADAR_CAPTURE_CARD_HEIGHT_CHEST,
+          "one meter is chest range");
+    CHECK(radar_capture_condition_card_height_from_m(1.79f) ==
+              RADAR_CAPTURE_CARD_HEIGHT_CHEST,
+          "height below 1.8 meters is chest range");
+    CHECK(radar_capture_condition_card_height_from_m(1.80f) ==
+              RADAR_CAPTURE_CARD_HEIGHT_OVERHEAD,
+          "1.8 meters is overhead range");
     CHECK(radar_capture_condition_propagation(RADAR_CAPTURE_LINK_LOS) ==
               RADAR_CAPTURE_PROPAGATION_LOS,
           "LOS propagation mapping");

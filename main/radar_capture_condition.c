@@ -1,4 +1,5 @@
 #include "radar_capture_condition.h"
+#include <math.h>
 
 radar_capture_propagation_id_t radar_capture_condition_propagation(
     radar_capture_link_condition_id_t link) {
@@ -11,6 +12,20 @@ radar_capture_propagation_id_t radar_capture_condition_propagation(
     default:
         return RADAR_CAPTURE_PROPAGATION_LOS;
     }
+}
+
+radar_capture_card_height_t radar_capture_condition_card_height_from_m(
+    float height_m) {
+    if (!isfinite(height_m) || height_m < 0.0f) {
+        return RADAR_CAPTURE_CARD_HEIGHT_UNKNOWN;
+    }
+    if (height_m < RADAR_CAPTURE_CARD_HEIGHT_LOW_MAX_M) {
+        return RADAR_CAPTURE_CARD_HEIGHT_LOW;
+    }
+    if (height_m < RADAR_CAPTURE_CARD_HEIGHT_CHEST_MAX_M) {
+        return RADAR_CAPTURE_CARD_HEIGHT_CHEST;
+    }
+    return RADAR_CAPTURE_CARD_HEIGHT_OVERHEAD;
 }
 
 uint16_t radar_capture_condition_scene_id(
@@ -49,7 +64,7 @@ bool radar_capture_context_option_available(
     case RADAR_CAPTURE_CONTEXT_BOUNDARY:
         return value <= RADAR_CAPTURE_BOUNDARY_PARTITION;
     case RADAR_CAPTURE_CONTEXT_CARD_HEIGHT:
-        return value <= RADAR_CAPTURE_CARD_HEIGHT_OVERHEAD;
+        return value <= RADAR_CAPTURE_CARD_HEIGHT_UNKNOWN;
     case RADAR_CAPTURE_CONTEXT_CARD_POSE:
         return value <= RADAR_CAPTURE_CARD_POSE_MIXED;
     default:

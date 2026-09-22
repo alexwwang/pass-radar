@@ -19,3 +19,5 @@ uint16_t radar_capture_condition_scene_id(
     radar_capture_link_condition_id_t link);
 radar_capture_propagation_id_t radar_capture_condition_propagation(
     radar_capture_link_condition_id_t link);
+radar_capture_card_height_t radar_capture_condition_card_height_from_m(
+    float height_m);

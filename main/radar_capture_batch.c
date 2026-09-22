@@ -631,9 +631,10 @@ const char *radar_capture_furniture_label(uint8_t density) {
 
 const char *radar_capture_card_height_label(uint8_t height) {
     switch (height) {
-    case RADAR_CAPTURE_CARD_HEIGHT_LOW: return "LOW";
-    case RADAR_CAPTURE_CARD_HEIGHT_CHEST: return "CHEST";
-    case RADAR_CAPTURE_CARD_HEIGHT_OVERHEAD: return "OVERHEAD";
+    case RADAR_CAPTURE_CARD_HEIGHT_LOW: return "LOW<1.0m";
+    case RADAR_CAPTURE_CARD_HEIGHT_CHEST: return "CHEST 1.0-1.8m";
+    case RADAR_CAPTURE_CARD_HEIGHT_OVERHEAD: return "OVERHEAD>=1.8m";
+    case RADAR_CAPTURE_CARD_HEIGHT_UNKNOWN: return "UNKNOWN";
     default: return "UNKNOWN";
     }
 }
@@ -645,6 +646,10 @@ const char *radar_capture_card_pose_label(uint8_t pose) {
     case RADAR_CAPTURE_CARD_POSE_MIXED: return "MIXED";
     default: return "UNKNOWN";
     }
+}
+
+radar_capture_card_height_t radar_capture_card_height_from_m(float height_m) {
+    return radar_capture_condition_card_height_from_m(height_m);
 }
 
 const char *radar_capture_scene_label(uint16_t scene_id) {

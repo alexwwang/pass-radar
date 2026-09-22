@@ -33,6 +33,8 @@ typedef int esp_err_t;
 #define RADAR_CAPTURE_BATCH_COMMIT_MAGIC 0x52434f4bu /* RCOK */
 #define RADAR_CAPTURE_BATCH_FORMAT_VERSION 3u
 #define RADAR_CAPTURE_CONDITION_SCHEMA_VERSION 1u
+#define RADAR_CAPTURE_CARD_HEIGHT_LOW_MAX_M 1.0f
+#define RADAR_CAPTURE_CARD_HEIGHT_CHEST_MAX_M 1.8f
 #define RADAR_CAPTURE_BATCH_SCENE_MAX 0x1000u
 
 typedef enum {
@@ -132,6 +134,7 @@ typedef enum {
     RADAR_CAPTURE_CARD_HEIGHT_LOW = 0,
     RADAR_CAPTURE_CARD_HEIGHT_CHEST = 1,
     RADAR_CAPTURE_CARD_HEIGHT_OVERHEAD = 2,
+    RADAR_CAPTURE_CARD_HEIGHT_UNKNOWN = 3,
 } radar_capture_card_height_t;
 
 typedef enum {
@@ -326,6 +329,7 @@ const char *radar_capture_room_size_label(uint8_t size);
 const char *radar_capture_furniture_label(uint8_t density);
 const char *radar_capture_card_height_label(uint8_t height);
 const char *radar_capture_card_pose_label(uint8_t pose);
+radar_capture_card_height_t radar_capture_card_height_from_m(float height_m);
 uint16_t radar_capture_scene_menu_id(unsigned index);
 unsigned radar_capture_scene_menu_count(void);
 radar_capture_environment_id_t radar_capture_scene_environment(uint16_t scene_id);

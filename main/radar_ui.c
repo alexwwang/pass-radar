@@ -518,7 +518,8 @@ void radar_ui_update_capture_editor(radar_capture_context_field_t field,
     static const char *const furniture[] = {"LOW", "MEDIUM", "HIGH"};
     static const char *const boundary[] = {
         "OPEN", "WALL_NEAR", "CORNER", "DOORWAY", "PARTITION"};
-    static const char *const card_height[] = {"LOW", "CHEST", "OVERHEAD"};
+    static const char *const card_height[] = {
+        "LOW<1.0m", "CHEST 1.0-1.8m", "OVERHEAD>=1.8m"};
     static const char *const card_pose[] = {"UPRIGHT", "FLAT", "MIXED"};
     const char *const *values = NULL;
     unsigned count = 0;

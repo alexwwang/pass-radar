@@ -213,7 +213,43 @@ metal fence, metal cabinet, glass, large wall, corner, corridor, nearby vehicle
 
 If it is impossible to distinguish multipath from ordinary attenuation, choose the closest physical condition and use `obstacle_type=UNKNOWN`; do not invent certainty.
 
-## 5. Legality and greyed-out choices
+## 5. Space geometry and ROOM_SIZE semantics
+
+`SPACE` defines the geometry and the measurement basis; it must not silently impose a fixed aspect ratio. Actual length, width, area, or path length should come from the field measurement. `ROOM_SIZE` is only the context tier derived from that geometry-specific measurement.
+
+| SPACE | Size basis | SMALL | MEDIUM | LARGE |
+| --- | --- | ---: | ---: | ---: |
+| `ROOM` | usable floor area | `<20 m²` | `20–60 m²` | `>60 m²` |
+| `OPEN_HALL` | usable floor area | `<50 m²` | `50–150 m²` | `>150 m²` |
+| `CORRIDOR` | usable centerline length | `<10 m` | `10–30 m` | `>30 m` |
+| `CORNER` | shorter effective distance from the corner along the two legs, `min(L1,L2)` | `<3 m` | `3–6 m` | `>6 m` |
+| `STAIR` | total walkable length across flights and landings | `<5 m` | `5–15 m` | `>15 m` |
+| `OUTDOOR_OPEN` | not applicable | grey | grey | grey |
+
+`CORNER` uses local scale rather than the whole room area because multipath near a corner is mainly determined by nearby boundary distances. `STAIR` uses walkable path length because stairwell radio behavior depends on flights, landings, and vertical connectivity rather than only floor area.
+
+The field record should retain the raw measurements when possible:
+
+```text
+ROOM:     4m × 5m = 20m²
+CORRIDOR: 18m long, 2m wide
+CORNER:   effective legs 2.5m / 4m
+STAIR:    approximately 9m across flights and landings
+```
+
+The first version does not add aspect ratio, flight count, or stairwell enclosure as new model axes; they remain context notes. `ROOM_SIZE` is geometry-specific context, not a core model dimension.
+
+Card height is measured at the card/antenna center above the floor, not at the hand or card bottom edge:
+
+```text
+LOW:       < 1.0 m
+CHEST:     1.0 m ≤ height < 1.8 m
+OVERHEAD:  ≥ 1.8 m
+```
+
+A card while seated or on a low table is normally `LOW`; a standing chest-held card around 1.2–1.5 m is `CHEST`; a card raised above the head with its center at least 1.8 m high is `OVERHEAD`. Both cards should be kept at the same height; record the actual heights separately.
+
+## 6. Legality and greyed-out choices
 
 ### 5.1 Core dimensions are never greyed out
 
