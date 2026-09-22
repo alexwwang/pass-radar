@@ -66,7 +66,8 @@ bool radar_capture_condition_has_warning(
         obstacle > RADAR_CAPTURE_OBSTRUCTION_METAL ||
         space > RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN) return false;
     return (link == RADAR_CAPTURE_LINK_LOS &&
-            obstacle == RADAR_CAPTURE_OBSTRUCTION_METAL) ||
+            (obstacle == RADAR_CAPTURE_OBSTRUCTION_METAL ||
+             obstacle == RADAR_CAPTURE_OBSTRUCTION_WALL)) ||
            (link == RADAR_CAPTURE_LINK_MULTIPATH &&
             obstacle == RADAR_CAPTURE_OBSTRUCTION_NONE) ||
            (link == RADAR_CAPTURE_LINK_STATIC_ATTENUATION &&

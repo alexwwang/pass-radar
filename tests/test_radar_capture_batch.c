@@ -79,6 +79,11 @@ int main(void) {
               RADAR_CAPTURE_OBSTRUCTION_NONE,
               RADAR_CAPTURE_ROOM_GEOMETRY_CORRIDOR),
           "multipath without explicit obstacle warns");
+    CHECK(radar_capture_condition_has_warning(
+              RADAR_CAPTURE_ENV_INDOOR, RADAR_CAPTURE_LINK_LOS,
+              RADAR_CAPTURE_OBSTRUCTION_WALL,
+              RADAR_CAPTURE_ROOM_GEOMETRY_ROOM),
+          "LOS with wall context warns");
     CHECK(radar_capture_condition_scene_id(
               RADAR_CAPTURE_ENV_INDOOR, RADAR_CAPTURE_LINK_STATIC_ATTENUATION) ==
               RADAR_CAPTURE_SCENE_I_STATIC,
