@@ -580,6 +580,7 @@ bool radar_capture_set_context_field(radar_capture_context_field_t field,
     }
     switch (field) {
     case RADAR_CAPTURE_CONTEXT_SPACE: s_room_geometry = value; break;
+    case RADAR_CAPTURE_CONTEXT_ROOM_SIZE: s_room_size = value; break;
     case RADAR_CAPTURE_CONTEXT_OBSTACLE: s_condition_obstruction = value; break;
     case RADAR_CAPTURE_CONTEXT_MATERIAL: s_material = value; break;
     case RADAR_CAPTURE_CONTEXT_FURNITURE: s_furniture_density = value; break;
@@ -594,6 +595,7 @@ bool radar_capture_set_context_field(radar_capture_context_field_t field,
 uint8_t radar_capture_context_value(radar_capture_context_field_t field) {
     switch (field) {
     case RADAR_CAPTURE_CONTEXT_SPACE: return s_room_geometry;
+    case RADAR_CAPTURE_CONTEXT_ROOM_SIZE: return s_room_size;
     case RADAR_CAPTURE_CONTEXT_OBSTACLE: return s_condition_obstruction;
     case RADAR_CAPTURE_CONTEXT_MATERIAL: return s_material;
     case RADAR_CAPTURE_CONTEXT_FURNITURE: return s_furniture_density;
@@ -608,21 +610,30 @@ void radar_capture_set_context(uint8_t room_geometry, uint8_t room_size,
                                uint8_t material, uint8_t furniture_density,
                                uint8_t boundary, uint8_t card_height,
                                uint8_t card_pose) {
-    if (room_geometry <= RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN &&
-        room_size <= RADAR_CAPTURE_ROOM_SIZE_LARGE &&
-        material <= RADAR_CAPTURE_MATERIAL_METAL_GLASS &&
-        furniture_density <= RADAR_CAPTURE_FURNITURE_HIGH &&
-        boundary <= RADAR_CAPTURE_BOUNDARY_PARTITION &&
-        card_height <= RADAR_CAPTURE_CARD_HEIGHT_OVERHEAD &&
-        card_pose <= RADAR_CAPTURE_CARD_POSE_MIXED) {
-        s_room_geometry = room_geometry;
-        s_room_size = room_size;
-        s_material = material;
-        s_furniture_density = furniture_density;
-        s_boundary = boundary;
-        s_card_height = card_height;
-        s_card_pose = card_pose;
+    const uint8_t values[] = {room_geometry, room_size, material,
+                              furniture_density, boundary, card_height,
+                              card_pose};
+    const radar_capture_context_field_t fields[] = {
+        RADAR_CAPTURE_CONTEXT_SPACE, RADAR_CAPTURE_CONTEXT_ROOM_SIZE,
+        RADAR_CAPTURE_CONTEXT_MATERIAL, RADAR_CAPTURE_CONTEXT_FURNITURE,
+        RADAR_CAPTURE_CONTEXT_BOUNDARY, RADAR_CAPTURE_CONTEXT_CARD_HEIGHT,
+        RADAR_CAPTURE_CONTEXT_CARD_POSE};
+    radar_capture_environment_id_t environment =
+        radar_capture_scene_environment(s_scene_id);
+    radar_capture_link_condition_id_t link = radar_capture_scene_link(s_scene_id);
+    for (unsigned i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
+        if (!radar_capture_context_option_available(environment, link,
+                                                    fields[i], values[i])) {
+            return;
+        }
     }
+    s_room_geometry = room_geometry;
+    s_room_size = room_size;
+    s_material = material;
+    s_furniture_density = furniture_density;
+    s_boundary = boundary;
+    s_card_height = card_height;
+    s_card_pose = card_pose;
 }
 
 uint32_t radar_capture_elapsed_ms(void) {

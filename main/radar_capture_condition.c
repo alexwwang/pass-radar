@@ -21,6 +21,8 @@ bool radar_capture_context_option_available(
         return environment == RADAR_CAPTURE_ENV_INDOOR
             ? value != RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN
             : value == RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
+    case RADAR_CAPTURE_CONTEXT_ROOM_SIZE:
+        return value <= RADAR_CAPTURE_ROOM_SIZE_LARGE;
     case RADAR_CAPTURE_CONTEXT_OBSTACLE:
         if (value > RADAR_CAPTURE_OBSTRUCTION_METAL) return false;
         return !(environment == RADAR_CAPTURE_ENV_INDOOR &&

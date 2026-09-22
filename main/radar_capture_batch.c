@@ -102,6 +102,9 @@ bool radar_capture_batch_capture_header_valid(
                RADAR_CAPTURE_CONTEXT_SPACE, header->room_geometry) &&
            radar_capture_context_option_available(
                header->condition_environment, header->condition_link,
+               RADAR_CAPTURE_CONTEXT_ROOM_SIZE, header->room_size) &&
+           radar_capture_context_option_available(
+               header->condition_environment, header->condition_link,
                RADAR_CAPTURE_CONTEXT_FURNITURE, header->furniture_density) &&
            header->observed_level <= RADAR_CAPTURE_OBS_LEVEL_L3_LOST &&
            header->observed_obstruction <= RADAR_CAPTURE_OBS_CLASS_UNKNOWN &&
@@ -363,6 +366,9 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
         !radar_capture_context_option_available(
             meta->condition_environment, meta->condition_link,
             RADAR_CAPTURE_CONTEXT_SPACE, meta->room_geometry) ||
+        !radar_capture_context_option_available(
+            meta->condition_environment, meta->condition_link,
+            RADAR_CAPTURE_CONTEXT_ROOM_SIZE, meta->room_size) ||
         !radar_capture_context_option_available(
             meta->condition_environment, meta->condition_link,
             RADAR_CAPTURE_CONTEXT_FURNITURE, meta->furniture_density) ||
