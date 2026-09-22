@@ -126,7 +126,7 @@ furniture_density:
   LOW / MEDIUM / HIGH / UNKNOWN
 
 boundary:
-  OPEN / WALL_NEAR / CORNER / DOORWAY / PARTITION / UNKNOWN
+  OPEN / WALL_NEAR / AT_CORNER / DOORWAY / PARTITION / UNKNOWN
 
 card_height:
   LOW / CHEST / OVERHEAD / UNKNOWN
@@ -226,7 +226,7 @@ If it is impossible to distinguish multipath from ordinary attenuation, choose t
 | `STAIR` | total walkable length across flights and landings | `<5 m` | `5–15 m` | `>15 m` |
 | `OUTDOOR_OPEN` | not applicable | grey | grey | grey |
 
-`CORNER` uses local scale rather than the whole room area because multipath near a corner is mainly determined by nearby boundary distances. `STAIR` uses walkable path length because stairwell radio behavior depends on flights, landings, and vertical connectivity rather than only floor area.
+`SPACE=CORNER` uses local scale rather than the whole room area because multipath near a corner is mainly determined by nearby boundary distances. `STAIR` uses walkable path length because stairwell radio behavior depends on flights, landings, and vertical connectivity rather than only floor area.
 
 The field record should retain the raw measurements when possible:
 

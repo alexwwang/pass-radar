@@ -604,7 +604,7 @@ const char *radar_capture_boundary_label(uint8_t boundary) {
     switch (boundary) {
     case RADAR_CAPTURE_BOUNDARY_OPEN: return "OPEN";
     case RADAR_CAPTURE_BOUNDARY_WALL_NEAR: return "WALL_NEAR";
-    case RADAR_CAPTURE_BOUNDARY_CORNER: return "CORNER";
+    case RADAR_CAPTURE_BOUNDARY_CORNER: return "AT_CORNER";
     case RADAR_CAPTURE_BOUNDARY_DOORWAY: return "DOORWAY";
     case RADAR_CAPTURE_BOUNDARY_PARTITION: return "PARTITION";
     default: return "UNKNOWN";

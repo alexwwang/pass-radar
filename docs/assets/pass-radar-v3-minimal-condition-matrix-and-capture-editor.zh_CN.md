@@ -126,7 +126,7 @@ furniture_density:
   LOW / MEDIUM / HIGH / UNKNOWN
 
 boundary:
-  OPEN / WALL_NEAR / CORNER / DOORWAY / PARTITION / UNKNOWN
+  OPEN / WALL_NEAR / AT_CORNER / DOORWAY / PARTITION / UNKNOWN
 
 card_height:
   LOW / CHEST / OVERHEAD / UNKNOWN
@@ -226,7 +226,7 @@ observed_obstruction:
 | `STAIR` | 楼梯梯段和平台合计的实际通行路径长度 | `<5 m` | `5–15 m` | `>15 m` |
 | `OUTDOOR_OPEN` | 不适用 | 灰色 | 灰色 | 灰色 |
 
-`CORNER` 使用局部尺度而不是整个房间面积，因为墙角造成的多径主要由卡片附近的边界距离决定。`STAIR` 使用通行路径长度，因为楼梯间的无线行为受梯段、平台和上下连通路径影响，不能只用平面面积表示。
+`SPACE=CORNER` 使用局部尺度而不是整个房间面积，因为墙角造成的多径主要由卡片附近的边界距离决定。`STAIR` 使用通行路径长度，因为楼梯间的无线行为受梯段、平台和上下连通路径影响，不能只用平面面积表示。
 
 测试记录应尽量保留原始尺寸：
 
