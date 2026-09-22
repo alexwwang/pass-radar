@@ -578,6 +578,39 @@ const char *radar_capture_link_label(uint8_t link) {
     }
 }
 
+const char *radar_capture_obstacle_label(uint8_t obstacle) {
+    switch (obstacle) {
+    case RADAR_CAPTURE_OBSTRUCTION_NONE: return "NONE";
+    case RADAR_CAPTURE_OBSTRUCTION_HUMAN_STATIC: return "HUMAN_STATIC";
+    case RADAR_CAPTURE_OBSTRUCTION_HUMAN_DYNAMIC: return "HUMAN_DYNAMIC";
+    case RADAR_CAPTURE_OBSTRUCTION_FOLIAGE: return "FOLIAGE";
+    case RADAR_CAPTURE_OBSTRUCTION_WALL: return "WALL";
+    case RADAR_CAPTURE_OBSTRUCTION_METAL: return "METAL";
+    default: return "UNKNOWN";
+    }
+}
+
+const char *radar_capture_material_label(uint8_t material) {
+    switch (material) {
+    case RADAR_CAPTURE_MATERIAL_SOFT: return "SOFT";
+    case RADAR_CAPTURE_MATERIAL_MIXED: return "MIXED";
+    case RADAR_CAPTURE_MATERIAL_HARD: return "HARD";
+    case RADAR_CAPTURE_MATERIAL_METAL_GLASS: return "METAL_GLASS";
+    default: return "UNKNOWN";
+    }
+}
+
+const char *radar_capture_boundary_label(uint8_t boundary) {
+    switch (boundary) {
+    case RADAR_CAPTURE_BOUNDARY_OPEN: return "OPEN";
+    case RADAR_CAPTURE_BOUNDARY_WALL_NEAR: return "WALL_NEAR";
+    case RADAR_CAPTURE_BOUNDARY_CORNER: return "CORNER";
+    case RADAR_CAPTURE_BOUNDARY_DOORWAY: return "DOORWAY";
+    case RADAR_CAPTURE_BOUNDARY_PARTITION: return "PARTITION";
+    default: return "UNKNOWN";
+    }
+}
+
 const char *radar_capture_scene_label(uint16_t scene_id) {
     switch (scene_id) {
     case RADAR_CAPTURE_SCENE_I_LOS: return "I-LOS";

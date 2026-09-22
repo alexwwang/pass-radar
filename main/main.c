@@ -282,6 +282,12 @@ static void poll_tick(lv_timer_t *t) {
             radar_capture_environment_label(s_capture_environment_index),
             radar_capture_link_label(s_capture_link_index),
             radar_capture_context_name(),
+            radar_capture_obstacle_label(
+                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_OBSTACLE)),
+            radar_capture_material_label(
+                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_MATERIAL)),
+            radar_capture_boundary_label(
+                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_BOUNDARY)),
             radar_capture_targets_m[s_capture_target_index],
 
             radar_capture_batch_count(),
@@ -777,6 +783,8 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 (void)radar_capture_set_context_field(
                     RADAR_CAPTURE_CONTEXT_OBSTACLE,
                     (uint8_t)s_capture_obstacle_index);
+                s_capture_obstacle_index = radar_capture_context_value(
+                    RADAR_CAPTURE_CONTEXT_OBSTACLE);
                 break;
             case 5:
                 s_capture_material_index =
@@ -785,6 +793,8 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 (void)radar_capture_set_context_field(
                     RADAR_CAPTURE_CONTEXT_MATERIAL,
                     (uint8_t)s_capture_material_index);
+                s_capture_material_index = radar_capture_context_value(
+                    RADAR_CAPTURE_CONTEXT_MATERIAL);
                 break;
             case 6:
                 s_capture_boundary_index =
@@ -793,6 +803,8 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 (void)radar_capture_set_context_field(
                     RADAR_CAPTURE_CONTEXT_BOUNDARY,
                     (uint8_t)s_capture_boundary_index);
+                s_capture_boundary_index = radar_capture_context_value(
+                    RADAR_CAPTURE_CONTEXT_BOUNDARY);
                 break;
             case 7: {
                 esp_err_t err = radar_capture_start(
