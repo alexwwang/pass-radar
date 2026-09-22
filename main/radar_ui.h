@@ -8,6 +8,7 @@
 
 #include "bsp_button.h"
 #include "radar_fusion.h"
+#include "radar_capture_batch.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -19,6 +20,7 @@ typedef enum {
     RADAR_PAGE_CALIB,      // 1m 标定中
     RADAR_PAGE_DEBUG,      // 诊断/回归:v1/v2 管线 A/B 对比
     RADAR_PAGE_CAPTURE_MENU, // Debug二级Capture菜单
+    RADAR_PAGE_CAPTURE_EDITOR, // Capture上下文候选值编辑
     RADAR_PAGE_CAPTURE,    // 静态距离自动采集
 } radar_page_t;
 
@@ -64,6 +66,11 @@ typedef struct {
 void radar_ui_show_debug(void);
 void radar_ui_update_debug(const radar_debug_info_t *info);
 void radar_ui_show_capture_menu(void);
+void radar_ui_show_capture_editor(radar_capture_context_field_t field);
+void radar_ui_update_capture_editor(radar_capture_context_field_t field,
+                                    radar_capture_environment_id_t environment,
+                                    radar_capture_link_condition_id_t link,
+                                    uint8_t selected_value);
 void radar_ui_update_capture_menu(const char *environment_name,
                                   const char *link_name,
                                   const char *context_name,

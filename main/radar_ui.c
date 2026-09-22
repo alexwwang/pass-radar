@@ -55,6 +55,7 @@ static lv_obj_t *s_calib_bar;
 // 诊断页面对象
 static lv_obj_t *s_debug_label;
 static lv_obj_t *s_capture_menu_label;
+static lv_obj_t *s_capture_editor_label;
 static lv_obj_t *s_capture_count_label;
 static lv_obj_t *s_capture_status_label;
 static lv_obj_t *s_capture_label;
@@ -269,6 +270,7 @@ static void page_teardown(void) {
         s_calib_bar = NULL;
         s_debug_label = NULL;
         s_capture_menu_label = NULL;
+        s_capture_editor_label = NULL;
         s_capture_count_label = NULL;
         s_capture_status_label = NULL;
         s_capture_label = NULL;
@@ -474,6 +476,69 @@ void radar_ui_show_capture_menu(void) {
     page_teardown();
     s_page = RADAR_PAGE_CAPTURE_MENU;
     build_capture_menu_page();
+}
+
+static const char *capture_editor_title(radar_capture_context_field_t field) {
+    switch (field) {
+    case RADAR_CAPTURE_CONTEXT_SPACE: return "SPACE";
+    case RADAR_CAPTURE_CONTEXT_OBSTACLE: return "OBSTACLE";
+    case RADAR_CAPTURE_CONTEXT_MATERIAL: return "MATERIAL";
+    case RADAR_CAPTURE_CONTEXT_BOUNDARY: return "BOUNDARY";
+    default: return "CONTEXT";
+    }
+}
+
+void radar_ui_show_capture_editor(radar_capture_context_field_t field) {
+    (void)field;
+    page_teardown();
+    s_page = RADAR_PAGE_CAPTURE_EDITOR;
+    s_scr = ui_pixel_screen_create("CAPTURE EDIT");
+    s_capture_editor_label = add_info_label(s_scr, 58, &lv_font_montserrat_14);
+    lv_obj_set_width(s_capture_editor_label, 230);
+    lv_obj_set_height(s_capture_editor_label, 230);
+    lv_label_set_recolor(s_capture_editor_label, true);
+    lv_screen_load(s_scr);
+}
+
+void radar_ui_update_capture_editor(radar_capture_context_field_t field,
+                                    radar_capture_environment_id_t environment,
+                                    radar_capture_link_condition_id_t link,
+                                    uint8_t selected_value) {
+    if (s_page != RADAR_PAGE_CAPTURE_EDITOR || !s_capture_editor_label) return;
+    static const char *const space[] = {
+        "ROOM", "CORRIDOR", "OPEN_HALL", "CORNER", "STAIR", "OUTDOOR_OPEN"};
+    static const char *const obstacle[] = {
+        "NONE", "HUMAN_STATIC", "HUMAN_DYNAMIC", "FOLIAGE", "WALL", "METAL"};
+    static const char *const material[] = {"SOFT", "MIXED", "HARD", "METAL_GLASS"};
+    static const char *const boundary[] = {
+        "OPEN", "WALL_NEAR", "CORNER", "DOORWAY", "PARTITION"};
+    const char *const *values = NULL;
+    unsigned count = 0;
+    switch (field) {
+    case RADAR_CAPTURE_CONTEXT_SPACE: values = space; count = 6; break;
+    case RADAR_CAPTURE_CONTEXT_OBSTACLE: values = obstacle; count = 6; break;
+    case RADAR_CAPTURE_CONTEXT_MATERIAL: values = material; count = 4; break;
+    case RADAR_CAPTURE_CONTEXT_BOUNDARY: values = boundary; count = 5; break;
+    default: break;
+    }
+    if (!values) return;
+    char text[256];
+    int used = snprintf(text, sizeof(text), "%s\n", capture_editor_title(field));
+    for (unsigned i = 0; i < count && used > 0 && (size_t)used < sizeof(text); ++i) {
+        bool available = radar_capture_context_option_available(environment, link,
+                                                                  field, (uint8_t)i);
+        int written = snprintf(text + used, sizeof(text) - (size_t)used,
+                               "%c%s%s%s\n", selected_value == i ? '>' : ' ',
+                               available ? "" : "#808080",
+                               values[i], available ? "" : "#");
+        if (written < 0) break;
+        used += written;
+    }
+    (void)snprintf(text + (used > 0 ? used : 0),
+                   used > 0 && (size_t)used < sizeof(text)
+                       ? sizeof(text) - (size_t)used : 0,
+                   "OK SELECT  UP/DOWN MOVE  UP2 BACK");
+    lv_label_set_text(s_capture_editor_label, text);
 }
 
 void radar_ui_update_capture_menu(const char *environment_name,

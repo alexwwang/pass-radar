@@ -95,6 +95,8 @@ static unsigned s_capture_space_index;
 static unsigned s_capture_obstacle_index;
 static unsigned s_capture_material_index;
 static unsigned s_capture_boundary_index;
+static radar_capture_context_field_t s_capture_editor_field;
+static unsigned s_capture_editor_index;
 static unsigned s_capture_menu_item;
 static bool s_capture_erase_confirm;
 static char s_capture_action_status[32];
@@ -278,6 +280,12 @@ static void poll_tick(lv_timer_t *t) {
                                  s_last_vote_spread,
                                  radar_obstruct_class_label(s_obstruct_class),
                                  radar_hint_label(s_obstruct_hint));
+    } else if (page == RADAR_PAGE_CAPTURE_EDITOR) {
+        radar_ui_update_capture_editor(
+            s_capture_editor_field,
+            (radar_capture_environment_id_t)s_capture_environment_index,
+            (radar_capture_link_condition_id_t)s_capture_link_index,
+            s_capture_editor_index);
     } else if (page == RADAR_PAGE_CAPTURE_MENU) {            radar_ui_update_capture_menu(
             radar_capture_environment_label(s_capture_environment_index),
             radar_capture_link_label(s_capture_link_index),
@@ -704,6 +712,37 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         }
         break;
 
+    case RADAR_PAGE_CAPTURE_EDITOR:
+        if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
+            radar_ui_show_capture_menu();
+            break;
+        }
+        if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) && ev == BSP_BTN_CLICK) {
+            unsigned count = s_capture_editor_field == RADAR_CAPTURE_CONTEXT_MATERIAL ? 4u :
+                             s_capture_editor_field == RADAR_CAPTURE_CONTEXT_BOUNDARY ? 5u : 6u;
+            for (unsigned attempts = 0; attempts < count; ++attempts) {
+                s_capture_editor_index = btn == BSP_BTN_UP
+                    ? (s_capture_editor_index + count - 1u) % count
+                    : (s_capture_editor_index + 1u) % count;
+                if (radar_capture_context_option_available(
+                        (radar_capture_environment_id_t)s_capture_environment_index,
+                        (radar_capture_link_condition_id_t)s_capture_link_index,
+                        s_capture_editor_field,
+                        (uint8_t)s_capture_editor_index)) break;
+            }
+        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+            if (radar_capture_context_option_available(
+                    (radar_capture_environment_id_t)s_capture_environment_index,
+                    (radar_capture_link_condition_id_t)s_capture_link_index,
+                    s_capture_editor_field,
+                    (uint8_t)s_capture_editor_index) &&
+                radar_capture_set_context_field(s_capture_editor_field,
+                                                (uint8_t)s_capture_editor_index)) {
+                radar_ui_show_capture_menu();
+            }
+        }
+        break;
+
     case RADAR_PAGE_CAPTURE_MENU:
         if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
             s_capture_erase_confirm = false;
@@ -758,54 +797,33 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                     (s_capture_target_index + 1u) % RADAR_CAPTURE_TARGET_COUNT;
                 break;
             case 3: {
-                const unsigned first = s_capture_environment_index == RADAR_CAPTURE_ENV_INDOOR
-                    ? RADAR_CAPTURE_ROOM_GEOMETRY_ROOM
-                    : RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
-                const unsigned last = s_capture_environment_index == RADAR_CAPTURE_ENV_INDOOR
-                    ? RADAR_CAPTURE_ROOM_GEOMETRY_CORNER
-                    : RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
-                s_capture_space_index = s_capture_space_index < first ||
-                    s_capture_space_index >= last ? first : s_capture_space_index + 1u;
-                (void)radar_capture_set_context_field(
-                    RADAR_CAPTURE_CONTEXT_SPACE, (uint8_t)s_capture_space_index);
+                s_capture_editor_field = RADAR_CAPTURE_CONTEXT_SPACE;
+                s_capture_editor_index = radar_capture_context_value(
+                    s_capture_editor_field);
+                radar_ui_show_capture_editor(s_capture_editor_field);
                 break;
             }
-            case 4:
-                do {
-                    s_capture_obstacle_index =
-                        (s_capture_obstacle_index + 1u) %
-                        (RADAR_CAPTURE_OBSTRUCTION_METAL + 1u);
-                } while (!radar_capture_context_option_available(
-                    (radar_capture_environment_id_t)s_capture_environment_index,
-                    (radar_capture_link_condition_id_t)s_capture_link_index,
-                    RADAR_CAPTURE_CONTEXT_OBSTACLE,
-                    (uint8_t)s_capture_obstacle_index));
-                (void)radar_capture_set_context_field(
-                    RADAR_CAPTURE_CONTEXT_OBSTACLE,
-                    (uint8_t)s_capture_obstacle_index);
-                s_capture_obstacle_index = radar_capture_context_value(
-                    RADAR_CAPTURE_CONTEXT_OBSTACLE);
+            case 4: {
+                s_capture_editor_field = RADAR_CAPTURE_CONTEXT_OBSTACLE;
+                s_capture_editor_index = radar_capture_context_value(
+                    s_capture_editor_field);
+                radar_ui_show_capture_editor(s_capture_editor_field);
                 break;
-            case 5:
-                s_capture_material_index =
-                    (s_capture_material_index + 1u) %
-                    (RADAR_CAPTURE_MATERIAL_METAL_GLASS + 1u);
-                (void)radar_capture_set_context_field(
-                    RADAR_CAPTURE_CONTEXT_MATERIAL,
-                    (uint8_t)s_capture_material_index);
-                s_capture_material_index = radar_capture_context_value(
-                    RADAR_CAPTURE_CONTEXT_MATERIAL);
+            }
+            case 5: {
+                s_capture_editor_field = RADAR_CAPTURE_CONTEXT_MATERIAL;
+                s_capture_editor_index = radar_capture_context_value(
+                    s_capture_editor_field);
+                radar_ui_show_capture_editor(s_capture_editor_field);
                 break;
-            case 6:
-                s_capture_boundary_index =
-                    (s_capture_boundary_index + 1u) %
-                    (RADAR_CAPTURE_BOUNDARY_PARTITION + 1u);
-                (void)radar_capture_set_context_field(
-                    RADAR_CAPTURE_CONTEXT_BOUNDARY,
-                    (uint8_t)s_capture_boundary_index);
-                s_capture_boundary_index = radar_capture_context_value(
-                    RADAR_CAPTURE_CONTEXT_BOUNDARY);
+            }
+            case 6: {
+                s_capture_editor_field = RADAR_CAPTURE_CONTEXT_BOUNDARY;
+                s_capture_editor_index = radar_capture_context_value(
+                    s_capture_editor_field);
+                radar_ui_show_capture_editor(s_capture_editor_field);
                 break;
+            }
             case 7: {
                 esp_err_t err = radar_capture_start(
                     radar_capture_targets_m[s_capture_target_index]);
