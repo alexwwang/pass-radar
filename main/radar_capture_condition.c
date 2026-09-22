@@ -72,6 +72,29 @@ bool radar_capture_context_option_available(
     }
 }
 
+bool radar_capture_context_option_available_for_space(
+    radar_capture_environment_id_t environment,
+    radar_capture_link_condition_id_t link,
+    radar_capture_context_field_t field, uint8_t value,
+    radar_capture_room_geometry_t space) {
+    if (field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE &&
+        space == RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN) {
+        return environment == RADAR_CAPTURE_ENV_OUTDOOR &&
+               value == RADAR_CAPTURE_ROOM_SIZE_NOT_APPLICABLE;
+    }
+    if (!radar_capture_context_option_available(environment, link, field, value)) {
+        return false;
+    }
+    if (field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE) {
+        return value <= RADAR_CAPTURE_ROOM_SIZE_LARGE;
+    }
+    if (space == RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN &&
+        field == RADAR_CAPTURE_CONTEXT_FURNITURE) {
+        return value == RADAR_CAPTURE_FURNITURE_LOW;
+    }
+    return true;
+}
+
 bool radar_capture_condition_has_warning(
     radar_capture_environment_id_t environment,
     radar_capture_link_condition_id_t link, uint8_t obstacle,

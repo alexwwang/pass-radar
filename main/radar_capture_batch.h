@@ -107,6 +107,7 @@ typedef enum {
     RADAR_CAPTURE_ROOM_SIZE_SMALL = 0,
     RADAR_CAPTURE_ROOM_SIZE_MEDIUM = 1,
     RADAR_CAPTURE_ROOM_SIZE_LARGE = 2,
+    RADAR_CAPTURE_ROOM_SIZE_NOT_APPLICABLE = 3,
 } radar_capture_room_size_t;
 
 typedef enum {
@@ -326,6 +327,7 @@ const char *radar_capture_obstacle_label(uint8_t obstacle);
 const char *radar_capture_material_label(uint8_t material);
 const char *radar_capture_boundary_label(uint8_t boundary);
 const char *radar_capture_room_size_label(uint8_t size);
+const char *radar_capture_room_size_label_for_space(uint8_t space, uint8_t size);
 const char *radar_capture_furniture_label(uint8_t density);
 const char *radar_capture_card_height_label(uint8_t height);
 const char *radar_capture_card_pose_label(uint8_t pose);
@@ -340,6 +342,11 @@ bool radar_capture_context_option_available(
     radar_capture_environment_id_t environment,
     radar_capture_link_condition_id_t link,
     radar_capture_context_field_t field, uint8_t value);
+bool radar_capture_context_option_available_for_space(
+    radar_capture_environment_id_t environment,
+    radar_capture_link_condition_id_t link,
+    radar_capture_context_field_t field, uint8_t value,
+    radar_capture_room_geometry_t space);
 bool radar_capture_condition_has_warning(
     radar_capture_environment_id_t environment,
     radar_capture_link_condition_id_t link, uint8_t obstacle,

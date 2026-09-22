@@ -283,12 +283,15 @@ static void poll_tick(lv_timer_t *t) {
             s_capture_editor_field,
             (radar_capture_environment_id_t)s_capture_environment_index,
             (radar_capture_link_condition_id_t)s_capture_link_index,
+            (radar_capture_room_geometry_t)radar_capture_context_value(
+                RADAR_CAPTURE_CONTEXT_SPACE),
             s_capture_editor_index);
     } else if (page == RADAR_PAGE_CAPTURE_MENU) {            radar_ui_update_capture_menu(
             radar_capture_environment_label(s_capture_environment_index),
             radar_capture_link_label(s_capture_link_index),
             radar_capture_context_name(),
-            radar_capture_room_size_label(
+            radar_capture_room_size_label_for_space(
+                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_SPACE),
                 radar_capture_context_value(RADAR_CAPTURE_CONTEXT_ROOM_SIZE)),
             radar_capture_obstacle_label(
                 radar_capture_context_value(RADAR_CAPTURE_CONTEXT_OBSTACLE)),
@@ -720,6 +723,12 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
 
     case RADAR_PAGE_CAPTURE_EDITOR:
         if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) && ev == BSP_BTN_CLICK) {
+            radar_capture_room_geometry_t space =
+                (radar_capture_room_geometry_t)radar_capture_context_value(
+                    RADAR_CAPTURE_CONTEXT_SPACE);
+            bool room_size_na =
+                s_capture_editor_field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE &&
+                space == RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
             unsigned value_count =
                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_MATERIAL ? 4u :
                 (s_capture_editor_field == RADAR_CAPTURE_CONTEXT_FURNITURE ||
@@ -727,35 +736,32 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_POSE ||
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE) ? 3u :
                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_BOUNDARY ? 5u : 6u;
-            unsigned count = value_count + 1u;
-            for (unsigned attempts = 0; attempts < count; ++attempts) {
+            unsigned count = room_size_na ? 1u : value_count;
+            for (unsigned attempts = 0; !room_size_na && attempts < count; ++attempts) {
                 s_capture_editor_index = btn == BSP_BTN_UP
                     ? (s_capture_editor_index + count - 1u) % count
                     : (s_capture_editor_index + 1u) % count;
-                if (radar_capture_context_option_available(
+                if (radar_capture_context_option_available_for_space(
                         (radar_capture_environment_id_t)s_capture_environment_index,
                         (radar_capture_link_condition_id_t)s_capture_link_index,
                         s_capture_editor_field,
-                        (uint8_t)s_capture_editor_index)) break;
+                        (uint8_t)s_capture_editor_index, space)) break;
             }
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
-            unsigned value_count =
-                s_capture_editor_field == RADAR_CAPTURE_CONTEXT_MATERIAL ? 4u :
-                (s_capture_editor_field == RADAR_CAPTURE_CONTEXT_FURNITURE ||
-                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_HEIGHT ||
-                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_POSE ||
-                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE) ? 3u :
-                s_capture_editor_field == RADAR_CAPTURE_CONTEXT_BOUNDARY ? 5u : 6u;
-            if (s_capture_editor_index == value_count) {
-                radar_ui_show_capture_menu();
-            } else if (radar_capture_context_option_available(
+            radar_capture_room_geometry_t space =
+                (radar_capture_room_geometry_t)radar_capture_context_value(
+                    RADAR_CAPTURE_CONTEXT_SPACE);
+            uint8_t candidate_value =
+                (s_capture_editor_field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE &&
+                 space == RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN)
+                    ? RADAR_CAPTURE_ROOM_SIZE_NOT_APPLICABLE
+                    : (uint8_t)s_capture_editor_index;
+            if (radar_capture_context_option_available_for_space(
                            (radar_capture_environment_id_t)s_capture_environment_index,
                            (radar_capture_link_condition_id_t)s_capture_link_index,
-                           s_capture_editor_field,
-                           (uint8_t)s_capture_editor_index) &&
+                           s_capture_editor_field, candidate_value, space) &&
                        radar_capture_set_context_field(
-                           s_capture_editor_field,
-                           (uint8_t)s_capture_editor_index)) {
+                           s_capture_editor_field, candidate_value)) {
                 radar_ui_show_capture_menu();
             }
         }

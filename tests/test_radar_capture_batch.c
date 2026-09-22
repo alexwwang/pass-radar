@@ -69,6 +69,18 @@ int main(void) {
               RADAR_CAPTURE_CONTEXT_OBSTACLE,
               RADAR_CAPTURE_OBSTRUCTION_FOLIAGE),
           "indoor foliage is disabled");
+    CHECK(radar_capture_context_option_available_for_space(
+              RADAR_CAPTURE_ENV_OUTDOOR, RADAR_CAPTURE_LINK_LOS,
+              RADAR_CAPTURE_CONTEXT_ROOM_SIZE,
+              RADAR_CAPTURE_ROOM_SIZE_NOT_APPLICABLE,
+              RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN),
+          "outdoor room size uses N/A");
+    CHECK(!radar_capture_context_option_available_for_space(
+              RADAR_CAPTURE_ENV_OUTDOOR, RADAR_CAPTURE_LINK_LOS,
+              RADAR_CAPTURE_CONTEXT_ROOM_SIZE,
+              RADAR_CAPTURE_ROOM_SIZE_SMALL,
+              RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN),
+          "outdoor room size tiers are unavailable");
     CHECK(radar_capture_context_option_available(
               RADAR_CAPTURE_ENV_OUTDOOR, RADAR_CAPTURE_LINK_DYNAMIC_ATTENUATION,
               RADAR_CAPTURE_CONTEXT_OBSTACLE,

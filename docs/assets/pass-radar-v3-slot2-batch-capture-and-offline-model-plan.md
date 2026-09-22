@@ -406,6 +406,8 @@ The minimum usable matrix is 48 Captures: eight scenes, three distances, and two
 
 Only context-field candidates are greyed out. For example, with `OUTDOOR` selected, `ROOM`, `CORRIDOR`, and `OPEN_HALL` are grey; `OUTDOOR_OPEN` remains selectable. With `INDOOR` selected, `OUTDOOR_OPEN` is grey.
 
+ROOM SIZE candidates must display the geometry-specific ranges: ROOM `<20 m² / 20–60 m² / >60 m²`, OPEN_HALL `<50 / 50–150 / >150 m²`, CORRIDOR `<10 / 10–30 / >30 m`, CORNER `<3 / 3–6 / >6 m`, and STAIR `<5 / 5–15 / >15 m`. `OUTDOOR_OPEN` has no applicable room size.
+
 Hard-invalid context values cannot be confirmed. Legal but ambiguous combinations remain selectable and produce a warning before Capture. Changing a core dimension immediately recalculates context availability; an invalidated context value is reset to a legal default and the reset is shown to the operator.
 
 ### 13.3 UI layout and fixed statistics
@@ -424,10 +426,9 @@ START CAPTURE
 EXPORT BATCH
 NEW BATCH
 BATCH STATUS
-BACK
 ```
 
-The menu must render candidates as independent items. Available values use normal brightness; unavailable context values are grey and cannot be selected. A final full validation runs before the countdown.
+The Capture editor has no `BACK` candidate. UP/DOWN moves among real values only; pressing `OK` on a valid value confirms it and immediately returns to the Capture menu. The menu must render candidates as independent items. Available values use normal brightness; unavailable context values are grey and cannot be selected. A final full validation runs before the countdown.
 
 Batch statistics and transient action results must not be appended to the menu text. The fixed layout is:
 

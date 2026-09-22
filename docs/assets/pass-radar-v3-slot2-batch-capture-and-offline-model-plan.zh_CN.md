@@ -117,7 +117,7 @@ observed_obstruction     NONE_LOS / FAR_LOS / ATTENUATING_STATIC /
 | 空间是什么形状？ | room_geometry | ROOM、CORRIDOR、OPEN_HALL、CORNER、STAIR 或 OUTDOOR_OPEN。 |
 | 空间有多大？ | room_size | SMALL、MEDIUM 或 LARGE；尽量在测试记录中填写实际尺寸。 |
 | 主要表面是什么？ | material | SOFT、MIXED、HARD 或 METAL_GLASS。 |
-| 空间有多拥挤？ |furniture_density
+| 空间有多拥挤？ | furniture_density | LOW <20% / MEDIUM 20–50% / HIGH >50%，按大型家具/固定反射体占可用面积估计。 |
 boundary
 card_height_class
 card_pose
@@ -125,7 +125,7 @@ observed_level
 observed_obstruction
 
  | LOW、MEDIUM 或 HIGH；只统计大型反射体/遮挡物。 |
-| 附近有重要边界吗？ | boundary | OPEN、WALL_NEAR、CORNER、DOORWAY 或 PARTITION。 |
+| 附近有重要边界吗？ | boundary | OPEN >2m、WALL_NEAR <=2m、AT_CORNER <=2m、DOORWAY 或 PARTITION。 |
 | 卡片怎么拿？ | card_height/card_pose | 记录高度，以及 UPRIGHT、FLAT 或 MIXED；重复测试保持一致。 |
 
 不要因为室内没有人就把所有测试都写成 `I-LOS`。走廊、墙角、金属柜和明显回波都必须保留上下文。看到异常结果后也不要反过来修改条件标签：条件标签描述测量前的实际布置，`observed_*` 字段描述设备采集后观察到的无线现象。如果换了房间、家具布局、卡片高度或姿态，就应使用新的 `room_id/layout_id` 条件。
@@ -417,6 +417,8 @@ O-LOS、O-STATIC、O-DYNAMIC、O-MULTIPATH
 
 只有上下文字段的候选值可以灰显。例如选择 `OUTDOOR` 后，`ROOM`、`CORRIDOR`、`OPEN_HALL` 为灰色，`OUTDOOR_OPEN` 可选；选择 `INDOOR` 后，`OUTDOOR_OPEN` 为灰色。
 
+ROOM SIZE 候选项必须显示与空间类型对应的量化范围：ROOM 为 `<20 m² / 20–60 m² / >60 m²`，OPEN_HALL 为 `<50 / 50–150 / >150 m²`，CORRIDOR 为 `<10 / 10–30 / >30 m`，CORNER 为 `<3 / 3–6 / >6 m`，STAIR 为 `<5 / 5–15 / >15 m`。`OUTDOOR_OPEN` 不适用 ROOM SIZE。
+
 硬冲突的上下文值不能确认。合法但容易误解的组合仍可选择，但 Capture 前必须显示警告。核心维度变化时立即重新计算上下文可用性；已经失效的上下文值自动回退到合法默认值，并向操作员显示回退提示。
 
 ### 13.3 界面布局与固定统计区
@@ -435,10 +437,9 @@ START CAPTURE
 EXPORT BATCH
 NEW BATCH
 BATCH STATUS
-BACK
 ```
 
-候选值必须作为独立条目绘制。可用值使用正常亮度，不可用的上下文值使用灰色且不能选择。倒计时开始前仍必须执行一次完整校验。
+Capture 编辑页不设置 `BACK` 候选项。上下键只在真实候选值之间移动；选中合法值后按 `OK` 确认并立即返回 Capture 菜单。候选值必须作为独立条目绘制。可用值使用正常亮度，不可用的上下文值使用灰色且不能选择。倒计时开始前仍必须执行一次完整校验。
 
 批次统计和临时操作结果不得再追加到菜单文本末尾。固定布局为：
 

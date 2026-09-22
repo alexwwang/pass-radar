@@ -507,17 +507,20 @@ void radar_ui_show_capture_editor(radar_capture_context_field_t field) {
 void radar_ui_update_capture_editor(radar_capture_context_field_t field,
                                     radar_capture_environment_id_t environment,
                                     radar_capture_link_condition_id_t link,
+                                    radar_capture_room_geometry_t selected_space,
                                     uint8_t selected_value) {
     if (s_page != RADAR_PAGE_CAPTURE_EDITOR || !s_capture_editor_label) return;
     static const char *const space[] = {
         "ROOM", "CORRIDOR", "OPEN_HALL", "CORNER", "STAIR", "OUTDOOR_OPEN"};
     static const char *const obstacle[] = {
         "NONE", "HUMAN_STATIC", "HUMAN_DYNAMIC", "FOLIAGE", "WALL", "METAL"};
-    static const char *const room_size[] = {"SMALL", "MEDIUM", "LARGE"};
+    static const char *const room_size[] = {
+        "SMALL", "MEDIUM", "LARGE", "N/A"};
     static const char *const material[] = {"SOFT", "MIXED", "HARD", "METAL_GLASS"};
-    static const char *const furniture[] = {"LOW", "MEDIUM", "HIGH"};
+    static const char *const furniture[] = {
+        "LOW <20%", "MED 20-50%", "HIGH >50%"};
     static const char *const boundary[] = {
-        "OPEN", "WALL_NEAR", "AT_CORNER", "DOORWAY", "PARTITION"};
+        "OPEN >2m", "WALL <=2m", "CORNER <=2m", "DOORWAY", "PARTITION"};
     static const char *const card_height[] = {
         "LOW<1.0m", "CHEST 1.0-1.8m", "OVERHEAD>=1.8m"};
     static const char *const card_pose[] = {"UPRIGHT", "FLAT", "MIXED"};
@@ -525,7 +528,10 @@ void radar_ui_update_capture_editor(radar_capture_context_field_t field,
     unsigned count = 0;
     switch (field) {
     case RADAR_CAPTURE_CONTEXT_SPACE: values = space; count = 6; break;
-    case RADAR_CAPTURE_CONTEXT_ROOM_SIZE: values = room_size; count = 3; break;
+    case RADAR_CAPTURE_CONTEXT_ROOM_SIZE:
+        values = room_size;
+        count = selected_space == RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN ? 1 : 3;
+        break;
     case RADAR_CAPTURE_CONTEXT_OBSTACLE: values = obstacle; count = 6; break;
     case RADAR_CAPTURE_CONTEXT_MATERIAL: values = material; count = 4; break;
     case RADAR_CAPTURE_CONTEXT_FURNITURE: values = furniture; count = 3; break;
@@ -538,19 +544,26 @@ void radar_ui_update_capture_editor(radar_capture_context_field_t field,
     char text[256];
     int used = snprintf(text, sizeof(text), "%s\n", capture_editor_title(field));
     for (unsigned i = 0; i < count && used > 0 && (size_t)used < sizeof(text); ++i) {
-        bool available = radar_capture_context_option_available(environment, link,
-                                                                  field, (uint8_t)i);
+        uint8_t candidate_value = (field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE &&
+                                    selected_space == RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN)
+            ? RADAR_CAPTURE_ROOM_SIZE_NOT_APPLICABLE : (uint8_t)i;
+        bool available = radar_capture_context_option_available_for_space(
+            environment, link, field, candidate_value, selected_space);
+        const char *display_value = values[i];
+        if (field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE) {
+            display_value = radar_capture_room_size_label_for_space(
+                selected_space, candidate_value);
+        }
         int written = snprintf(text + used, sizeof(text) - (size_t)used,
-                               "%c%s%s%s\n", selected_value == i ? '>' : ' ',
+                               "%c%s%s%s\n", selected_value == candidate_value ? '>' : ' ',
                                available ? "" : "#808080 ",
-                               values[i], available ? "" : "#");
+                               display_value, available ? "" : "#");
         if (written < 0) break;
         used += written;
     }
     if (used > 0 && (size_t)used < sizeof(text)) {
         (void)snprintf(text + used, sizeof(text) - (size_t)used,
-                       "%cBACK\nOK SELECT  UP/DOWN MOVE",
-                       selected_value == count ? '>' : ' ');
+                       "OK SELECT  UP/DOWN MOVE");
     }
     lv_label_set_text(s_capture_editor_label, text);
 }

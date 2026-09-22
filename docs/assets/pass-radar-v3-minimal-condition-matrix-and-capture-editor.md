@@ -113,7 +113,7 @@ The following fields must be retained, but must not create a Cartesian product:
 
 ```text
 space_type:
-  ROOM / CORRIDOR / OPEN_HALL / CORNER / OUTDOOR_OPEN / UNKNOWN
+  ROOM / CORRIDOR / OPEN_HALL / CORNER / STAIR / OUTDOOR_OPEN / UNKNOWN
 
 obstacle_type:
   NONE / HUMAN / FOLIAGE / WALL / PARTITION /
@@ -239,6 +239,12 @@ STAIR:    approximately 9m across flights and landings
 
 The first version does not add aspect ratio, flight count, or stairwell enclosure as new model axes; they remain context notes. `ROOM_SIZE` is geometry-specific context, not a core model dimension.
 
+`FURNITURE` uses the rough percentage of usable floor area occupied by large furniture or fixed reflectors: `LOW <20%`, `MEDIUM 20–50%`, and `HIGH >50%`. Estimate only major propagation-relevant objects; do not count every small item.
+
+`BOUNDARY` uses distance to the nearest boundary: `OPEN >2m`, `WALL_NEAR <=2m`, and `AT_CORNER <=2m` when the card is within the influence of two wall legs. Choose `DOORWAY` and `PARTITION` when those structures are present. The 2 m value is an operational first-version threshold, not a final physical calibration result.
+
+`OBSTACLE`, `MATERIAL`, and `POSE` are categorical fields; adding pseudo-precise numbers would not improve their meaning. Select them from the actual object, surface, and card orientation.
+
 Card height is measured at the card/antenna center above the floor, not at the hand or card bottom edge:
 
 ```text
@@ -354,7 +360,7 @@ CAPTURE MENU
   BACK
 ```
 
-Each field opens its own candidate-value page.
+Each field opens its own candidate-value page. The editor has no `BACK` candidate; UP/DOWN moves only among real values, and pressing `OK` on a valid value immediately confirms it and returns to the Capture menu.
 
 All candidates on core-dimension pages must remain selectable; greyed-out candidates are used only on context-field pages.
 
@@ -370,8 +376,9 @@ ENVIRONMENT
 
 OK SELECT
 UP/DOWN MOVE
-UP DOUBLE BACK
 ```
+
+`OK` selects the current value and immediately returns to the Capture menu. The editor has no `BACK` row and does not use UP double-click as an editor return action.
 
 Link-condition page:
 
@@ -393,7 +400,20 @@ SPACE / INDOOR
   CORRIDOR
   OPEN_HALL
   CORNER
+  STAIR
   OUTDOOR_OPEN   [grey / disabled]
+
+ROOM SIZE candidates show the geometry-specific quantitative range:
+
+```text
+ROOM:      SMALL <20m²   MED 20-60m²   LARGE >60m²
+OPEN_HALL: SMALL <50m²   MED 50-150m²  LARGE >150m²
+CORRIDOR:  SMALL <10m    MED 10-30m    LARGE >30m
+CORNER:    SMALL <3m     MED 3-6m      LARGE >6m
+STAIR:     SMALL <5m     MED 5-15m     LARGE >15m
+```
+
+Under `OUTDOOR_OPEN`, ROOM SIZE shows only the confirmable `N/A` value; indoor area/length tiers are not displayed.
 ```
 
 Disabled candidates must use low-brightness text. The cursor must not stop on them, and the logic layer must reject the event even if an unexpected button event arrives.
@@ -457,7 +477,7 @@ Defaults are:
 ```text
 card_height = CHEST
 card_pose = UPRIGHT
-furniture_density = UNKNOWN or MEDIUM
+furniture_density = LOW <20% / MEDIUM 20–50% / HIGH >50%
 ```
 
 Change them only when the physical setup is actually different. Repeated Captures must keep all conditions constant except distance and `run_id`. A new room, materially different layout, height, or pose requires a new context identifier.

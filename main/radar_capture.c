@@ -532,7 +532,9 @@ void radar_capture_set_scene(uint16_t scene_id) {
             environment == RADAR_CAPTURE_ENV_INDOOR
                 ? RADAR_CAPTURE_ROOM_GEOMETRY_ROOM
                 : RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN,
-            RADAR_CAPTURE_ROOM_SIZE_MEDIUM,
+            environment == RADAR_CAPTURE_ENV_OUTDOOR
+                ? RADAR_CAPTURE_ROOM_SIZE_NOT_APPLICABLE
+                : RADAR_CAPTURE_ROOM_SIZE_MEDIUM,
             RADAR_CAPTURE_OBSTRUCTION_NONE,
             RADAR_CAPTURE_MATERIAL_MIXED,
             environment == RADAR_CAPTURE_ENV_INDOOR
@@ -585,7 +587,11 @@ bool radar_capture_set_context_field(radar_capture_context_field_t field,
     radar_capture_environment_id_t environment =
         radar_capture_scene_environment(s_scene_id);
     radar_capture_link_condition_id_t link = radar_capture_scene_link(s_scene_id);
-    if (!radar_capture_context_option_available(environment, link, field, value)) {
+    if (!(field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE
+              ? radar_capture_context_option_available_for_space(
+                    environment, link, field, value,
+                    (radar_capture_room_geometry_t)s_room_geometry)
+              : radar_capture_context_option_available(environment, link, field, value))) {
         return false;
     }
     switch (field) {

@@ -70,6 +70,7 @@ void radar_ui_show_capture_editor(radar_capture_context_field_t field);
 void radar_ui_update_capture_editor(radar_capture_context_field_t field,
                                     radar_capture_environment_id_t environment,
                                     radar_capture_link_condition_id_t link,
+                                    radar_capture_room_geometry_t space,
                                     uint8_t selected_value);
 void radar_ui_update_capture_menu(const char *environment_name,
                                   const char *link_name,

@@ -65,7 +65,7 @@ static bool capture_context_valid(uint8_t room_geometry, uint8_t room_size,
                                   uint8_t boundary, uint8_t card_height,
                                   uint8_t card_pose) {
     return room_geometry <= RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN &&
-           room_size <= RADAR_CAPTURE_ROOM_SIZE_LARGE &&
+           room_size <= RADAR_CAPTURE_ROOM_SIZE_NOT_APPLICABLE &&
            material <= RADAR_CAPTURE_MATERIAL_METAL_GLASS &&
            furniture_density <= RADAR_CAPTURE_FURNITURE_HIGH &&
            boundary <= RADAR_CAPTURE_BOUNDARY_PARTITION &&
@@ -103,9 +103,10 @@ bool radar_capture_batch_capture_header_valid(
            radar_capture_context_option_available(
                header->condition_environment, header->condition_link,
                RADAR_CAPTURE_CONTEXT_SPACE, header->room_geometry) &&
-           radar_capture_context_option_available(
+           radar_capture_context_option_available_for_space(
                header->condition_environment, header->condition_link,
-               RADAR_CAPTURE_CONTEXT_ROOM_SIZE, header->room_size) &&
+               RADAR_CAPTURE_CONTEXT_ROOM_SIZE, header->room_size,
+               (radar_capture_room_geometry_t)header->room_geometry) &&
            radar_capture_context_option_available(
                header->condition_environment, header->condition_link,
                RADAR_CAPTURE_CONTEXT_FURNITURE, header->furniture_density) &&
@@ -370,9 +371,10 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
         !radar_capture_context_option_available(
             meta->condition_environment, meta->condition_link,
             RADAR_CAPTURE_CONTEXT_SPACE, meta->room_geometry) ||
-        !radar_capture_context_option_available(
+        !radar_capture_context_option_available_for_space(
             meta->condition_environment, meta->condition_link,
-            RADAR_CAPTURE_CONTEXT_ROOM_SIZE, meta->room_size) ||
+            RADAR_CAPTURE_CONTEXT_ROOM_SIZE, meta->room_size,
+            (radar_capture_room_geometry_t)meta->room_geometry) ||
         !radar_capture_context_option_available(
             meta->condition_environment, meta->condition_link,
             RADAR_CAPTURE_CONTEXT_FURNITURE, meta->furniture_density) ||
@@ -602,9 +604,9 @@ const char *radar_capture_material_label(uint8_t material) {
 
 const char *radar_capture_boundary_label(uint8_t boundary) {
     switch (boundary) {
-    case RADAR_CAPTURE_BOUNDARY_OPEN: return "OPEN";
-    case RADAR_CAPTURE_BOUNDARY_WALL_NEAR: return "WALL_NEAR";
-    case RADAR_CAPTURE_BOUNDARY_CORNER: return "AT_CORNER";
+    case RADAR_CAPTURE_BOUNDARY_OPEN: return "OPEN >2m";
+    case RADAR_CAPTURE_BOUNDARY_WALL_NEAR: return "WALL <=2m";
+    case RADAR_CAPTURE_BOUNDARY_CORNER: return "CORNER <=2m";
     case RADAR_CAPTURE_BOUNDARY_DOORWAY: return "DOORWAY";
     case RADAR_CAPTURE_BOUNDARY_PARTITION: return "PARTITION";
     default: return "UNKNOWN";
@@ -620,11 +622,36 @@ const char *radar_capture_room_size_label(uint8_t size) {
     }
 }
 
+const char *radar_capture_room_size_label_for_space(uint8_t space, uint8_t size) {
+    static const char *const room[] = {
+        "SMALL <20m2", "MED 20-60m2", "LARGE >60m2"};
+    static const char *const hall[] = {
+        "SMALL <50m2", "MED 50-150m2", "LARGE >150m2"};
+    static const char *const corridor[] = {
+        "SMALL <10m", "MED 10-30m", "LARGE >30m"};
+    static const char *const corner[] = {
+        "SMALL <3m", "MED 3-6m", "LARGE >6m"};
+    static const char *const stair[] = {
+        "SMALL <5m", "MED 5-15m", "LARGE >15m"};
+    const char *const *labels = room;
+    switch ((radar_capture_room_geometry_t)space) {
+    case RADAR_CAPTURE_ROOM_GEOMETRY_OPEN_HALL: labels = hall; break;
+    case RADAR_CAPTURE_ROOM_GEOMETRY_CORRIDOR: labels = corridor; break;
+    case RADAR_CAPTURE_ROOM_GEOMETRY_CORNER: labels = corner; break;
+    case RADAR_CAPTURE_ROOM_GEOMETRY_STAIR: labels = stair; break;
+    case RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN: return "N/A";
+    default: break;
+    }
+    return size <= RADAR_CAPTURE_ROOM_SIZE_NOT_APPLICABLE
+        ? (size == RADAR_CAPTURE_ROOM_SIZE_NOT_APPLICABLE ? "N/A" : labels[size])
+        : "UNKNOWN";
+}
+
 const char *radar_capture_furniture_label(uint8_t density) {
     switch (density) {
-    case RADAR_CAPTURE_FURNITURE_LOW: return "LOW";
-    case RADAR_CAPTURE_FURNITURE_MEDIUM: return "MEDIUM";
-    case RADAR_CAPTURE_FURNITURE_HIGH: return "HIGH";
+    case RADAR_CAPTURE_FURNITURE_LOW: return "LOW <20%";
+    case RADAR_CAPTURE_FURNITURE_MEDIUM: return "MED 20-50%";
+    case RADAR_CAPTURE_FURNITURE_HIGH: return "HIGH >50%";
     default: return "UNKNOWN";
     }
 }

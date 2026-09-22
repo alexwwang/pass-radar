@@ -113,7 +113,7 @@ link_condition:
 
 ```text
 space_type:
-  ROOM / CORRIDOR / OPEN_HALL / CORNER / OUTDOOR_OPEN / UNKNOWN
+  ROOM / CORRIDOR / OPEN_HALL / CORNER / STAIR / OUTDOOR_OPEN / UNKNOWN
 
 obstacle_type:
   NONE / HUMAN / FOLIAGE / WALL / PARTITION /
@@ -239,6 +239,12 @@ STAIR:    梯段和平台通行长度约 9m
 
 第一版不把长宽比、楼梯梯段数量或楼梯间封闭状态扩展为模型场景维度；它们作为上下文备注保存。`ROOM_SIZE` 是几何相关的上下文标签，不是核心模型维度。
 
+`FURNITURE` 按采集空间内大型家具/固定反射体占可用地面面积的粗略比例判断：`LOW <20%`，`MEDIUM 20–50%`，`HIGH >50%`。只估计会影响传播的主要物体，不需要逐件计数。
+
+`BOUNDARY` 按卡片到最近边界的距离判断：`OPEN >2m`，`WALL_NEAR ≤2m`，`AT_CORNER ≤2m` 且卡片位于墙角两侧影响范围内；`DOORWAY` 和 `PARTITION` 按实际结构选择。这里的 2 m 是第一版操作阈值，不是最终物理标定值。
+
+`OBSTACLE`、`MATERIAL` 和 `POSE` 是类别字段，不用增加伪精确数字；必须按实际物体、表面和卡片姿态选择。
+
 卡片高度按卡片/天线中心离地高度判断，不按手的位置或卡片底边判断：
 
 ```text
@@ -356,7 +362,7 @@ CAPTURE MENU
   BACK
 ```
 
-每个字段进入独立的候选值页面。
+每个字段进入独立的候选值页面。编辑页不设置 `BACK` 候选项；上下键只在该字段的实际候选值之间移动，选中合法值后按 `OK` 立即确认并返回 Capture 菜单。
 
 核心维度页面中的所有候选值都必须保持可选；上下文字段页面才显示灰色禁用值。
 
@@ -372,8 +378,9 @@ ENVIRONMENT
 
 OK SELECT
 UP/DOWN MOVE
-UP DOUBLE BACK
 ```
+
+`OK` 选择当前候选值并立即返回 Capture 菜单；编辑页没有 `BACK` 行，也不使用 `UP` 双击返回。
 
 链路条件页面：
 
@@ -395,7 +402,20 @@ SPACE / INDOOR
   CORRIDOR
   OPEN_HALL
   CORNER
+  STAIR
   OUTDOOR_OPEN   [灰色，不可选]
+
+ROOM SIZE 的选项显示空间类型对应的量化范围：
+
+```text
+ROOM:      SMALL <20m²   MED 20-60m²   LARGE >60m²
+OPEN_HALL: SMALL <50m²   MED 50-150m²  LARGE >150m²
+CORRIDOR:  SMALL <10m    MED 10-30m    LARGE >30m
+CORNER:    SMALL <3m     MED 3-6m      LARGE >6m
+STAIR:     SMALL <5m     MED 5-15m     LARGE >15m
+```
+
+`OUTDOOR_OPEN` 下 ROOM SIZE 只显示可确认的 `N/A`，不显示室内面积/长度等级。
 ```
 
 灰色候选值必须使用低亮度文本，并且光标不能停留在灰色值上；即使底层按键事件再次到达，也必须被逻辑层拒绝。
@@ -459,7 +479,7 @@ DOWN BACK
 ```text
 card_height = CHEST
 card_pose = UPRIGHT
-furniture_density = UNKNOWN 或 MEDIUM
+furniture_density = LOW <20% / MEDIUM 20–50% / HIGH >50%
 ```
 
 操作员只有在实际布置确实不同的时候才修改它们。重复 Capture 时，除距离和 run_id 外，条件必须保持一致；若换房间、换明显家具布局、换姿态或换高度，应创建新的上下文标识。

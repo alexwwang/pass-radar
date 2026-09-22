@@ -8,6 +8,11 @@ bool radar_capture_context_option_available(
     radar_capture_environment_id_t environment,
     radar_capture_link_condition_id_t link,
     radar_capture_context_field_t field, uint8_t value);
+bool radar_capture_context_option_available_for_space(
+    radar_capture_environment_id_t environment,
+    radar_capture_link_condition_id_t link,
+    radar_capture_context_field_t field, uint8_t value,
+    radar_capture_room_geometry_t space);
 
 bool radar_capture_condition_has_warning(
     radar_capture_environment_id_t environment,
