@@ -566,8 +566,41 @@ const char *radar_capture_context_name(void) {
 }
 
 void radar_capture_set_obstacle(uint8_t obstacle) {
-    if (obstacle <= RADAR_CAPTURE_OBSTRUCTION_METAL) {
-        s_condition_obstruction = obstacle;
+    (void)radar_capture_set_context_field(RADAR_CAPTURE_CONTEXT_OBSTACLE,
+                                          obstacle);
+}
+
+bool radar_capture_set_context_field(radar_capture_context_field_t field,
+                                     uint8_t value) {
+    radar_capture_environment_id_t environment =
+        radar_capture_scene_environment(s_scene_id);
+    radar_capture_link_condition_id_t link = radar_capture_scene_link(s_scene_id);
+    if (!radar_capture_context_option_available(environment, link, field, value)) {
+        return false;
+    }
+    switch (field) {
+    case RADAR_CAPTURE_CONTEXT_SPACE: s_room_geometry = value; break;
+    case RADAR_CAPTURE_CONTEXT_OBSTACLE: s_condition_obstruction = value; break;
+    case RADAR_CAPTURE_CONTEXT_MATERIAL: s_material = value; break;
+    case RADAR_CAPTURE_CONTEXT_FURNITURE: s_furniture_density = value; break;
+    case RADAR_CAPTURE_CONTEXT_BOUNDARY: s_boundary = value; break;
+    case RADAR_CAPTURE_CONTEXT_CARD_HEIGHT: s_card_height = value; break;
+    case RADAR_CAPTURE_CONTEXT_CARD_POSE: s_card_pose = value; break;
+    default: return false;
+    }
+    return true;
+}
+
+uint8_t radar_capture_context_value(radar_capture_context_field_t field) {
+    switch (field) {
+    case RADAR_CAPTURE_CONTEXT_SPACE: return s_room_geometry;
+    case RADAR_CAPTURE_CONTEXT_OBSTACLE: return s_condition_obstruction;
+    case RADAR_CAPTURE_CONTEXT_MATERIAL: return s_material;
+    case RADAR_CAPTURE_CONTEXT_FURNITURE: return s_furniture_density;
+    case RADAR_CAPTURE_CONTEXT_BOUNDARY: return s_boundary;
+    case RADAR_CAPTURE_CONTEXT_CARD_HEIGHT: return s_card_height;
+    case RADAR_CAPTURE_CONTEXT_CARD_POSE: return s_card_pose;
+    default: return UINT8_MAX;
     }
 }
 

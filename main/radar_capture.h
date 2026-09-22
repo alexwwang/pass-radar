@@ -42,6 +42,9 @@ esp_err_t radar_capture_start(float target_distance_m);
 esp_err_t radar_capture_begin_new_batch(void);
 void radar_capture_set_scene(uint16_t scene_id);
 void radar_capture_set_obstacle(uint8_t obstacle);
+bool radar_capture_set_context_field(radar_capture_context_field_t field,
+                                     uint8_t value);
+uint8_t radar_capture_context_value(radar_capture_context_field_t field);
 uint16_t radar_capture_scene(void);
 const char *radar_capture_scene_name(void);
 const char *radar_capture_context_name(void);

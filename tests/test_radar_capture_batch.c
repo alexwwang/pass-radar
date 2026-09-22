@@ -1,4 +1,5 @@
 #include "../main/radar_capture_batch.h"
+#include "../main/radar_capture_condition.h"
 
 #include <stdio.h>
 
@@ -73,6 +74,10 @@ int main(void) {
               RADAR_CAPTURE_OBSTRUCTION_NONE,
               RADAR_CAPTURE_ROOM_GEOMETRY_CORRIDOR),
           "multipath without explicit obstacle warns");
+    CHECK(radar_capture_condition_scene_id(
+              RADAR_CAPTURE_ENV_INDOOR, RADAR_CAPTURE_LINK_STATIC_ATTENUATION) ==
+              RADAR_CAPTURE_SCENE_I_STATIC,
+          "condition scene ID matches core dimensions");
     CHECK(radar_capture_batch_capacity_fits(78, 1466),
           "78 observed-size captures fit slot2 data area");
 
