@@ -374,3 +374,72 @@ Approved. It provides:
 8. hardware-test one labelled batch without erasing NVS;
 9. run the 24/78-Capture outdoor matrix;
 10. validate the unified mixed-condition batch, beginning with indoor records if desired and continuing with outdoor records without changing batch format.
+
+## 13. Minimal condition matrix and Capture editor baseline
+
+The earlier `SCENE + SPACE` menu description is superseded by the following design. It must not be used as the implementation contract for new calibration data.
+
+### 13.1 Core model matrix
+
+Only two dimensions form the first model matrix:
+
+```text
+ENVIRONMENT:    INDOOR / OUTDOOR
+LINK CONDITION: LOS / STATIC_ATTENUATION /
+                DYNAMIC_ATTENUATION / MULTIPATH
+```
+
+This produces eight core scenes:
+
+```text
+I-LOS, I-STATIC, I-DYNAMIC, I-MULTIPATH
+O-LOS, O-STATIC, O-DYNAMIC, O-MULTIPATH
+```
+
+`HUMAN`, `FOLIAGE`, `WALL`, `METAL`, `GLASS`, and similar values are context descriptions, not additional model axes. Space type, material, furniture density, boundary, card height, and card pose are recorded as context and do not form a Cartesian product.
+
+The minimum usable matrix is 48 Captures: eight scenes, three distances, and two repeats. The recommended first matrix is 72 Captures with three repeats. Recommended first distances are 1 m, 3 m, and 5 m.
+
+### 13.2 Availability rules
+
+`ENVIRONMENT` and `LINK CONDITION` are core dimensions and are never greyed out. They must always remain selectable so the operator can move out of an incompatible context.
+
+Only context-field candidates are greyed out. For example, with `OUTDOOR` selected, `ROOM`, `CORRIDOR`, and `OPEN_HALL` are grey; `OUTDOOR_OPEN` remains selectable. With `INDOOR` selected, `OUTDOOR_OPEN` is grey.
+
+Hard-invalid context values cannot be confirmed. Legal but ambiguous combinations remain selectable and produce a warning before Capture. Changing a core dimension immediately recalculates context availability; an invalidated context value is reset to a legal default and the reset is shown to the operator.
+
+### 13.3 UI layout and fixed statistics
+
+Capture uses an independent field editor rather than hidden presets:
+
+```text
+ENVIRONMENT
+LINK CONDITION
+SPACE
+OBSTACLE
+MATERIAL
+BOUNDARY
+DISTANCE
+START CAPTURE
+EXPORT BATCH
+NEW BATCH
+BATCH STATUS
+BACK
+```
+
+The menu must render candidates as independent items. Available values use normal brightness; unavailable context values are grey and cannot be selected. A final full validation runs before the countdown.
+
+Batch statistics and transient action results must not be appended to the menu text. The fixed layout is:
+
+```text
+upper area:  condition editor
+middle area: current values/candidates
+bottom line 1: COUNT 12  SPACE 82%
+bottom line 2: STATUS READY / SAVED / EXPORT OK
+```
+
+The statistics and status lines use separate fixed-position UI labels so updating them cannot increase menu height or clip the last row.
+
+### 13.4 Legacy boundary
+
+Firmware `v0.1-33` uses the superseded packed scene/context behavior and must not generate new calibration data for this design. New records require a condition schema version and must preserve operator condition fields separately from device-observed fields. Existing legacy records remain exportable but are not automatically converted into the eight core scenes.

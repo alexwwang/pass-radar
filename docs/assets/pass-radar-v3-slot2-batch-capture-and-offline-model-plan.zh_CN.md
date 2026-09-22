@@ -385,3 +385,72 @@ CRC全部通过
 8. 在不擦除 NVS 的情况下进行带标签的真机单批次验证；
 9. 再执行 24/78 次户外矩阵；
 10. 验证统一的室内/室外混合批次；可以先采集室内，再不改变批次格式地继续采集室外。
+
+## 13. 最小场景矩阵与 Capture 编辑器基线
+
+此前的 `SCENE + SPACE` 菜单描述由以下设计取代，不能再作为新标定数据的实现依据。
+
+### 13.1 核心模型矩阵
+
+第一版模型只使用两个维度：
+
+```text
+ENVIRONMENT：    INDOOR / OUTDOOR
+LINK CONDITION： LOS / STATIC_ATTENUATION /
+                 DYNAMIC_ATTENUATION / MULTIPATH
+```
+
+因此得到 8 个核心场景：
+
+```text
+I-LOS、I-STATIC、I-DYNAMIC、I-MULTIPATH
+O-LOS、O-STATIC、O-DYNAMIC、O-MULTIPATH
+```
+
+`HUMAN`、`FOLIAGE`、`WALL`、`METAL`、`GLASS` 等是上下文说明，不是额外的模型轴。空间类型、材料、家具密度、边界、卡片高度和卡片姿态只作为上下文保存，不形成笛卡尔积。
+
+最低可用矩阵为 48 次 Capture：8 个场景、3 个距离、每个 2 次重复。推荐第一版矩阵为 72 次 Capture，每个场景重复 3 次。第一轮建议距离为 1 m、3 m、5 m。
+
+### 13.2 选项可用性规则
+
+`ENVIRONMENT` 和 `LINK CONDITION` 是核心维度，永远不能灰显。操作员必须始终能够修改它们，从不兼容的上下文中切换出来。
+
+只有上下文字段的候选值可以灰显。例如选择 `OUTDOOR` 后，`ROOM`、`CORRIDOR`、`OPEN_HALL` 为灰色，`OUTDOOR_OPEN` 可选；选择 `INDOOR` 后，`OUTDOOR_OPEN` 为灰色。
+
+硬冲突的上下文值不能确认。合法但容易误解的组合仍可选择，但 Capture 前必须显示警告。核心维度变化时立即重新计算上下文可用性；已经失效的上下文值自动回退到合法默认值，并向操作员显示回退提示。
+
+### 13.3 界面布局与固定统计区
+
+Capture 使用独立字段编辑器，不再使用隐藏含义的预设：
+
+```text
+ENVIRONMENT
+LINK CONDITION
+SPACE
+OBSTACLE
+MATERIAL
+BOUNDARY
+DISTANCE
+START CAPTURE
+EXPORT BATCH
+NEW BATCH
+BATCH STATUS
+BACK
+```
+
+候选值必须作为独立条目绘制。可用值使用正常亮度，不可用的上下文值使用灰色且不能选择。倒计时开始前仍必须执行一次完整校验。
+
+批次统计和临时操作结果不得再追加到菜单文本末尾。固定布局为：
+
+```text
+上部：条件编辑区
+中部：当前值/候选值
+底部第 1 行：COUNT 12  SPACE 82%
+底部第 2 行：STATUS READY / SAVED / EXPORT OK
+```
+
+统计和状态使用独立的固定位置 UI label，更新它们不能增加菜单高度，也不能裁切最后一行。
+
+### 13.4 旧版本边界
+
+`v0.1-33` 使用的是已经被取代的打包场景/空间行为，不得继续用来生成本设计的标定数据。新记录必须带条件 schema 版本，并将操作员设置的条件字段与设备观察字段分开保存。旧记录仍可导出，但不能自动转换成 8 个核心场景。
