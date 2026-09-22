@@ -570,6 +570,7 @@ const char *radar_capture_context_name(void) {
     if (s_room_geometry == RADAR_CAPTURE_ROOM_GEOMETRY_CORRIDOR) return "CORRIDOR";
     if (s_room_geometry == RADAR_CAPTURE_ROOM_GEOMETRY_OPEN_HALL) return "OPEN_HALL";
     if (s_room_geometry == RADAR_CAPTURE_ROOM_GEOMETRY_CORNER) return "CORNER";
+    if (s_room_geometry == RADAR_CAPTURE_ROOM_GEOMETRY_STAIR) return "STAIR";
     if (s_material == RADAR_CAPTURE_MATERIAL_METAL_GLASS) return "METAL_GLASS";
     return s_room_geometry == RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN
         ? "OUTDOOR_OPEN" : "ROOM";
