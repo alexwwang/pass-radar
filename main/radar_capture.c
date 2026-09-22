@@ -527,19 +527,10 @@ void radar_capture_set_scene(uint16_t scene_id) {
         link <= RADAR_CAPTURE_LINK_MULTIPATH &&
         scene_id == (uint16_t)((environment << 8) | (link << 4))) {
         s_scene_id = scene_id;
-        switch (link) {
-        case RADAR_CAPTURE_LINK_STATIC_ATTENUATION:
-            s_condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_WALL;
-            break;
-        case RADAR_CAPTURE_LINK_DYNAMIC_ATTENUATION:
-            s_condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_HUMAN_DYNAMIC;
-            break;
-        case RADAR_CAPTURE_LINK_MULTIPATH:
-            s_condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_METAL;
-            break;
-        default:
+        if (!radar_capture_context_option_available(
+                environment, link, RADAR_CAPTURE_CONTEXT_OBSTACLE,
+                s_condition_obstruction)) {
             s_condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_NONE;
-            break;
         }
         s_room_geometry = environment == RADAR_CAPTURE_ENV_INDOOR
             ? RADAR_CAPTURE_ROOM_GEOMETRY_ROOM

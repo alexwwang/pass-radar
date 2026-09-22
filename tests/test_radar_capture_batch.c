@@ -69,6 +69,11 @@ int main(void) {
               RADAR_CAPTURE_CONTEXT_OBSTACLE,
               RADAR_CAPTURE_OBSTRUCTION_FOLIAGE),
           "indoor foliage is disabled");
+    CHECK(radar_capture_context_option_available(
+              RADAR_CAPTURE_ENV_OUTDOOR, RADAR_CAPTURE_LINK_DYNAMIC_ATTENUATION,
+              RADAR_CAPTURE_CONTEXT_OBSTACLE,
+              RADAR_CAPTURE_OBSTRUCTION_FOLIAGE),
+          "outdoor foliage remains an available dynamic context");
     CHECK(radar_capture_condition_has_warning(
               RADAR_CAPTURE_ENV_INDOOR, RADAR_CAPTURE_LINK_MULTIPATH,
               RADAR_CAPTURE_OBSTRUCTION_NONE,
