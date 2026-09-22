@@ -1,5 +1,18 @@
 #include "radar_capture_condition.h"
 
+radar_capture_propagation_id_t radar_capture_condition_propagation(
+    radar_capture_link_condition_id_t link) {
+    switch (link) {
+    case RADAR_CAPTURE_LINK_STATIC_ATTENUATION:
+    case RADAR_CAPTURE_LINK_DYNAMIC_ATTENUATION:
+        return RADAR_CAPTURE_PROPAGATION_NLOS;
+    case RADAR_CAPTURE_LINK_MULTIPATH:
+        return RADAR_CAPTURE_PROPAGATION_MULTIPATH;
+    default:
+        return RADAR_CAPTURE_PROPAGATION_LOS;
+    }
+}
+
 uint16_t radar_capture_condition_scene_id(
     radar_capture_environment_id_t environment,
     radar_capture_link_condition_id_t link) {

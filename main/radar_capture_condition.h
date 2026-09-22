@@ -17,3 +17,5 @@ bool radar_capture_condition_has_warning(
 uint16_t radar_capture_condition_scene_id(
     radar_capture_environment_id_t environment,
     radar_capture_link_condition_id_t link);
+radar_capture_propagation_id_t radar_capture_condition_propagation(
+    radar_capture_link_condition_id_t link);

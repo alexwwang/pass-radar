@@ -78,6 +78,18 @@ int main(void) {
               RADAR_CAPTURE_ENV_INDOOR, RADAR_CAPTURE_LINK_STATIC_ATTENUATION) ==
               RADAR_CAPTURE_SCENE_I_STATIC,
           "condition scene ID matches core dimensions");
+    CHECK(radar_capture_condition_propagation(RADAR_CAPTURE_LINK_LOS) ==
+              RADAR_CAPTURE_PROPAGATION_LOS,
+          "LOS propagation mapping");
+    CHECK(radar_capture_condition_propagation(RADAR_CAPTURE_LINK_STATIC_ATTENUATION) ==
+              RADAR_CAPTURE_PROPAGATION_NLOS,
+          "static attenuation propagation mapping");
+    CHECK(radar_capture_condition_propagation(RADAR_CAPTURE_LINK_DYNAMIC_ATTENUATION) ==
+              RADAR_CAPTURE_PROPAGATION_NLOS,
+          "dynamic attenuation propagation mapping");
+    CHECK(radar_capture_condition_propagation(RADAR_CAPTURE_LINK_MULTIPATH) ==
+              RADAR_CAPTURE_PROPAGATION_MULTIPATH,
+          "multipath propagation mapping");
     CHECK(radar_capture_batch_capacity_fits(78, 1466),
           "78 observed-size captures fit slot2 data area");
 

@@ -597,8 +597,7 @@ radar_capture_obstruction_id_t radar_capture_scene_obstruction(uint16_t scene_id
 }
 
 radar_capture_propagation_id_t radar_capture_scene_propagation(uint16_t scene_id) {
-    (void)scene_id;
-    return RADAR_CAPTURE_PROPAGATION_LOS;
+    return radar_capture_condition_propagation(radar_capture_scene_link(scene_id));
 }
 
 radar_capture_link_condition_id_t radar_capture_scene_link(uint16_t scene_id) {
