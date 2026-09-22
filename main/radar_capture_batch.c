@@ -94,6 +94,15 @@ bool radar_capture_batch_capture_header_valid(
                                   header->condition_link,
                                   header->condition_obstruction,
                                   header->condition_propagation) &&
+           radar_capture_context_option_available(
+               header->condition_environment, header->condition_link,
+               RADAR_CAPTURE_CONTEXT_OBSTACLE, header->condition_obstruction) &&
+           radar_capture_context_option_available(
+               header->condition_environment, header->condition_link,
+               RADAR_CAPTURE_CONTEXT_SPACE, header->room_geometry) &&
+           radar_capture_context_option_available(
+               header->condition_environment, header->condition_link,
+               RADAR_CAPTURE_CONTEXT_FURNITURE, header->furniture_density) &&
            header->observed_level <= RADAR_CAPTURE_OBS_LEVEL_L3_LOST &&
            header->observed_obstruction <= RADAR_CAPTURE_OBS_CLASS_UNKNOWN &&
            capture_context_valid(header->room_geometry, header->room_size,
@@ -347,7 +356,17 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
         !scene_dimensions_valid(meta->scene_id, meta->condition_environment,
                                 meta->condition_link,
                                 meta->condition_obstruction,
-                                meta->condition_propagation) ||        meta->observed_level > RADAR_CAPTURE_OBS_LEVEL_L3_LOST ||
+                                meta->condition_propagation) ||
+        !radar_capture_context_option_available(
+            meta->condition_environment, meta->condition_link,
+            RADAR_CAPTURE_CONTEXT_OBSTACLE, meta->condition_obstruction) ||
+        !radar_capture_context_option_available(
+            meta->condition_environment, meta->condition_link,
+            RADAR_CAPTURE_CONTEXT_SPACE, meta->room_geometry) ||
+        !radar_capture_context_option_available(
+            meta->condition_environment, meta->condition_link,
+            RADAR_CAPTURE_CONTEXT_FURNITURE, meta->furniture_density) ||
+        meta->observed_level > RADAR_CAPTURE_OBS_LEVEL_L3_LOST ||
         meta->observed_obstruction > RADAR_CAPTURE_OBS_CLASS_UNKNOWN ||
         !capture_context_valid(meta->room_geometry, meta->room_size,
                                meta->material, meta->furniture_density,

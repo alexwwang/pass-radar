@@ -112,6 +112,7 @@ static bool s_data_valid;
 static bool s_save_succeeded;
 static uint32_t s_capture_id;
 static uint16_t s_scene_id = RADAR_CAPTURE_SCENE_O_LOS;
+static uint8_t s_condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_NONE;
 static uint8_t s_room_geometry = RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
 static uint8_t s_room_size = RADAR_CAPTURE_ROOM_SIZE_LARGE;
 static uint8_t s_material = RADAR_CAPTURE_MATERIAL_MIXED;
@@ -526,6 +527,20 @@ void radar_capture_set_scene(uint16_t scene_id) {
         link <= RADAR_CAPTURE_LINK_MULTIPATH &&
         scene_id == (uint16_t)((environment << 8) | (link << 4))) {
         s_scene_id = scene_id;
+        switch (link) {
+        case RADAR_CAPTURE_LINK_STATIC_ATTENUATION:
+            s_condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_WALL;
+            break;
+        case RADAR_CAPTURE_LINK_DYNAMIC_ATTENUATION:
+            s_condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_HUMAN_DYNAMIC;
+            break;
+        case RADAR_CAPTURE_LINK_MULTIPATH:
+            s_condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_METAL;
+            break;
+        default:
+            s_condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_NONE;
+            break;
+        }
         s_room_geometry = environment == RADAR_CAPTURE_ENV_INDOOR
             ? RADAR_CAPTURE_ROOM_GEOMETRY_ROOM
             : RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
@@ -548,6 +563,12 @@ const char *radar_capture_context_name(void) {
     if (s_material == RADAR_CAPTURE_MATERIAL_METAL_GLASS) return "METAL_GLASS";
     return s_room_geometry == RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN
         ? "OUTDOOR_OPEN" : "ROOM";
+}
+
+void radar_capture_set_obstacle(uint8_t obstacle) {
+    if (obstacle <= RADAR_CAPTURE_OBSTRUCTION_METAL) {
+        s_condition_obstruction = obstacle;
+    }
 }
 
 void radar_capture_set_context(uint8_t room_geometry, uint8_t room_size,
@@ -695,8 +716,14 @@ esp_err_t radar_capture_save(void) {
         .scene_id = s_scene_id,
         .condition_environment = (uint8_t)radar_capture_scene_environment(s_scene_id),
         .condition_link = (uint8_t)radar_capture_scene_link(s_scene_id),
-        .condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_NONE,
-        .condition_propagation = RADAR_CAPTURE_PROPAGATION_LOS,
+        .condition_obstruction = s_condition_obstruction,
+        .condition_propagation = (uint8_t)(radar_capture_scene_link(s_scene_id) ==
+                                           RADAR_CAPTURE_LINK_LOS
+                                               ? RADAR_CAPTURE_PROPAGATION_LOS
+                                               : radar_capture_scene_link(s_scene_id) ==
+                                                         RADAR_CAPTURE_LINK_MULTIPATH
+                                                     ? RADAR_CAPTURE_PROPAGATION_MULTIPATH
+                                                     : RADAR_CAPTURE_PROPAGATION_NLOS),
         .observed_level = s_observed_level,
         .observed_obstruction = s_observed_obstruction,
         .room_geometry = s_room_geometry,
