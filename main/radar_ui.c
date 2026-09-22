@@ -217,7 +217,7 @@ static void build_calib_page(void) {
 
 static void build_capture_menu_page(void) {
     s_scr = ui_pixel_screen_create("CAPTURE");
-    s_capture_menu_label = add_info_label(s_scr, 52, &lv_font_montserrat_14);
+    s_capture_menu_label = add_info_label(s_scr, 52, &lv_font_montserrat_12);
     lv_obj_set_width(s_capture_menu_label, 230);
     lv_obj_set_height(s_capture_menu_label, 190);
     lv_label_set_text(s_capture_menu_label, "CAPTURE MENU");
@@ -526,7 +526,7 @@ void radar_ui_update_capture_menu(const char *environment_name,
                        selected_item == 9 ? '>' : ' ',
                        selected_item == 10 ? '>' : ' ',
                        selected_item == 11 ? '>' : ' ');
-        (void)snprintf(text, sizeof(text), "CAPTURE MENU\n%s", menu_lines);
+        (void)snprintf(text, sizeof(text), "%s", menu_lines);
     }
     lv_label_set_text(s_capture_menu_label, text);
     if (s_capture_count_label) {
