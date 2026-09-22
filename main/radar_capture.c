@@ -528,18 +528,36 @@ void radar_capture_set_scene(uint16_t scene_id) {
         link <= RADAR_CAPTURE_LINK_MULTIPATH &&
         scene_id == (uint16_t)((environment << 8) | (link << 4))) {
         s_scene_id = scene_id;
-        if (!radar_capture_context_option_available(
-                environment, link, RADAR_CAPTURE_CONTEXT_OBSTACLE,
-                s_condition_obstruction)) {
-            s_condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_NONE;
+        const uint8_t defaults[] = {
+            environment == RADAR_CAPTURE_ENV_INDOOR
+                ? RADAR_CAPTURE_ROOM_GEOMETRY_ROOM
+                : RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN,
+            RADAR_CAPTURE_ROOM_SIZE_MEDIUM,
+            RADAR_CAPTURE_OBSTRUCTION_NONE,
+            RADAR_CAPTURE_MATERIAL_MIXED,
+            environment == RADAR_CAPTURE_ENV_INDOOR
+                ? RADAR_CAPTURE_FURNITURE_MEDIUM : RADAR_CAPTURE_FURNITURE_LOW,
+            RADAR_CAPTURE_BOUNDARY_OPEN,
+            RADAR_CAPTURE_CARD_HEIGHT_CHEST,
+            RADAR_CAPTURE_CARD_POSE_UPRIGHT};
+        const radar_capture_context_field_t fields[] = {
+            RADAR_CAPTURE_CONTEXT_SPACE,
+            RADAR_CAPTURE_CONTEXT_ROOM_SIZE,
+            RADAR_CAPTURE_CONTEXT_OBSTACLE,
+            RADAR_CAPTURE_CONTEXT_MATERIAL,
+            RADAR_CAPTURE_CONTEXT_FURNITURE,
+            RADAR_CAPTURE_CONTEXT_BOUNDARY,
+            RADAR_CAPTURE_CONTEXT_CARD_HEIGHT,
+            RADAR_CAPTURE_CONTEXT_CARD_POSE};
+        const uint8_t current[] = {
+            s_room_geometry, s_room_size, s_condition_obstruction, s_material,
+            s_furniture_density, s_boundary, s_card_height, s_card_pose};
+        for (unsigned i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
+            if (!radar_capture_context_option_available(environment, link,
+                                                        fields[i], current[i])) {
+                (void)radar_capture_set_context_field(fields[i], defaults[i]);
+            }
         }
-        s_room_geometry = environment == RADAR_CAPTURE_ENV_INDOOR
-            ? RADAR_CAPTURE_ROOM_GEOMETRY_ROOM
-            : RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
-        s_boundary = RADAR_CAPTURE_BOUNDARY_OPEN;
-        s_material = RADAR_CAPTURE_MATERIAL_MIXED;
-        s_furniture_density = environment == RADAR_CAPTURE_ENV_INDOOR
-            ? RADAR_CAPTURE_FURNITURE_MEDIUM : RADAR_CAPTURE_FURNITURE_LOW;
     }
 }
 
