@@ -357,12 +357,13 @@ static esp_err_t export_batch_record(
     strncpy(header.firmware_version, "slot2-batch",
             sizeof(header.firmware_version) - 1u);
     ESP_LOGI(TAG,
-             "BATCH_CAPTURE_CONDITION batch=%lu run=%lu scene=%s env=%u link=%u obs=%u "
+             "BATCH_CAPTURE_CONDITION batch=%lu run=%lu scene=%s schema=%u env=%u link=%u obs=%u "
              "prop=%u room=%u size=%u material=%u furniture=%u boundary=%u "
              "height=%u pose=%u observed_level=%u observed_obstruction=%u",
              (unsigned long)batch_header->batch_id,
              (unsigned long)batch_header->run_id,
              radar_capture_scene_label(batch_header->scene_id),
+             (unsigned)batch_header->condition_schema_version,
              (unsigned)batch_header->condition_environment,
              (unsigned)batch_header->condition_link,
              (unsigned)batch_header->condition_obstruction,
@@ -752,6 +753,7 @@ esp_err_t radar_capture_save(void) {
         .condition_environment = (uint8_t)radar_capture_scene_environment(s_scene_id),
         .condition_link = (uint8_t)radar_capture_scene_link(s_scene_id),
         .condition_obstruction = s_condition_obstruction,
+        .condition_schema_version = RADAR_CAPTURE_CONDITION_SCHEMA_VERSION,
         .condition_propagation = (uint8_t)(radar_capture_scene_link(s_scene_id) ==
                                            RADAR_CAPTURE_LINK_LOS
                                                ? RADAR_CAPTURE_PROPAGATION_LOS

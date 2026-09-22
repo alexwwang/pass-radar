@@ -32,6 +32,7 @@ typedef int esp_err_t;
 #define RADAR_CAPTURE_BATCH_CAPTURE_MAGIC 0x52434331u /* RCC1 */
 #define RADAR_CAPTURE_BATCH_COMMIT_MAGIC 0x52434f4bu /* RCOK */
 #define RADAR_CAPTURE_BATCH_FORMAT_VERSION 3u
+#define RADAR_CAPTURE_CONDITION_SCHEMA_VERSION 1u
 #define RADAR_CAPTURE_BATCH_SCENE_MAX 0x1000u
 
 typedef enum {
@@ -182,6 +183,7 @@ typedef struct __attribute__((packed)) {
     uint8_t condition_link;
     uint8_t condition_obstruction;
     uint8_t condition_propagation;
+    uint8_t condition_schema_version;
     uint8_t observed_level;
     uint8_t observed_obstruction;
     uint8_t room_geometry;
@@ -191,7 +193,6 @@ typedef struct __attribute__((packed)) {
     uint8_t boundary;
     uint8_t card_height;
     uint8_t card_pose;
-    uint8_t reserved0;
     float target_distance_m;
     float measured_distance_m;
     uint32_t record_count;
@@ -226,6 +227,7 @@ typedef struct {
     uint8_t condition_link;
     uint8_t condition_obstruction;
     uint8_t condition_propagation;
+    uint8_t condition_schema_version;
     uint8_t observed_level;
     uint8_t observed_obstruction;
     uint8_t room_geometry;

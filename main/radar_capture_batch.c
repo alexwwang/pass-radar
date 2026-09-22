@@ -94,6 +94,7 @@ bool radar_capture_batch_capture_header_valid(
                                   header->condition_link,
                                   header->condition_obstruction,
                                   header->condition_propagation) &&
+           header->condition_schema_version == RADAR_CAPTURE_CONDITION_SCHEMA_VERSION &&
            radar_capture_context_option_available(
                header->condition_environment, header->condition_link,
                RADAR_CAPTURE_CONTEXT_OBSTACLE, header->condition_obstruction) &&
@@ -360,6 +361,7 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
                                 meta->condition_link,
                                 meta->condition_obstruction,
                                 meta->condition_propagation) ||
+        meta->condition_schema_version != RADAR_CAPTURE_CONDITION_SCHEMA_VERSION ||
         !radar_capture_context_option_available(
             meta->condition_environment, meta->condition_link,
             RADAR_CAPTURE_CONTEXT_OBSTACLE, meta->condition_obstruction) ||
@@ -405,6 +407,7 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
         .condition_environment = meta->condition_environment,
         .condition_link = meta->condition_link,
         .condition_obstruction = meta->condition_obstruction,
+        .condition_schema_version = meta->condition_schema_version,
         .condition_propagation = meta->condition_propagation,
         .observed_level = meta->observed_level,
         .observed_obstruction = meta->observed_obstruction,
