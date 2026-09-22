@@ -98,7 +98,7 @@ run_static_checks() {
         -o "${test_dir}/test_radar_capture_codec" -lm
     "${test_dir}/test_radar_capture_codec"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_radar_capture_batch.c \
+        tests/test_radar_capture_batch.c main/radar_capture_condition.c \
         -o "${test_dir}/test_radar_capture_batch"
     "${test_dir}/test_radar_capture_batch"
     "${python_cmd}" tests/test_verify_firmware.py

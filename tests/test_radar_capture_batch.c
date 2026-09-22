@@ -45,13 +45,34 @@ int main(void) {
           "161 captures exceed the configured batch limit");
     CHECK(RADAR_CAPTURE_SCENE_I_LOS == (1u << 8),
           "indoor LOS scene encoding is stable");
-    CHECK(RADAR_CAPTURE_SCENE_O_FOLIAGE ==
-              ((RADAR_CAPTURE_OBSTRUCTION_FOLIAGE << 4) |
-               RADAR_CAPTURE_PROPAGATION_NLOS),
-          "foliage scene encoding is stable");
+    CHECK(RADAR_CAPTURE_SCENE_O_DYNAMIC ==
+              ((RADAR_CAPTURE_ENV_OUTDOOR << 8) |
+               (RADAR_CAPTURE_LINK_DYNAMIC_ATTENUATION << 4)),
+          "outdoor dynamic scene encoding is stable");
     CHECK(RADAR_CAPTURE_SCENE_I_MULTIPATH ==
-              ((1u << 8) | RADAR_CAPTURE_PROPAGATION_MULTIPATH),
-          "multipath scene encoding is stable");
+              ((RADAR_CAPTURE_ENV_INDOOR << 8) |
+               (RADAR_CAPTURE_LINK_MULTIPATH << 4)),
+          "indoor multipath scene encoding is stable");
+    CHECK(radar_capture_context_option_available(
+              RADAR_CAPTURE_ENV_OUTDOOR, RADAR_CAPTURE_LINK_LOS,
+              RADAR_CAPTURE_CONTEXT_SPACE,
+              RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN),
+          "outdoor open space is available");
+    CHECK(!radar_capture_context_option_available(
+              RADAR_CAPTURE_ENV_OUTDOOR, RADAR_CAPTURE_LINK_LOS,
+              RADAR_CAPTURE_CONTEXT_SPACE,
+              RADAR_CAPTURE_ROOM_GEOMETRY_ROOM),
+          "indoor room is disabled outdoors");
+    CHECK(!radar_capture_context_option_available(
+              RADAR_CAPTURE_ENV_INDOOR, RADAR_CAPTURE_LINK_DYNAMIC_ATTENUATION,
+              RADAR_CAPTURE_CONTEXT_OBSTACLE,
+              RADAR_CAPTURE_OBSTRUCTION_FOLIAGE),
+          "indoor foliage is disabled");
+    CHECK(radar_capture_condition_has_warning(
+              RADAR_CAPTURE_ENV_INDOOR, RADAR_CAPTURE_LINK_MULTIPATH,
+              RADAR_CAPTURE_OBSTRUCTION_NONE,
+              RADAR_CAPTURE_ROOM_GEOMETRY_CORRIDOR),
+          "multipath without explicit obstacle warns");
     CHECK(radar_capture_batch_capacity_fits(78, 1466),
           "78 observed-size captures fit slot2 data area");
 

@@ -1,5 +1,7 @@
 # pass-radar v3 最小场景矩阵与 Capture 条件编辑器设计方案
 
+English version: `pass-radar-v3-minimal-condition-matrix-and-capture-editor.md`
+
 日期：2026-09-22  
 状态：**设计待确认，尚未实施**  
 适用范围：开发者/现场标定 Capture 功能，不影响普通用户运行路径。

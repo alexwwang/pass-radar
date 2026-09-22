@@ -356,13 +356,14 @@ static esp_err_t export_batch_record(
     strncpy(header.firmware_version, "slot2-batch",
             sizeof(header.firmware_version) - 1u);
     ESP_LOGI(TAG,
-             "BATCH_CAPTURE_CONDITION batch=%lu run=%lu scene=%s env=%u obs=%u "
+             "BATCH_CAPTURE_CONDITION batch=%lu run=%lu scene=%s env=%u link=%u obs=%u "
              "prop=%u room=%u size=%u material=%u furniture=%u boundary=%u "
              "height=%u pose=%u observed_level=%u observed_obstruction=%u",
              (unsigned long)batch_header->batch_id,
              (unsigned long)batch_header->run_id,
              radar_capture_scene_label(batch_header->scene_id),
              (unsigned)batch_header->condition_environment,
+             (unsigned)batch_header->condition_link,
              (unsigned)batch_header->condition_obstruction,
              (unsigned)batch_header->condition_propagation,
              (unsigned)batch_header->room_geometry,
@@ -520,12 +521,10 @@ esp_err_t radar_capture_begin_new_batch(void) {
 
 void radar_capture_set_scene(uint16_t scene_id) {
     uint8_t environment = (uint8_t)radar_capture_scene_environment(scene_id);
-    uint8_t obstruction = (uint8_t)radar_capture_scene_obstruction(scene_id);
-    uint8_t propagation = (uint8_t)radar_capture_scene_propagation(scene_id);
+    uint8_t link = (uint8_t)radar_capture_scene_link(scene_id);
     if (environment <= RADAR_CAPTURE_ENV_INDOOR &&
-        obstruction <= RADAR_CAPTURE_OBSTRUCTION_METAL &&
-        propagation <= RADAR_CAPTURE_PROPAGATION_MULTIPATH &&
-        scene_id == (uint16_t)((environment << 8) | (obstruction << 4) | propagation)) {
+        link <= RADAR_CAPTURE_LINK_MULTIPATH &&
+        scene_id == (uint16_t)((environment << 8) | (link << 4))) {
         s_scene_id = scene_id;
         s_room_geometry = environment == RADAR_CAPTURE_ENV_INDOOR
             ? RADAR_CAPTURE_ROOM_GEOMETRY_ROOM
@@ -695,8 +694,9 @@ esp_err_t radar_capture_save(void) {
         .capture_id = s_capture_id,
         .scene_id = s_scene_id,
         .condition_environment = (uint8_t)radar_capture_scene_environment(s_scene_id),
-        .condition_obstruction = (uint8_t)radar_capture_scene_obstruction(s_scene_id),
-        .condition_propagation = (uint8_t)radar_capture_scene_propagation(s_scene_id),
+        .condition_link = (uint8_t)radar_capture_scene_link(s_scene_id),
+        .condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_NONE,
+        .condition_propagation = RADAR_CAPTURE_PROPAGATION_LOS,
         .observed_level = s_observed_level,
         .observed_obstruction = s_observed_obstruction,
         .room_geometry = s_room_geometry,

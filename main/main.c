@@ -89,7 +89,8 @@ static int64_t s_walk_armed_ms;
 static bool s_diag_peer_recorded;
 static volatile bool s_radio_ready;
 static unsigned s_capture_target_index;
-static unsigned s_capture_scene_index;
+static unsigned s_capture_environment_index;
+static unsigned s_capture_link_index;
 static unsigned s_capture_context_index;
 static unsigned s_capture_menu_item;
 static bool s_capture_erase_confirm;
@@ -275,7 +276,8 @@ static void poll_tick(lv_timer_t *t) {
                                  radar_obstruct_class_label(s_obstruct_class),
                                  radar_hint_label(s_obstruct_hint));
     } else if (page == RADAR_PAGE_CAPTURE_MENU) {            radar_ui_update_capture_menu(
-            radar_capture_scene_name(),
+            radar_capture_environment_label(s_capture_environment_index),
+            radar_capture_link_label(s_capture_link_index),
             radar_capture_context_name(),
             radar_capture_targets_m[s_capture_target_index],
 
@@ -714,7 +716,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         }
         if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) &&
             ev == BSP_BTN_CLICK) {
-            const unsigned item_count = 8u;
+            const unsigned item_count = 9u;
             if (btn == BSP_BTN_UP) {
                 s_capture_menu_item =
                     (s_capture_menu_item + item_count - 1u) % item_count;
@@ -724,15 +726,20 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
             switch (s_capture_menu_item) {
             case 0:
-                s_capture_scene_index = (s_capture_scene_index + 1u) %
-                                        radar_capture_scene_menu_count();
-                radar_capture_set_scene(radar_capture_scene_menu_id(s_capture_scene_index));
+                s_capture_environment_index = (s_capture_environment_index + 1u) % 2u;
+                radar_capture_set_scene((uint16_t)((s_capture_environment_index << 8) |
+                                                   (s_capture_link_index << 4)));
                 break;
             case 1:
+                s_capture_link_index = (s_capture_link_index + 1u) % 4u;
+                radar_capture_set_scene((uint16_t)((s_capture_environment_index << 8) |
+                                                   (s_capture_link_index << 4)));
+                break;
+            case 2:
                 s_capture_target_index =
                     (s_capture_target_index + 1u) % RADAR_CAPTURE_TARGET_COUNT;
                 break;
-            case 2:
+            case 3:
                 s_capture_context_index = (s_capture_context_index + 1u) % 5u;
                 switch (s_capture_context_index) {
                 case 0: radar_capture_set_context(RADAR_CAPTURE_ROOM_GEOMETRY_ROOM,
@@ -772,7 +779,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                                                    RADAR_CAPTURE_CARD_POSE_UPRIGHT); break;
                 }
                 break;
-            case 3: {
+            case 4: {
                 esp_err_t err = radar_capture_start(
                     radar_capture_targets_m[s_capture_target_index]);
                 if (err == ESP_OK) {
@@ -786,17 +793,17 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 }
                 break;
             }
-            case 4: {
+            case 5: {
                 esp_err_t err = radar_capture_export_saved();
                 snprintf(s_capture_action_status,
                          sizeof(s_capture_action_status), "EXPORT %s",
                          esp_err_to_name(err));
                 break;
             }
-            case 5:
+            case 6:
                 s_capture_erase_confirm = true;
                 break;
-            case 6:
+            case 7:
                 snprintf(s_capture_action_status,
                          sizeof(s_capture_action_status), "COUNT %lu %s",
                          (unsigned long)radar_capture_batch_count(),

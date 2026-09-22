@@ -25,13 +25,13 @@ typedef int esp_err_t;
     (RADAR_CAPTURE_BATCH_SLOT2_SIZE - RADAR_CAPTURE_BATCH_NAME_SECTOR_SIZE)
 #define RADAR_CAPTURE_BATCH_SECTOR_SIZE 0x1000u
 #define RADAR_CAPTURE_BATCH_MAX_CAPTURES 160u
-#define RADAR_CAPTURE_BATCH_MENU_SCENE_MAX 12u
+#define RADAR_CAPTURE_BATCH_MENU_SCENE_MAX 8u
 #define RADAR_CAPTURE_BATCH_MAX_RECORDS 128u
 #define RADAR_CAPTURE_BATCH_MAX_PAYLOAD 8192u
 #define RADAR_CAPTURE_BATCH_MAGIC 0x52434231u /* RCB1 */
 #define RADAR_CAPTURE_BATCH_CAPTURE_MAGIC 0x52434331u /* RCC1 */
 #define RADAR_CAPTURE_BATCH_COMMIT_MAGIC 0x52434f4bu /* RCOK */
-#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 2u
+#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 3u
 #define RADAR_CAPTURE_BATCH_SCENE_MAX 0x1000u
 
 typedef enum {
@@ -55,46 +55,40 @@ typedef enum {
 } radar_capture_propagation_id_t;
 
 typedef enum {
-    RADAR_CAPTURE_SCENE_O_LOS = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
-                                 (RADAR_CAPTURE_OBSTRUCTION_NONE << 4) |
-                                 RADAR_CAPTURE_PROPAGATION_LOS,
-    RADAR_CAPTURE_SCENE_O_HUMAN_STATIC = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
-                                         (RADAR_CAPTURE_OBSTRUCTION_HUMAN_STATIC << 4) |
-                                         RADAR_CAPTURE_PROPAGATION_NLOS,
-    RADAR_CAPTURE_SCENE_O_HUMAN_DYNAMIC = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
-                                          (RADAR_CAPTURE_OBSTRUCTION_HUMAN_DYNAMIC << 4) |
-                                          RADAR_CAPTURE_PROPAGATION_NLOS,
-    RADAR_CAPTURE_SCENE_O_FOLIAGE = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
-                                    (RADAR_CAPTURE_OBSTRUCTION_FOLIAGE << 4) |
-                                    RADAR_CAPTURE_PROPAGATION_NLOS,
-    RADAR_CAPTURE_SCENE_O_WALL = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
-                                 (RADAR_CAPTURE_OBSTRUCTION_WALL << 4) |
-                                 RADAR_CAPTURE_PROPAGATION_NLOS,
-    RADAR_CAPTURE_SCENE_O_METAL = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
-                                  (RADAR_CAPTURE_OBSTRUCTION_METAL << 4) |
-                                  RADAR_CAPTURE_PROPAGATION_MULTIPATH,
-    RADAR_CAPTURE_SCENE_O_MULTIPATH = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
-                                      (RADAR_CAPTURE_OBSTRUCTION_NONE << 4) |
-                                      RADAR_CAPTURE_PROPAGATION_MULTIPATH,
+    RADAR_CAPTURE_LINK_LOS = 0,
+    RADAR_CAPTURE_LINK_STATIC_ATTENUATION = 1,
+    RADAR_CAPTURE_LINK_DYNAMIC_ATTENUATION = 2,
+    RADAR_CAPTURE_LINK_MULTIPATH = 3,
+} radar_capture_link_condition_id_t;
+
+typedef enum {
     RADAR_CAPTURE_SCENE_I_LOS = (RADAR_CAPTURE_ENV_INDOOR << 8) |
-                                (RADAR_CAPTURE_OBSTRUCTION_NONE << 4) |
-                                RADAR_CAPTURE_PROPAGATION_LOS,
-    RADAR_CAPTURE_SCENE_I_HUMAN_STATIC = (RADAR_CAPTURE_ENV_INDOOR << 8) |
-                                         (RADAR_CAPTURE_OBSTRUCTION_HUMAN_STATIC << 4) |
-                                         RADAR_CAPTURE_PROPAGATION_NLOS,
-    RADAR_CAPTURE_SCENE_I_HUMAN_DYNAMIC = (RADAR_CAPTURE_ENV_INDOOR << 8) |
-                                          (RADAR_CAPTURE_OBSTRUCTION_HUMAN_DYNAMIC << 4) |
-                                          RADAR_CAPTURE_PROPAGATION_NLOS,
-    RADAR_CAPTURE_SCENE_I_WALL = (RADAR_CAPTURE_ENV_INDOOR << 8) |
-                                 (RADAR_CAPTURE_OBSTRUCTION_WALL << 4) |
-                                 RADAR_CAPTURE_PROPAGATION_NLOS,
-    RADAR_CAPTURE_SCENE_I_METAL = (RADAR_CAPTURE_ENV_INDOOR << 8) |
-                                  (RADAR_CAPTURE_OBSTRUCTION_METAL << 4) |
-                                  RADAR_CAPTURE_PROPAGATION_MULTIPATH,
+                                (RADAR_CAPTURE_LINK_LOS << 4),
+    RADAR_CAPTURE_SCENE_I_STATIC = (RADAR_CAPTURE_ENV_INDOOR << 8) |
+                                   (RADAR_CAPTURE_LINK_STATIC_ATTENUATION << 4),
+    RADAR_CAPTURE_SCENE_I_DYNAMIC = (RADAR_CAPTURE_ENV_INDOOR << 8) |
+                                    (RADAR_CAPTURE_LINK_DYNAMIC_ATTENUATION << 4),
     RADAR_CAPTURE_SCENE_I_MULTIPATH = (RADAR_CAPTURE_ENV_INDOOR << 8) |
-                                      (RADAR_CAPTURE_OBSTRUCTION_NONE << 4) |
-                                      RADAR_CAPTURE_PROPAGATION_MULTIPATH,
+                                      (RADAR_CAPTURE_LINK_MULTIPATH << 4),
+    RADAR_CAPTURE_SCENE_O_LOS = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
+                                (RADAR_CAPTURE_LINK_LOS << 4),
+    RADAR_CAPTURE_SCENE_O_STATIC = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
+                                   (RADAR_CAPTURE_LINK_STATIC_ATTENUATION << 4),
+    RADAR_CAPTURE_SCENE_O_DYNAMIC = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
+                                    (RADAR_CAPTURE_LINK_DYNAMIC_ATTENUATION << 4),
+    RADAR_CAPTURE_SCENE_O_MULTIPATH = (RADAR_CAPTURE_ENV_OUTDOOR << 8) |
+                                      (RADAR_CAPTURE_LINK_MULTIPATH << 4),
 } radar_capture_scene_id_t;
+
+typedef enum {
+    RADAR_CAPTURE_CONTEXT_SPACE = 0,
+    RADAR_CAPTURE_CONTEXT_OBSTACLE,
+    RADAR_CAPTURE_CONTEXT_MATERIAL,
+    RADAR_CAPTURE_CONTEXT_FURNITURE,
+    RADAR_CAPTURE_CONTEXT_BOUNDARY,
+    RADAR_CAPTURE_CONTEXT_CARD_HEIGHT,
+    RADAR_CAPTURE_CONTEXT_CARD_POSE,
+} radar_capture_context_field_t;
 
 typedef enum {
     RADAR_CAPTURE_ROOM_GEOMETRY_ROOM = 0,
@@ -184,6 +178,7 @@ typedef struct __attribute__((packed)) {
     uint32_t capture_id;
     uint16_t scene_id;
     uint8_t condition_environment;
+    uint8_t condition_link;
     uint8_t condition_obstruction;
     uint8_t condition_propagation;
     uint8_t observed_level;
@@ -205,7 +200,7 @@ typedef struct __attribute__((packed)) {
     uint32_t boot_sequence;
     uint32_t reset_reason;
     uint32_t record_crc32;
-    uint8_t reserved[41];
+    uint8_t reserved[40];
 } radar_capture_batch_capture_header_t;
 
 _Static_assert(sizeof(radar_capture_batch_capture_header_t) == 112,
@@ -227,6 +222,7 @@ typedef struct {
     uint32_t capture_id;
     uint16_t scene_id;
     uint8_t condition_environment;
+    uint8_t condition_link;
     uint8_t condition_obstruction;
     uint8_t condition_propagation;
     uint8_t observed_level;
@@ -318,9 +314,20 @@ const char *radar_capture_batch_space_status(void);
 uint32_t radar_capture_batch_id(void);
 uint32_t radar_capture_batch_count(void);
 const char *radar_capture_scene_label(uint16_t scene_id);
+const char *radar_capture_environment_label(uint8_t environment);
+const char *radar_capture_link_label(uint8_t link);
 uint16_t radar_capture_scene_menu_id(unsigned index);
 unsigned radar_capture_scene_menu_count(void);
 radar_capture_environment_id_t radar_capture_scene_environment(uint16_t scene_id);
 radar_capture_obstruction_id_t radar_capture_scene_obstruction(uint16_t scene_id);
 radar_capture_propagation_id_t radar_capture_scene_propagation(uint16_t scene_id);
+radar_capture_link_condition_id_t radar_capture_scene_link(uint16_t scene_id);
+bool radar_capture_context_option_available(
+    radar_capture_environment_id_t environment,
+    radar_capture_link_condition_id_t link,
+    radar_capture_context_field_t field, uint8_t value);
+bool radar_capture_condition_has_warning(
+    radar_capture_environment_id_t environment,
+    radar_capture_link_condition_id_t link, uint8_t obstacle,
+    uint8_t space);
 size_t radar_capture_batch_used_bytes(void);

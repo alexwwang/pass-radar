@@ -1,4 +1,5 @@
 #include "radar_capture_batch.h"
+#include "radar_capture_condition.h"
 
 #include "esp_log.h"
 #include "esp_partition.h"
@@ -73,12 +74,13 @@ static bool capture_context_valid(uint8_t room_geometry, uint8_t room_size,
 }
 
 static bool scene_dimensions_valid(uint16_t scene_id, uint8_t environment,
-                                   uint8_t obstruction, uint8_t propagation) {
+                                   uint8_t link, uint8_t obstruction,
+                                   uint8_t propagation) {
     if (environment > RADAR_CAPTURE_ENV_INDOOR ||
+        link > RADAR_CAPTURE_LINK_MULTIPATH ||
         obstruction > RADAR_CAPTURE_OBSTRUCTION_METAL ||
         propagation > RADAR_CAPTURE_PROPAGATION_MULTIPATH) return false;
-    uint16_t encoded = (uint16_t)((environment << 8) |
-                                  (obstruction << 4) | propagation);
+    uint16_t encoded = (uint16_t)((environment << 8) | (link << 4));
     return scene_id == encoded;
 }
 
@@ -89,6 +91,7 @@ bool radar_capture_batch_capture_header_valid(
            header->header_size == sizeof(*header) &&
            header->batch_id != 0 && header->run_id != 0 &&
            scene_dimensions_valid(header->scene_id, header->condition_environment,
+                                  header->condition_link,
                                   header->condition_obstruction,
                                   header->condition_propagation) &&
            header->observed_level <= RADAR_CAPTURE_OBS_LEVEL_L3_LOST &&
@@ -342,6 +345,7 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
     if (!s_open || !s_active || !meta || !payload ||
         meta->batch_id != s_batch_id || meta->run_id != s_capture_count + 1u ||
         !scene_dimensions_valid(meta->scene_id, meta->condition_environment,
+                                meta->condition_link,
                                 meta->condition_obstruction,
                                 meta->condition_propagation) ||        meta->observed_level > RADAR_CAPTURE_OBS_LEVEL_L3_LOST ||
         meta->observed_obstruction > RADAR_CAPTURE_OBS_CLASS_UNKNOWN ||
@@ -374,6 +378,7 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
         .capture_id = meta->capture_id,
         .scene_id = meta->scene_id,
         .condition_environment = meta->condition_environment,
+        .condition_link = meta->condition_link,
         .condition_obstruction = meta->condition_obstruction,
         .condition_propagation = meta->condition_propagation,
         .observed_level = meta->observed_level,
@@ -515,12 +520,10 @@ uint32_t radar_capture_batch_count(void) { return s_capture_count; }
 
 uint16_t radar_capture_scene_menu_id(unsigned index) {
     static const uint16_t ids[RADAR_CAPTURE_BATCH_MENU_SCENE_MAX] = {
-        RADAR_CAPTURE_SCENE_O_LOS, RADAR_CAPTURE_SCENE_O_HUMAN_STATIC,
-        RADAR_CAPTURE_SCENE_O_HUMAN_DYNAMIC, RADAR_CAPTURE_SCENE_O_FOLIAGE,
-        RADAR_CAPTURE_SCENE_O_WALL, RADAR_CAPTURE_SCENE_O_METAL,
-        RADAR_CAPTURE_SCENE_O_MULTIPATH, RADAR_CAPTURE_SCENE_I_LOS,
-        RADAR_CAPTURE_SCENE_I_HUMAN_STATIC, RADAR_CAPTURE_SCENE_I_HUMAN_DYNAMIC,
-        RADAR_CAPTURE_SCENE_I_WALL, RADAR_CAPTURE_SCENE_I_METAL,
+        RADAR_CAPTURE_SCENE_I_LOS, RADAR_CAPTURE_SCENE_I_STATIC,
+        RADAR_CAPTURE_SCENE_I_DYNAMIC, RADAR_CAPTURE_SCENE_I_MULTIPATH,
+        RADAR_CAPTURE_SCENE_O_LOS, RADAR_CAPTURE_SCENE_O_STATIC,
+        RADAR_CAPTURE_SCENE_O_DYNAMIC, RADAR_CAPTURE_SCENE_O_MULTIPATH,
     };
     return index < RADAR_CAPTURE_BATCH_MENU_SCENE_MAX ? ids[index]
                                                        : ids[0];
@@ -530,21 +533,31 @@ unsigned radar_capture_scene_menu_count(void) {
     return RADAR_CAPTURE_BATCH_MENU_SCENE_MAX;
 }
 
+const char *radar_capture_environment_label(uint8_t environment) {
+    return environment == RADAR_CAPTURE_ENV_INDOOR ? "INDOOR" :
+           environment == RADAR_CAPTURE_ENV_OUTDOOR ? "OUTDOOR" : "UNKNOWN";
+}
+
+const char *radar_capture_link_label(uint8_t link) {
+    switch (link) {
+    case RADAR_CAPTURE_LINK_LOS: return "LOS";
+    case RADAR_CAPTURE_LINK_STATIC_ATTENUATION: return "STATIC_ATTEN";
+    case RADAR_CAPTURE_LINK_DYNAMIC_ATTENUATION: return "DYNAMIC_ATTEN";
+    case RADAR_CAPTURE_LINK_MULTIPATH: return "MULTIPATH";
+    default: return "UNKNOWN";
+    }
+}
+
 const char *radar_capture_scene_label(uint16_t scene_id) {
     switch (scene_id) {
-    case RADAR_CAPTURE_SCENE_O_LOS: return "O-LOS";
-    case RADAR_CAPTURE_SCENE_O_HUMAN_STATIC: return "O-HUMAN";
-    case RADAR_CAPTURE_SCENE_O_HUMAN_DYNAMIC: return "O-DYNAMIC";
-    case RADAR_CAPTURE_SCENE_O_FOLIAGE: return "O-FOLIAGE";
-    case RADAR_CAPTURE_SCENE_O_WALL: return "O-WALL";
-    case RADAR_CAPTURE_SCENE_O_METAL: return "O-METAL";
-    case RADAR_CAPTURE_SCENE_O_MULTIPATH: return "O-MULTIPATH";
     case RADAR_CAPTURE_SCENE_I_LOS: return "I-LOS";
-    case RADAR_CAPTURE_SCENE_I_HUMAN_STATIC: return "I-HUMAN";
-    case RADAR_CAPTURE_SCENE_I_HUMAN_DYNAMIC: return "I-DYNAMIC";
-    case RADAR_CAPTURE_SCENE_I_WALL: return "I-WALL";
-    case RADAR_CAPTURE_SCENE_I_METAL: return "I-METAL";
+    case RADAR_CAPTURE_SCENE_I_STATIC: return "I-STATIC";
+    case RADAR_CAPTURE_SCENE_I_DYNAMIC: return "I-DYNAMIC";
     case RADAR_CAPTURE_SCENE_I_MULTIPATH: return "I-MULTIPATH";
+    case RADAR_CAPTURE_SCENE_O_LOS: return "O-LOS";
+    case RADAR_CAPTURE_SCENE_O_STATIC: return "O-STATIC";
+    case RADAR_CAPTURE_SCENE_O_DYNAMIC: return "O-DYNAMIC";
+    case RADAR_CAPTURE_SCENE_O_MULTIPATH: return "O-MULTIPATH";
     default: return "CUSTOM";
     }
 }
@@ -554,11 +567,17 @@ radar_capture_environment_id_t radar_capture_scene_environment(uint16_t scene_id
 }
 
 radar_capture_obstruction_id_t radar_capture_scene_obstruction(uint16_t scene_id) {
-    return (radar_capture_obstruction_id_t)((scene_id >> 4) & 0x0fu);
+    (void)scene_id;
+    return RADAR_CAPTURE_OBSTRUCTION_NONE;
 }
 
 radar_capture_propagation_id_t radar_capture_scene_propagation(uint16_t scene_id) {
-    return (radar_capture_propagation_id_t)(scene_id & 0x0fu);
+    (void)scene_id;
+    return RADAR_CAPTURE_PROPAGATION_LOS;
+}
+
+radar_capture_link_condition_id_t radar_capture_scene_link(uint16_t scene_id) {
+    return (radar_capture_link_condition_id_t)((scene_id >> 4) & 0x0fu);
 }
 
 size_t radar_capture_batch_used_bytes(void) { return s_next_offset; }

@@ -13,6 +13,7 @@ idf_component_register(
          "radar_csi.c"
          "radar_diag_persist.c"
          "radar_capture.c"
+         "radar_capture_condition.c"
          "radar_capture_codec.c"
          "radar_capture_batch.c"
          "radar_ftm.c"

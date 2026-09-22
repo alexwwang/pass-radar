@@ -1,5 +1,7 @@
 # pass-radar v3 Minimal Condition Matrix and Capture Condition Editor Design
 
+Chinese version: `pass-radar-v3-minimal-condition-matrix-and-capture-editor.zh_CN.md`
+
 Date: 2026-09-22  
 Status: **Design pending confirmation; not implemented**  
 Scope: Developer/field-calibration Capture only; ordinary user operation is unaffected.

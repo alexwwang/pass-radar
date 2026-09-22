@@ -55,6 +55,8 @@ static lv_obj_t *s_calib_bar;
 // 诊断页面对象
 static lv_obj_t *s_debug_label;
 static lv_obj_t *s_capture_menu_label;
+static lv_obj_t *s_capture_count_label;
+static lv_obj_t *s_capture_status_label;
 static lv_obj_t *s_capture_label;
 
 // ---------- 坐标转换 ----------
@@ -215,9 +217,16 @@ static void build_calib_page(void) {
 
 static void build_capture_menu_page(void) {
     s_scr = ui_pixel_screen_create("CAPTURE");
-    s_capture_menu_label = add_info_label(s_scr, 58, &lv_font_montserrat_14);
+    s_capture_menu_label = add_info_label(s_scr, 52, &lv_font_montserrat_14);
     lv_obj_set_width(s_capture_menu_label, 230);
+    lv_obj_set_height(s_capture_menu_label, 190);
     lv_label_set_text(s_capture_menu_label, "CAPTURE MENU");
+    s_capture_count_label = add_info_label(s_scr, 246, &lv_font_montserrat_14);
+    s_capture_status_label = add_info_label(s_scr, 268, &lv_font_montserrat_14);
+    lv_obj_set_width(s_capture_count_label, 230);
+    lv_obj_set_width(s_capture_status_label, 230);
+    lv_label_set_text(s_capture_count_label, "COUNT --  SPACE --");
+    lv_label_set_text(s_capture_status_label, "STATUS READY");
     lv_screen_load(s_scr);
 }
 
@@ -260,6 +269,8 @@ static void page_teardown(void) {
         s_calib_bar = NULL;
         s_debug_label = NULL;
         s_capture_menu_label = NULL;
+        s_capture_count_label = NULL;
+        s_capture_status_label = NULL;
         s_capture_label = NULL;
     }
 }
@@ -465,15 +476,17 @@ void radar_ui_show_capture_menu(void) {
     build_capture_menu_page();
 }
 
-void radar_ui_update_capture_menu(const char *scene_name, const char *context_name,
+void radar_ui_update_capture_menu(const char *environment_name,
+                                  const char *link_name,
+                                  const char *context_name,
                                   float target_distance_m, unsigned batch_count,
                                   const char *batch_status,
                                   unsigned selected_item, bool confirm_erase,
                                   const char *action_status) {
     if (s_page != RADAR_PAGE_CAPTURE_MENU || !s_capture_menu_label) return;
     static const char *const items[] = {
-        "SCENE", "DIST", "SPACE", "START CAPTURE", "EXPORT BATCH",
-        "NEW BATCH", "BATCH STATUS", "BACK",
+        "ENV", "LINK", "DIST", "SPACE", "START CAPTURE",
+        "EXPORT BATCH", "NEW BATCH", "BATCH STATUS", "BACK",
     };
     const unsigned item_count = sizeof(items) / sizeof(items[0]);
     if (selected_item >= item_count) selected_item = 0;
@@ -486,27 +499,36 @@ void radar_ui_update_capture_menu(const char *scene_name, const char *context_na
     } else {
         char menu_lines[192];
         (void)snprintf(menu_lines, sizeof(menu_lines),
-                       "%cSCENE       %s\n%cDIST        %.1fm\n"
+                       "%cENV         %s\n%cLINK        %s\n%cDIST        %.1fm\n"
                        "%cSPACE       %s\n%cSTART CAPTURE\n%cEXPORT BATCH\n"
                        "%cNEW BATCH\n%cBATCH STATUS\n%cBACK",
                        selected_item == 0 ? '>' : ' ',
-                       scene_name ? scene_name : "O-LOS",
+                       environment_name ? environment_name : "OUTDOOR",
                        selected_item == 1 ? '>' : ' ',
-                       (double)target_distance_m,
+                       link_name ? link_name : "LOS",
                        selected_item == 2 ? '>' : ' ',
-                       context_name ? context_name : "OUTDOOR_OPEN",
+                       (double)target_distance_m,
                        selected_item == 3 ? '>' : ' ',
+                       context_name ? context_name : "OUTDOOR_OPEN",
                        selected_item == 4 ? '>' : ' ',
                        selected_item == 5 ? '>' : ' ',
                        selected_item == 6 ? '>' : ' ',
-                       selected_item == 7 ? '>' : ' ');
-        (void)snprintf(text, sizeof(text),
-                       "CAPTURE MENU\n%s\nCOUNT %u %s\n%s",
-                       menu_lines, batch_count,
-                       batch_status ? batch_status : "BATCH N/A",
-                       action_status ? action_status : "OK SELECT  UP/DOWN MOVE");
+                       selected_item == 7 ? '>' : ' ',
+                       selected_item == 8 ? '>' : ' ');
+        (void)snprintf(text, sizeof(text), "CAPTURE MENU\n%s", menu_lines);
     }
     lv_label_set_text(s_capture_menu_label, text);
+    if (s_capture_count_label) {
+        char count_text[64];
+        (void)snprintf(count_text, sizeof(count_text), "COUNT %u  %s",
+                       batch_count, batch_status ? batch_status : "BATCH N/A");
+        lv_label_set_text(s_capture_count_label, count_text);
+    }
+    if (s_capture_status_label) {
+        lv_label_set_text(s_capture_status_label,
+                          action_status && action_status[0] != '\\0'
+                              ? action_status : "STATUS READY");
+    }
 }
 
 void radar_ui_show_capture(float target_distance_m) {
