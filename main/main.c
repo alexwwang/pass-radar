@@ -724,13 +724,14 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
             break;
         }
         if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) && ev == BSP_BTN_CLICK) {
-            unsigned count =
+            unsigned value_count =
                 (s_capture_editor_field == RADAR_CAPTURE_CONTEXT_MATERIAL ||
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_FURNITURE ||
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_HEIGHT ||
-                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_POSE) ? 3u :
-                s_capture_editor_field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE ? 3u :
+                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_POSE ||
+                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE) ? 3u :
                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_BOUNDARY ? 5u : 6u;
+            unsigned count = value_count + 1u;
             for (unsigned attempts = 0; attempts < count; ++attempts) {
                 s_capture_editor_index = btn == BSP_BTN_UP
                     ? (s_capture_editor_index + count - 1u) % count
@@ -742,13 +743,23 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                         (uint8_t)s_capture_editor_index)) break;
             }
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
-            if (radar_capture_context_option_available(
-                    (radar_capture_environment_id_t)s_capture_environment_index,
-                    (radar_capture_link_condition_id_t)s_capture_link_index,
-                    s_capture_editor_field,
-                    (uint8_t)s_capture_editor_index) &&
-                radar_capture_set_context_field(s_capture_editor_field,
-                                                (uint8_t)s_capture_editor_index)) {
+            unsigned value_count =
+                (s_capture_editor_field == RADAR_CAPTURE_CONTEXT_MATERIAL ||
+                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_FURNITURE ||
+                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_HEIGHT ||
+                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_POSE ||
+                 s_capture_editor_field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE) ? 3u :
+                s_capture_editor_field == RADAR_CAPTURE_CONTEXT_BOUNDARY ? 5u : 6u;
+            if (s_capture_editor_index == value_count) {
+                radar_ui_show_capture_menu();
+            } else if (radar_capture_context_option_available(
+                           (radar_capture_environment_id_t)s_capture_environment_index,
+                           (radar_capture_link_condition_id_t)s_capture_link_index,
+                           s_capture_editor_field,
+                           (uint8_t)s_capture_editor_index) &&
+                       radar_capture_set_context_field(
+                           s_capture_editor_field,
+                           (uint8_t)s_capture_editor_index)) {
                 radar_ui_show_capture_menu();
             }
         }
