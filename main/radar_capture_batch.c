@@ -81,7 +81,9 @@ static bool scene_dimensions_valid(uint16_t scene_id, uint8_t environment,
         obstruction > RADAR_CAPTURE_OBSTRUCTION_METAL ||
         propagation > RADAR_CAPTURE_PROPAGATION_MULTIPATH) return false;
     uint16_t encoded = (uint16_t)((environment << 8) | (link << 4));
-    return scene_id == encoded;
+    return scene_id == encoded &&
+           propagation == (uint8_t)radar_capture_condition_propagation(
+               (radar_capture_link_condition_id_t)link);
 }
 
 bool radar_capture_batch_capture_header_valid(
