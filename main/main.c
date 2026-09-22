@@ -93,8 +93,6 @@ static unsigned s_capture_environment_index;
 static unsigned s_capture_link_index;
 static unsigned s_capture_space_index;
 static unsigned s_capture_obstacle_index;
-static unsigned s_capture_material_index;
-static unsigned s_capture_boundary_index;
 static radar_capture_context_field_t s_capture_editor_field;
 static unsigned s_capture_editor_index;
 static unsigned s_capture_menu_item;
