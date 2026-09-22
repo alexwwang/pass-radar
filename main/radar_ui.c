@@ -541,7 +541,7 @@ void radar_ui_update_capture_editor(radar_capture_context_field_t field,
                                                                   field, (uint8_t)i);
         int written = snprintf(text + used, sizeof(text) - (size_t)used,
                                "%c%s%s%s\n", selected_value == i ? '>' : ' ',
-                               available ? "" : "#808080",
+                               available ? "" : "#808080 ",
                                values[i], available ? "" : "#");
         if (written < 0) break;
         used += written;
