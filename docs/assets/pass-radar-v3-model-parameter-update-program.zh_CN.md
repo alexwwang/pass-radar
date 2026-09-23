@@ -528,7 +528,8 @@ uint16_t ftm_raw_bursts;     // 有效 burst 总数
 - `radar_ftm.c` 成功路径在 `radar_fusion_ftm_filter` 之后、`apply_offset` 之前记录 `median` 与 `valid`，并以完成时的 session 计数为 `raw_session_id`；
 - capture tick 以 `raw_session_id` 去重追加；COUNTDOWN/SETTLE 期间完成的 session 同样计入（同一静态距离下仍是有效 b0 样本）；
 - `radar_capture_start` 快照当前 id，只聚合本 run 内新完成的 session；
-- 30 s run 最多约 8 个 session（2 s 周期 + 失败 2 s 退避），聚合容量 16 留有余量；probe session（8 帧）同样计入，PC 按 bursts 加权。
+- 容量上界按代码常量推导：38 s 窗口 ÷ FTM_PERIOD_US 2 s = 最坏 19 个完成 session（超时失败循环 3.5 s/次反而更慢），v4 聚合容量 16 **不满足**该上界——静态验证报告 §2.2 确认存在溢出静默丢数据风险，补救设计（FORMAT_VERSION 5）将容量提升到 32 并增加 `OVERFLOW` 标志；
+- probe session 与 regular session 混合计入是 v4 的已知缺陷，v5 起 P1 只使用 regular session，PC 端不得按 bursts 加权（v4 的 bursts 仅为求和诊断值，权重语义未定义）。
 
 ### 10.4 代码修改位置清单
 

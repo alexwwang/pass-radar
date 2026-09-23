@@ -118,7 +118,7 @@ median = d_true + b0 + ε ,  ε ~ unknown distribution (heavy tail, positive mul
 ftm_offset = b0
 ```
 
-So offset fitting is robust estimation of the center of `b0 = median − d_true`. Starting with FORMAT_VERSION 4, each run's header aggregates the raw session medians (§4.1.4, §10) and is the canonical data source for P1; FTM observations at other distances evaluate post-correction residuals and IQR gates but do not enter the `b0` center estimate itself.
+So offset fitting is robust estimation of the center of `b0 = median − d_true`. Starting with FORMAT_VERSION 4, each run's header aggregates the raw session medians (§4.1.4) and is the canonical data source for P1; FTM observations at other distances evaluate post-correction residuals and IQR gates but do not enter the `b0` center estimate itself.
 
 ### 2.3 Far-field segment and two-ray breakpoint
 
@@ -255,7 +255,7 @@ capture's ftm = P25(hist ∪ {median − offset})
 
 Inverting the offset from this quantity couples in P25 and the old offset — **logically unidentifiable**.
 
-Starting with FORMAT_VERSION 4 (implementation in §10), each run's capture header stores run-level raw session statistics: the median/IQR of the pre-offset, pre-P25 session medians, the number of completed sessions, and the total valid burst count. The P1 fit uses them directly:
+Starting with FORMAT_VERSION 4 (implemented per the run-level aggregates in §4.1.4 and the v5 remediation design), each run's capture header stores run-level raw session statistics: the median/IQR of the pre-offset, pre-P25 session medians, the number of completed sessions, and the total valid burst count. The P1 fit uses them directly:
 
 ```text
 b0_run     = ftm_raw_median_m − target_m     (one sample per run)
@@ -480,7 +480,7 @@ Firmware consumer (new, ~100 lines of C): the Debug page gains a `PARAMS` row sh
 
 ## 9. Implementation order
 
-1. **Freeze the data format**: implement FORMAT_VERSION 4 per §10 (run-level FTM raw session aggregates in the capture header), sync batch/export/host tests;
+1. **Freeze the data format**: implement FORMAT_VERSION 4 (run-level FTM raw session aggregates in the capture header), sync batch/export/host tests;
 2. **PC parsing and cleaning**: get `model_fit.py parse/report` running on real USB logs (validated against the existing test-batch data);
 3. **First fit batch**: P3/P4 (per-condition n and tx_ref) + P1 recomputation check — lowest data requirements, report first;
 4. **Outdoor far-field capture**: after the 60/80/100 m tiers, fit P5/P6;
