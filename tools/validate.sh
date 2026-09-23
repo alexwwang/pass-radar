@@ -101,6 +101,10 @@ run_static_checks() {
         tests/test_radar_capture_batch.c main/radar_capture_condition.c \
         -o "${test_dir}/test_radar_capture_batch"
     "${test_dir}/test_radar_capture_batch"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_radar_capture_session_agg.c main/radar_capture_session_agg.c \
+        -o "${test_dir}/test_radar_capture_session_agg"
+    "${test_dir}/test_radar_capture_session_agg"
     # Flash-semantics test: compiles the real batch.c against the RAM-backed
     # NOR AND-write mock to prove append/export survives padded writes.
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Itests/mock_esp \

@@ -8,6 +8,7 @@
 #include "radar_capture_codec.h"
 #include "radar_capture_budget.h"
 #include "radar_capture_batch.h"
+#include "radar_capture_session_agg.h"
 #include "radar_diag_persist.h"
 
 #include <esp_system.h>
@@ -24,7 +25,9 @@ static const char *TAG = "radar_capture";
 #define CAPTURE_RUNNING_MS 30000u
 #define CAPTURE_SAMPLE_PERIOD_MS 250u
 #define CAPTURE_MAGIC 0x52434132u /* RCA2 */
-#define CAPTURE_STORAGE_VERSION 1u
+// v2: header gains run-level FTM raw session aggregates (FORMAT_VERSION 4).
+// Old v1 blobs fail header validation and are rejected (existing path).
+#define CAPTURE_STORAGE_VERSION 2u
 #define CAPTURE_NVS_NS "radar_capture"
 #define CAPTURE_NVS_KEY_A "latest_a"
 #define CAPTURE_NVS_KEY_B "latest_b"
@@ -43,9 +46,14 @@ typedef struct __attribute__((packed)) {
     uint32_t reset_reason;
     char firmware_version[32];
     uint32_t payload_crc32;
+    // v2: run-level FTM raw session aggregates (FORMAT_VERSION 4).
+    float ftm_raw_median_m;
+    float ftm_raw_iqr_m;
+    uint16_t ftm_raw_sessions;
+    uint16_t ftm_raw_bursts;
 } capture_storage_header_t;
 
-_Static_assert(sizeof(capture_storage_header_t) == 76,
+_Static_assert(sizeof(capture_storage_header_t) == 88,
                "capture storage header layout changed");
 #define CAPTURE_BUFFER_MAX (sizeof(capture_storage_header_t) + RADAR_CAPTURE_CODEC_MAX_PAYLOAD)
 #define CAPTURE_MEMORY_SAFETY_MARGIN RADAR_CAPTURE_BUDGET_SAFETY_MARGIN
@@ -84,6 +92,8 @@ static void log_memory_budget(const char *stage, size_t required) {
 static uint8_t *s_storage;
 static radar_capture_record_t *s_records;
 static uint8_t *s_scratch;
+// Run 级 FTM 原始 session 聚合（P1 标定数据源，FORMAT_VERSION 4）。
+static radar_capture_session_agg_t s_session_agg;
 
 static bool block_fits(size_t bytes) {
     size_t largest = heap_caps_get_largest_free_block(CAPTURE_HEAP_CAPS);
@@ -308,7 +318,7 @@ static uint32_t latest_generation(void) {
 static void emit_csv(const char *meta_tag, const char *row_tag,
                      const capture_storage_header_t *header,
                      const radar_capture_record_t *records) {
-    ESP_LOGI(TAG, "%s capture_id=%lu firmware=%s boot_sequence=%lu reset_reason=%lu target_m=%.1f records=%lu crc32=0x%08lx generation=%lu compressed=%lu/%lu",
+    ESP_LOGI(TAG, "%s capture_id=%lu firmware=%s boot_sequence=%lu reset_reason=%lu target_m=%.1f records=%lu crc32=0x%08lx generation=%lu compressed=%lu/%lu ftm_raw_median_m=%.3f ftm_raw_iqr_m=%.3f ftm_raw_sessions=%lu ftm_raw_bursts=%lu",
              meta_tag, (unsigned long)header->capture_id, header->firmware_version,
              (unsigned long)header->boot_sequence,
              (unsigned long)header->reset_reason, (double)header->target_distance_m,
@@ -316,7 +326,10 @@ static void emit_csv(const char *meta_tag, const char *row_tag,
              (unsigned long)header->payload_crc32,
              (unsigned long)header->generation,
              (unsigned long)header->compressed_length,
-             (unsigned long)header->uncompressed_length);
+             (unsigned long)header->uncompressed_length,
+             (double)header->ftm_raw_median_m, (double)header->ftm_raw_iqr_m,
+             (unsigned long)header->ftm_raw_sessions,
+             (unsigned long)header->ftm_raw_bursts);
     ESP_LOGI(TAG, "%s target_m,elapsed_ms,local_rssi,peer_rssi,peer_alive,ftm_valid,ftm_status,ftm_distance_m,ftm_spread_m,ftm_session_count,ble_ready,ble_peer_alive,ble_rssi,ble_age_ms,csi_frames,env_level",
              row_tag);
     for (uint32_t i = 0; i < header->record_count; ++i) {
@@ -388,6 +401,10 @@ static esp_err_t export_batch_record(
         .boot_sequence = batch_header->boot_sequence,
         .reset_reason = batch_header->reset_reason,
         .payload_crc32 = batch_header->payload_crc32,
+        .ftm_raw_median_m = batch_header->ftm_raw_median_m,
+        .ftm_raw_iqr_m = batch_header->ftm_raw_iqr_m,
+        .ftm_raw_sessions = batch_header->ftm_raw_sessions,
+        .ftm_raw_bursts = batch_header->ftm_raw_bursts,
     };
     strncpy(header.firmware_version, "slot2-batch",
             sizeof(header.firmware_version) - 1u);
@@ -421,6 +438,7 @@ void radar_capture_init(void) {
     (void)radar_capture_batch_open();
     if (s_records) memset(s_records, 0,
                            RADAR_CAPTURE_MAX_RECORDS * sizeof(*s_records));
+    radar_capture_session_agg_reset(&s_session_agg);
     s_phase = RADAR_CAPTURE_IDLE;
     s_target_m = 0.0f;
     s_start_us = 0;
@@ -463,6 +481,7 @@ esp_err_t radar_capture_start(float target_distance_m) {
     }
     memset(s_records, 0,
            RADAR_CAPTURE_MAX_RECORDS * sizeof(*s_records));
+    radar_capture_session_agg_reset(&s_session_agg);
     s_target_m = target_distance_m;
     s_start_us = esp_timer_get_time();
     s_last_sample_us = 0;
@@ -500,6 +519,16 @@ void radar_capture_tick(const radar_capture_observation_t *observation) {
         s_phase == RADAR_CAPTURE_INVALID) return;
     int64_t now = esp_timer_get_time();
     uint32_t elapsed_ms = (uint32_t)((now - s_start_us) / 1000);
+    // 原始 session 聚合在所有活动阶段进行（含 COUNTDOWN/SETTLE）：
+    // 同一静态距离下，倒计时/稳定期完成的 session 仍是有效 b0 样本。
+    // add() 按 id 去重；refresh() 重算 median/IQR/sessions/bursts。
+    if (observation) {
+        radar_capture_session_agg_add(&s_session_agg,
+                                      observation->ftm_raw_session_id,
+                                      observation->ftm_raw_session_m,
+                                      observation->ftm_raw_bursts);
+        (void)radar_capture_session_agg_refresh(&s_session_agg);
+    }
     if (elapsed_ms < CAPTURE_COUNTDOWN_MS) {
         s_phase = RADAR_CAPTURE_COUNTDOWN;
         return;
@@ -739,6 +768,10 @@ esp_err_t radar_capture_save(void) {
         .reset_reason = radar_diag_current_reset_reason(),
         .payload_crc32 = radar_capture_codec_crc32(
             s_scratch + sizeof(capture_storage_header_t), payload_length),
+        .ftm_raw_median_m = s_session_agg.ftm_raw_median_m,
+        .ftm_raw_iqr_m = s_session_agg.ftm_raw_iqr_m,
+        .ftm_raw_sessions = s_session_agg.ftm_raw_sessions,
+        .ftm_raw_bursts = s_session_agg.ftm_raw_bursts,
     };
     const esp_app_desc_t *app = esp_app_get_description();
     if (app) {
@@ -835,6 +868,10 @@ esp_err_t radar_capture_save(void) {
         .boot_sequence = verified.boot_sequence,
         .reset_reason = verified.reset_reason,
         .firmware_hash32 = 0,
+        .ftm_raw_median_m = verified.ftm_raw_median_m,
+        .ftm_raw_iqr_m = verified.ftm_raw_iqr_m,
+        .ftm_raw_sessions = verified.ftm_raw_sessions,
+        .ftm_raw_bursts = verified.ftm_raw_bursts,
     };
     esp_err_t batch_err = radar_capture_batch_append(
         &batch_meta, s_scratch + sizeof(capture_storage_header_t),

@@ -6,7 +6,10 @@
 
 #define RADAR_CAPTURE_BUDGET_MAX_RECORDS 128u
 #define RADAR_CAPTURE_BUDGET_RAW_RECORD_BYTES 20u
-#define RADAR_CAPTURE_BUDGET_STORAGE_HEADER_BYTES 76u
+// FORMAT_VERSION 4: storage header grows 76→88 (run-level FTM raw session
+// aggregates). Worst-case scratch = 88 + 4096 = 4184; with the 2048-byte
+// margin it still fits the measured 8192-byte contiguous-block floor.
+#define RADAR_CAPTURE_BUDGET_STORAGE_HEADER_BYTES 88u
 #define RADAR_CAPTURE_BUDGET_CODEC_MAX_PAYLOAD 4096u
 #define RADAR_CAPTURE_BUDGET_SAFETY_MARGIN 2048u
 // Measured floor of the largest free internal 8-bit block observed while

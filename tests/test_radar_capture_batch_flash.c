@@ -134,6 +134,65 @@ int main(void) {
           "export worst-case payload (AND-write mock)");
     CHECK(exported == 1, "one worst-case record exported");
 
+    // --- FORMAT_VERSION 4 header validation: raw session aggregates live in
+    // the former reserved area; v3 records read back as all-zero (sessions=0).
+    {
+        radar_capture_batch_capture_header_t header;
+        memset(&header, 0, sizeof(header));
+        header.magic = RADAR_CAPTURE_BATCH_CAPTURE_MAGIC;
+        header.version = RADAR_CAPTURE_BATCH_FORMAT_VERSION;
+        header.header_size = sizeof(header);
+        header.batch_id = 1u;
+        header.run_id = 1u;
+        header.scene_id = RADAR_CAPTURE_SCENE_I_LOS;
+        header.condition_environment = RADAR_CAPTURE_ENV_INDOOR;
+        header.condition_link = RADAR_CAPTURE_LINK_LOS;
+        header.condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_NONE;
+        header.condition_propagation = RADAR_CAPTURE_PROPAGATION_LOS;
+        header.condition_schema_version = RADAR_CAPTURE_CONDITION_SCHEMA_VERSION;
+        header.observed_level = RADAR_CAPTURE_OBS_LEVEL_L1_INDOOR;
+        header.observed_obstruction = RADAR_CAPTURE_OBS_CLASS_UNKNOWN;
+        header.room_geometry = RADAR_CAPTURE_ROOM_GEOMETRY_ROOM;
+        header.room_size = RADAR_CAPTURE_ROOM_SIZE_LARGE;
+        header.material = RADAR_CAPTURE_MATERIAL_MIXED;
+        header.furniture_density = RADAR_CAPTURE_FURNITURE_LOW;
+        header.boundary = RADAR_CAPTURE_BOUNDARY_OPEN;
+        header.card_height = RADAR_CAPTURE_CARD_HEIGHT_CHEST;
+        header.card_pose = RADAR_CAPTURE_CARD_POSE_UPRIGHT;
+        header.target_distance_m = 3.0f;
+        header.measured_distance_m = -1.0f;
+        header.record_count = 4u;
+        header.payload_length = 64u;
+        // v3 compatibility: reserved-zero pattern decodes as sessions=0.
+        CHECK(radar_capture_batch_capture_header_valid(&header),
+              "v4 header accepts the v3 zero-aggregate pattern");
+        header.ftm_raw_sessions = 3u;
+        header.ftm_raw_median_m = 1.42f;
+        header.ftm_raw_iqr_m = 0.08f;
+        header.ftm_raw_bursts = 36u;
+        CHECK(radar_capture_batch_capture_header_valid(&header),
+              "v4 header accepts populated raw session aggregates");
+        header.ftm_raw_median_m = 0.0f;
+        CHECK(!radar_capture_batch_capture_header_valid(&header),
+              "sessions>0 with zero median is rejected");
+        header.ftm_raw_median_m = 1.42f;
+        header.ftm_raw_bursts = 0u;
+        CHECK(!radar_capture_batch_capture_header_valid(&header),
+              "sessions>0 with zero bursts is rejected");
+        header.ftm_raw_bursts = 36u;
+        header.ftm_raw_median_m = -0.5f;
+        CHECK(!radar_capture_batch_capture_header_valid(&header),
+              "negative raw median is rejected");
+        header.ftm_raw_median_m = 1.42f;
+        header.ftm_raw_iqr_m = -0.1f;
+        CHECK(!radar_capture_batch_capture_header_valid(&header),
+              "negative raw IQR is rejected");
+        header.ftm_raw_iqr_m = 0.08f;
+        header.ftm_raw_median_m = 2000.0f;
+        CHECK(!radar_capture_batch_capture_header_valid(&header),
+              "raw median beyond range is rejected");
+    }
+
     if (failures != 0) {
         fprintf(stderr, "%d failure(s)\n", failures);
         return 1;

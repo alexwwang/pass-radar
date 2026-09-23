@@ -37,7 +37,8 @@ uint32_t radar_capture_batch_crc32(const void *data, size_t length) {
 
 bool radar_capture_batch_header_valid(const radar_capture_batch_header_t *header) {
     if (!header || header->magic != RADAR_CAPTURE_BATCH_MAGIC ||
-        header->version != RADAR_CAPTURE_BATCH_FORMAT_VERSION ||
+        header->version < RADAR_CAPTURE_BATCH_FORMAT_VERSION_MIN ||
+        header->version > RADAR_CAPTURE_BATCH_FORMAT_VERSION ||
         header->header_size != sizeof(*header) ||
         header->expected_captures > RADAR_CAPTURE_BATCH_MAX_CAPTURES ||
         header->committed_captures > header->expected_captures ||
@@ -88,9 +89,24 @@ static bool scene_dimensions_valid(uint16_t scene_id, uint8_t environment,
 
 bool radar_capture_batch_capture_header_valid(
     const radar_capture_batch_capture_header_t *header) {
-    return header && header->magic == RADAR_CAPTURE_BATCH_CAPTURE_MAGIC &&
-           header->version == RADAR_CAPTURE_BATCH_FORMAT_VERSION &&
-           header->header_size == sizeof(*header) &&
+    if (!header || header->magic != RADAR_CAPTURE_BATCH_CAPTURE_MAGIC ||
+        header->version < RADAR_CAPTURE_BATCH_FORMAT_VERSION_MIN ||
+        header->version > RADAR_CAPTURE_BATCH_FORMAT_VERSION ||
+        header->header_size != sizeof(*header)) return false;
+    if (header->version >= RADAR_CAPTURE_BATCH_FORMAT_VERSION) {
+        // v4 原始 session 聚合字段范围校验。
+        if (!isfinite(header->ftm_raw_median_m) ||
+            header->ftm_raw_median_m < 0.0f ||
+            header->ftm_raw_median_m > 1000.0f ||
+            !isfinite(header->ftm_raw_iqr_m) ||
+            header->ftm_raw_iqr_m < 0.0f ||
+            (header->ftm_raw_sessions == 0u &&
+             (header->ftm_raw_bursts != 0u || header->ftm_raw_median_m != 0.0f)) ||
+            (header->ftm_raw_sessions > 0u &&
+             (header->ftm_raw_bursts == 0u ||
+              header->ftm_raw_median_m <= 0.0f))) return false;
+    }
+    return header->batch_id != 0 && header->run_id != 0 &&
            header->batch_id != 0 && header->run_id != 0 &&
            scene_dimensions_valid(header->scene_id, header->condition_environment,
                                   header->condition_link,
@@ -439,6 +455,10 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
         .firmware_hash32 = meta->firmware_hash32,
         .boot_sequence = meta->boot_sequence,
         .reset_reason = meta->reset_reason,
+        .ftm_raw_median_m = meta->ftm_raw_median_m,
+        .ftm_raw_iqr_m = meta->ftm_raw_iqr_m,
+        .ftm_raw_sessions = meta->ftm_raw_sessions,
+        .ftm_raw_bursts = meta->ftm_raw_bursts,
     };
     header.record_crc32 = radar_capture_batch_record_crc32(
         &header, payload, payload_length);

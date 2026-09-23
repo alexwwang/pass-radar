@@ -63,6 +63,11 @@ static unsigned s_history_head;
 static bool s_success_history[FTM_SUCCESS_WINDOW];
 static unsigned s_success_count;
 static unsigned s_success_head;
+// 原始 session 记录：median 在 apply_offset/P25 之前取值，
+// 供 capture 的 run 级 P1（ftm_offset）标定聚合使用。
+static unsigned s_raw_session_id;
+static float s_raw_session_m;
+static uint8_t s_raw_bursts;
 
 // WIFI_EVENT_FTM_REPORT runs on ESP-IDF's sys_evt task. Keep the report
 // buffers out of that task's stack: 64 entries are already about 2.5 KiB on
@@ -100,6 +105,10 @@ float radar_ftm_offset_m(void) { return s_offset_m; }
 
 void radar_ftm_set_calibrated(bool calibrated) { s_calibrated = calibrated; }
 bool radar_ftm_is_calibrated(void) { return s_calibrated; }
+
+unsigned radar_ftm_raw_session_id(void) { return s_raw_session_id; }
+float radar_ftm_last_raw_session_m(void) { return s_raw_session_m; }
+uint8_t radar_ftm_last_raw_bursts(void) { return s_raw_bursts; }
 
 float radar_ftm_success_rate(void) {
     if (s_success_count == 0) return NAN;
@@ -164,6 +173,10 @@ static void ftm_event_handler(void *arg, esp_event_base_t base,
             }
             if (valid > 0) {
                 next.distance_m = radar_fusion_ftm_filter(s_raw_distances, valid, &next.spread_m);
+                // 原始 median：必须在 apply_offset 之前快照，否则 P1 标定数据被污染。
+                s_raw_session_id++;
+                s_raw_session_m = next.distance_m;
+                s_raw_bursts = (uint8_t)valid;
                 next.distance_m = radar_fusion_ftm_apply_offset(next.distance_m, s_offset_m);
                 next.valid_bursts = (uint8_t)valid;
                 next.rssi = rssi_sum / (int)valid;

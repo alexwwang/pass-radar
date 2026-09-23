@@ -32,6 +32,11 @@ typedef struct {
     uint8_t environment_level;
     uint8_t observed_level;
     uint8_t observed_obstruction;
+    // FORMAT_VERSION 4: run 级 FTM 原始 session 采样（P1 标定数据源）。
+    // id 为 0 表示无新 session；聚合模块按 id 去重。
+    unsigned ftm_raw_session_id;
+    float ftm_raw_session_m;
+    uint8_t ftm_raw_bursts;
 } radar_capture_observation_t;
 
 #define RADAR_CAPTURE_TARGET_COUNT 8

@@ -134,7 +134,7 @@ static void test_memory_budget(void) {
             RADAR_CAPTURE_BUDGET_CODEC_MAX_PAYLOAD);
     CHECK(required == RADAR_CAPTURE_BUDGET_ALLOC_BYTES,
           "budget calculation mismatch: %zu", required);
-    CHECK(required == 2560u + 76u + 4096u,
+    CHECK(required == 2560u + 88u + 4096u,
           "compact budget must stay within the design allocation");
     // The two capture allocations are independent; each one must fit the
     // measured floor on its own, which is what the firmware now enforces.

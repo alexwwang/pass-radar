@@ -15,6 +15,7 @@ idf_component_register(
          "radar_capture.c"
          "radar_capture_condition.c"
          "radar_capture_codec.c"
+         "radar_capture_session_agg.c"
          "radar_capture_batch.c"
          "radar_ftm.c"
          "radar_ble.c"

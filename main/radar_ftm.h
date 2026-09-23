@@ -62,6 +62,14 @@ bool radar_ftm_is_calibrated(void);
 // 最近常规 FTM session 的成功率；探针 session 不计入。
 float radar_ftm_success_rate(void);
 
+// 原始 session 记录（offset 修正与 P25 之前），供 capture 聚合 P1 标定数据。
+// 每次 session 成功聚合后 id 递增；capture 侧以 id 去重、按 tick 轮询追加。
+unsigned radar_ftm_raw_session_id(void);
+// 最近一次聚合的原始 session median（未做 offset/P25 处理）。
+float radar_ftm_last_raw_session_m(void);
+// 最近一次聚合的有效 burst 数。
+uint8_t radar_ftm_last_raw_bursts(void);
+
 // 兼容查询接口。
 bool radar_ftm_valid(void);
 float radar_ftm_distance_m(void);

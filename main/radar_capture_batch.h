@@ -33,7 +33,9 @@ typedef int esp_err_t;
 #define RADAR_CAPTURE_BATCH_MAGIC 0x52434231u /* RCB1 */
 #define RADAR_CAPTURE_BATCH_CAPTURE_MAGIC 0x52434331u /* RCC1 */
 #define RADAR_CAPTURE_BATCH_COMMIT_MAGIC 0x52434f4bu /* RCOK */
-#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 3u
+#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 4u
+// 读取侧兼容：v3 批次的 reserved 区全零（sessions=0），v4 接受 [3,4]。
+#define RADAR_CAPTURE_BATCH_FORMAT_VERSION_MIN 3u
 #define RADAR_CAPTURE_CONDITION_SCHEMA_VERSION 1u
 #define RADAR_CAPTURE_CARD_HEIGHT_LOW_MAX_M 1.0f
 #define RADAR_CAPTURE_CARD_HEIGHT_CHEST_MAX_M 1.8f
@@ -208,7 +210,13 @@ typedef struct __attribute__((packed)) {
     uint32_t boot_sequence;
     uint32_t reset_reason;
     uint32_t record_crc32;
-    uint8_t reserved[40];
+    // FORMAT_VERSION 4：run 级 FTM 原始 session 聚合（P1 标定数据源）。
+    // v3 记录的 reserved 全零 → sessions=0 → PC 端自动视为无原始数据。
+    float ftm_raw_median_m;   // 各 session 原始 median（pre-offset/P25）的 median
+    float ftm_raw_iqr_m;      // session median 的 IQR
+    uint16_t ftm_raw_sessions; // 完成的 session 数；0 = 无原始数据
+    uint16_t ftm_raw_bursts;  // 有效 burst 总数
+    uint8_t reserved[28];
 } radar_capture_batch_capture_header_t;
 
 _Static_assert(sizeof(radar_capture_batch_capture_header_t) == 112,
@@ -249,6 +257,11 @@ typedef struct {
     uint32_t boot_sequence;
     uint32_t reset_reason;
     uint32_t firmware_hash32;
+    // FORMAT_VERSION 4：run 级 FTM 原始 session 聚合透传。
+    float ftm_raw_median_m;
+    float ftm_raw_iqr_m;
+    uint16_t ftm_raw_sessions;
+    uint16_t ftm_raw_bursts;
 } radar_capture_batch_capture_meta_t;
 
 static inline size_t radar_capture_batch_align(size_t value) {
