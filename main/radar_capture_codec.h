@@ -5,9 +5,17 @@
 #include <stdint.h>
 
 #define RADAR_CAPTURE_CODEC_ID 2u
-#define RADAR_CAPTURE_CODEC_MAX_PAYLOAD 8192u
 #define RADAR_CAPTURE_MAX_RECORDS 128u
 #define RADAR_CAPTURE_INVALID_U16 0xffffu
+
+// Worst case per encoded record: 1 tag byte + 12 fields, each at most a
+// 3-byte varint (uint16 fields, and int16 fields after zigzag, fit in 3
+// bytes; int8/uint8 fields fit in 2). TAG_REPEAT is strictly smaller.
+// The payload ceiling is therefore the exact worst case for MAX_RECORDS,
+// not a rounded-up guess: 128 * 32 = 4096 bytes.
+#define RADAR_CAPTURE_CODEC_WORST_RECORD_BYTES 32u
+#define RADAR_CAPTURE_CODEC_MAX_PAYLOAD \
+    (RADAR_CAPTURE_MAX_RECORDS * RADAR_CAPTURE_CODEC_WORST_RECORD_BYTES)
 
 typedef struct __attribute__((packed)) {
     uint16_t elapsed_ms;

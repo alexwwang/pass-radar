@@ -67,6 +67,65 @@ static void test_max_capture_budget(void) {
            encoded, sizeof(input));
 }
 
+static void test_worst_case_encoding_fits(void) {
+    // Adversarial input that reaches the codec ceiling exactly.
+    //
+    // Per-record bound: 12 fields, of which 7 are uint16 or int16 fields
+    // (at most 3 varint bytes each, including the zigzagged int16 and the
+    // delta-encoded uint16) and 5 are int8/uint8 fields (at most 2 bytes
+    // each, since their deltas fit in 9 bits):
+    //   elapsed(u16,3) ftm_status(i16,3) ftm_dist(u16,3) ftm_spread(u16,3)
+    //   ftm_sessions(u16,3) ble_age(u16,3) csi(u16,3)
+    //   local(i8,2) peer(i8,2) flags(u8,2) ble_rssi(i8,2) env(u8,2)
+    //   = 7*3 + 5*2 = 31 payload bytes + 1 tag = 32 bytes per record,
+    // identical for the FIRST and DELTA paths.
+    //
+    // Alternating each record between all-max and all-zero makes every
+    // delta take the maximal width, so 128 records encode to exactly
+    // 128 * 32 = RADAR_CAPTURE_CODEC_MAX_PAYLOAD bytes.
+    radar_capture_record_t input[RADAR_CAPTURE_MAX_RECORDS];
+    uint8_t payload[RADAR_CAPTURE_CODEC_MAX_PAYLOAD];
+    for (unsigned i = 0; i < RADAR_CAPTURE_MAX_RECORDS; ++i) {
+        radar_capture_record_t *record = &input[i];
+        memset(record, 0, sizeof(*record));
+        if (i % 2u == 0) {
+            record->elapsed_ms = UINT16_MAX;
+            record->local_rssi = INT8_MAX;
+            record->peer_rssi = INT8_MIN;
+            record->flags = UINT8_MAX;
+            record->ftm_status = INT16_MAX;
+            record->ftm_distance_cm = UINT16_MAX;
+            record->ftm_spread_cm = UINT16_MAX;
+            record->ftm_session_count = UINT16_MAX;
+            record->ble_rssi = INT8_MAX;
+            record->ble_age_ms = UINT16_MAX;
+            record->csi_frames = UINT16_MAX;
+            record->env_level = UINT8_MAX;
+        }
+    }
+    size_t encoded = radar_capture_codec_encode(input, RADAR_CAPTURE_MAX_RECORDS,
+                                                payload, sizeof(payload));
+    CHECK(encoded == RADAR_CAPTURE_CODEC_MAX_PAYLOAD,
+          "worst-case encoding must fill the payload ceiling exactly");
+    radar_capture_record_t output[RADAR_CAPTURE_MAX_RECORDS];
+    CHECK(radar_capture_codec_decode(payload, encoded, output,
+                                     RADAR_CAPTURE_MAX_RECORDS,
+                                     RADAR_CAPTURE_MAX_RECORDS),
+          "worst-case payload should decode");
+    for (unsigned i = 0; i < RADAR_CAPTURE_MAX_RECORDS; ++i) {
+        CHECK(memcmp(&output[i], &input[i], sizeof(input[i])) == 0,
+              "worst-case record %u mismatch", i);
+    }
+    // One byte less than the ceiling must be refused rather than truncated.
+    uint8_t short_buffer[RADAR_CAPTURE_CODEC_MAX_PAYLOAD - 1u];
+    CHECK(radar_capture_codec_encode(input, RADAR_CAPTURE_MAX_RECORDS,
+                                     short_buffer, sizeof(short_buffer)) == 0,
+          "encoder must refuse payloads beyond the worst-case bound");
+    printf("  capture_codec_worst_case: PASS (%zu bytes, bound %u)\n",
+           encoded, (unsigned)(RADAR_CAPTURE_MAX_RECORDS *
+                               RADAR_CAPTURE_CODEC_WORST_RECORD_BYTES));
+}
+
 static void test_memory_budget(void) {
     size_t required = radar_capture_budget_required(
         RADAR_CAPTURE_BUDGET_MAX_RECORDS,
@@ -75,14 +134,24 @@ static void test_memory_budget(void) {
             RADAR_CAPTURE_BUDGET_CODEC_MAX_PAYLOAD);
     CHECK(required == RADAR_CAPTURE_BUDGET_ALLOC_BYTES,
           "budget calculation mismatch: %zu", required);
+    CHECK(required == 2560u + 76u + 4096u,
+          "compact budget must stay within the design allocation");
+    // The two capture allocations are independent; each one must fit the
+    // measured floor on its own, which is what the firmware now enforces.
+    CHECK(radar_capture_budget_fits(RADAR_CAPTURE_BUDGET_MEASURED_MIN_LARGEST,
+                                    RADAR_CAPTURE_BUDGET_MAX_RECORDS *
+                                        RADAR_CAPTURE_BUDGET_RAW_RECORD_BYTES),
+          "records allocation must fit measured block");
+    CHECK(radar_capture_budget_fits(
+              RADAR_CAPTURE_BUDGET_MEASURED_MIN_LARGEST,
+              RADAR_CAPTURE_BUDGET_STORAGE_HEADER_BYTES +
+                  RADAR_CAPTURE_BUDGET_CODEC_MAX_PAYLOAD),
+          "scratch allocation must fit measured block");
     size_t original_required = RADAR_CAPTURE_BUDGET_MAX_RECORDS * 32u +
                                RADAR_CAPTURE_BUDGET_STORAGE_HEADER_BYTES +
                                RADAR_CAPTURE_BUDGET_CODEC_MAX_PAYLOAD;
     CHECK(RADAR_CAPTURE_BUDGET_MEASURED_MIN_LARGEST < original_required + 2048u,
           "original raw-record budget must not fit measured block");
-    CHECK(radar_capture_budget_fits(RADAR_CAPTURE_BUDGET_MEASURED_MIN_LARGEST,
-                                    required),
-          "compact budget must fit measured block");
     CHECK(radar_capture_budget_required(SIZE_MAX, 2, 0) == SIZE_MAX,
           "budget multiplication overflow must saturate");
     CHECK(!radar_capture_budget_fits(SIZE_MAX, SIZE_MAX),
@@ -130,6 +199,7 @@ static void test_repeat_and_corruption(void) {
 int main(void) {
     test_round_trip();
     test_max_capture_budget();
+    test_worst_case_encoding_fits();
     test_memory_budget();
     test_malformed_ranges();
     test_repeat_and_corruption();

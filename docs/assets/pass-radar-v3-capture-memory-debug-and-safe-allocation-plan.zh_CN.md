@@ -6,6 +6,9 @@
 
 状态：方案已确认，正在实施；本文件记录调试证据、决策依据和验收边界。
 
+> 2026-09-23 更新：首次真机 `start capture` 以 `ESP_ERR_NO_MEM` 失败。
+> 第 8 节记录了捕获到的证据，以及恢复符合 5.2 节要求的修订分配方案。
+
 ## 1. 问题背景
 
 Debug Capture 原设计在运行期间保留全部原始记录，保存时再申请编码/NVS scratch。原始预算如下：
@@ -215,3 +218,62 @@ keys: latest_a / latest_b
 - 不把近距离 `No FTM Measurements` 直接判定为固件回归；
 - 不将高频流式 NVS 写入作为临时补丁；
 - 不刷未包含最新内存预算实现的 Capture 固件。
+
+## 8. 2026-09-23 更新：首次 start capture 以 ESP_ERR_NO_MEM 失败
+
+### 8.1 捕获的证据
+
+正式固件在 BLE、ESP-NOW、FTM、LVGL 运行数分钟后，`start capture` 在采样开始前被拒绝。USB 监控日志（`/tmp/pass-radar-usb-monitor.log`）显示：
+
+```text
+MEM_STATS stage=IDLE free=30660 largest=8192 min=11912
+CAPTURE_MEM stage=storage-before free=30424 largest=8192 min=11496 required=10828 margin=1536
+E radar_capture: Capture storage rejected: largest=8192 required=10828 margin=1536
+E radar_capture: CAPTURE_START FAIL RAM
+```
+
+解读：
+
+- 约束从来不是总空闲堆（30424 bytes）；
+- 最大连续内部 8-bit 块已碎片化到 8192 bytes，远低于第 3 节早前观测的 14336 bytes；
+- `ensure_storage()` 把记录（2560 bytes）和 scratch（76 + 8192 = 8268 bytes）作为一个 10828 字节的整块申请，在 8192 字节连续块内永远放不下，与总空闲堆无关；
+- 固定的 8192 字节 codec payload 上限同时违反了 5.2 节「编码容量必须推导而非固定」的要求。
+
+### 8.2 codec 上限分析
+
+每条编码记录是 1 字节 tag 加 12 个 varint 字段。`uint16` 字段和 zigzag 后的 `int16` 字段最多 3 字节；`int8`/`uint8` 字段（含 delta）最多 2 字节：
+
+```text
+elapsed(u16,3) ftm_status(i16,3) ftm_dist(u16,3) ftm_spread(u16,3)
+ftm_sessions(u16,3) ble_age(u16,3) csi(u16,3)
+local(i8,2) peer(i8,2) flags(u8,2) ble_rssi(i8,2) env(u8,2)
+= 7*3 + 5*2 = 31 字节 + 1 tag = 32 字节/条
+```
+
+FIRST 与 DELTA 路径的最坏情况相同，因此 128 条记录的精确 payload 上限是 `128 * 32 = 4096` 字节，而不是 8192。现在有一个 host 测试用对抗性输入恰好填满该上限（4096 字节），并验证少 1 字节时被拒绝。
+
+### 8.3 修订后的分配设计
+
+```text
+记录缓冲：  128 * 20 = 2560 bytes   （分配 1）
+scratch：   76 + 4096 = 4172 bytes  （分配 2）
+每次分配必须满足：
+  largest_free_block >= 分配量 + 2048（余量）
+最坏单块需求：4172 + 2048 = 6220 bytes < 8192 实测下限
+总需求：6732 bytes（此前：10828 bytes）
+```
+
+关键修改：
+
+- `RADAR_CAPTURE_CODEC_MAX_PAYLOAD`：8192 → 4096（精确最坏值）；
+- `RADAR_CAPTURE_BATCH_MAX_PAYLOAD`：8192 → 4096（与 codec 上限保持相等；单次 capture 的 flash 占用从 16384 缩小到 12288 字节，78～160 次采集的批次容量实际变大了）；
+- `RADAR_CAPTURE_BUDGET_SAFETY_MARGIN`：1536 → 2048（对齐 5.2 节）；
+- `ensure_storage()` 改为两次独立分配，每块单独检查 `largest`，不再合并成单块；
+- 部分失败清理：若记录块已存在而 scratch 分配失败，两块都不泄漏，且按块报告失败。
+
+### 8.4 验证
+
+- `capture_codec_worst_case: PASS (4096 bytes, bound 4096)` —— 对抗性输入恰好填满上限；更小的缓冲被拒绝；
+- `capture_memory_budget: PASS` —— 两块都满足实测 8192 字节下限加 2048 字节余量；
+- 全部既有 host 测试与仓库检查保持 PASS；
+- 批次容量测试已按 12288 字节最坏 span 更新，78 次和 160 次采集均继续通过。

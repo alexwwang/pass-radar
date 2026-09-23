@@ -1,4 +1,6 @@
 #include "../main/radar_capture_batch.h"
+#include "../main/radar_capture_budget.h"
+#include "../main/radar_capture_codec.h"
 #include "../main/radar_capture_condition.h"
 
 #include <stdio.h>
@@ -19,7 +21,11 @@ int main(void) {
           "batch header size");
     CHECK(radar_capture_batch_data_offset() == 0x1000u,
           "first capture starts on an erase-sector boundary");
-    CHECK(radar_capture_batch_capacity_fits(78, 8192),
+    CHECK(RADAR_CAPTURE_BATCH_MAX_PAYLOAD == RADAR_CAPTURE_CODEC_MAX_PAYLOAD,
+          "batch payload ceiling must equal the codec ceiling");
+    CHECK(RADAR_CAPTURE_BATCH_MAX_PAYLOAD == 4096u,
+          "codec worst case is 128 records x 32 bytes");
+    CHECK(radar_capture_batch_capacity_fits(78, RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
           "78 worst-case captures fit with aligned batch header");
     CHECK(sizeof(radar_capture_batch_capture_header_t) == 112,
           "capture header size");
@@ -34,15 +40,17 @@ int main(void) {
           "observed payload commit offset follows padded header and payload");
     CHECK(radar_capture_batch_capture_span(1466) == 12288,
           "observed payload span includes header/payload/commit sectors");
-    CHECK(radar_capture_batch_commit_offset(0, 8192) == 12288,
+    CHECK(radar_capture_batch_commit_offset(0, RADAR_CAPTURE_BATCH_MAX_PAYLOAD) ==
+              8192,
           "worst payload commit offset follows padded header and payload");
-    CHECK(radar_capture_batch_capture_span(8192) == 16384,
+    CHECK(radar_capture_batch_capture_span(RADAR_CAPTURE_BATCH_MAX_PAYLOAD) ==
+              12288,
           "worst payload span includes header/payload/commit sectors");
-    CHECK(radar_capture_batch_capacity_fits(78, 8192),
+    CHECK(radar_capture_batch_capacity_fits(78, RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
           "78 worst-case captures fit slot2 data area");
-    CHECK(radar_capture_batch_capacity_fits(160, 8192),
+    CHECK(radar_capture_batch_capacity_fits(160, RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
           "160 worst-case captures fit unified batch capacity");
-    CHECK(!radar_capture_batch_capacity_fits(161, 8192),
+    CHECK(!radar_capture_batch_capacity_fits(161, RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
           "161 captures exceed the configured batch limit");
     CHECK(RADAR_CAPTURE_SCENE_I_LOS == (1u << 8),
           "indoor LOS scene encoding is stable");
@@ -126,6 +134,17 @@ int main(void) {
           "multipath propagation mapping");
     CHECK(radar_capture_batch_capacity_fits(78, 1466),
           "78 observed-size captures fit slot2 data area");
+    CHECK(radar_capture_budget_fits(RADAR_CAPTURE_BUDGET_MEASURED_MIN_LARGEST,
+                                    RADAR_CAPTURE_BUDGET_RAW_RECORD_BYTES *
+                                        RADAR_CAPTURE_BUDGET_MAX_RECORDS),
+          "records block fits the measured 8192-byte floor");
+    CHECK(radar_capture_budget_fits(
+              RADAR_CAPTURE_BUDGET_MEASURED_MIN_LARGEST,
+              RADAR_CAPTURE_BUDGET_STORAGE_HEADER_BYTES +
+                  RADAR_CAPTURE_BUDGET_CODEC_MAX_PAYLOAD),
+          "scratch block fits the measured 8192-byte floor");
+    CHECK(RADAR_CAPTURE_CODEC_MAX_PAYLOAD == RADAR_CAPTURE_BATCH_MAX_PAYLOAD,
+          "codec and batch payload ceilings agree");
 
     if (failures != 0) return 1;
     puts("capture_batch_layout: PASS");

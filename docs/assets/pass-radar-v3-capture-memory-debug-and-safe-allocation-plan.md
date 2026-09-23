@@ -6,6 +6,10 @@ Date: 2026-09-21
 
 Status: The design is approved and implementation is in progress. This document records the evidence, decisions, and acceptance boundaries.
 
+> Update 2026-09-23: the first on-device `start capture` attempt failed with
+> `ESP_ERR_NO_MEM`. Section 8 records the captured evidence and the revised
+> allocation design that restores compliance with Section 5.2.
+
 ## 1. Background
 
 The original Debug Capture design retained all raw observations in RAM and allocated an encoding/NVS scratch buffer when saving. Its worst-case budget was:
@@ -215,3 +219,80 @@ Before the safe-allocation implementation and boundary tests are complete:
 - do not classify near-field `No FTM Measurements` as a firmware regression by itself;
 - do not add high-frequency streaming NVS as a temporary patch;
 - do not flash a Capture image that lacks the new memory-budget implementation.
+
+## 8. Update 2026-09-23: First `start capture` Failed with ESP_ERR_NO_MEM
+
+### 8.1 Captured evidence
+
+With the production image running BLE, ESP-NOW, FTM, and LVGL for minutes,
+`start capture` was rejected before sampling began. The USB monitor log
+(`/tmp/pass-radar-usb-monitor.log`) shows:
+
+```text
+MEM_STATS stage=IDLE free=30660 largest=8192 min=11912
+CAPTURE_MEM stage=storage-before free=30424 largest=8192 min=11496 required=10828 margin=1536
+E radar_capture: Capture storage rejected: largest=8192 required=10828 margin=1536
+E radar_capture: CAPTURE_START FAIL RAM
+```
+
+Interpretation:
+
+- total free heap (30424 bytes) was never the constraint;
+- the largest contiguous internal 8-bit block had fragmented down to 8192
+  bytes, far below the earlier 14336-byte observation in Section 3;
+- `ensure_storage()` allocated records (2560 bytes) and scratch
+  (76 + 8192 = 8268 bytes) as one 10828-byte block, which can never fit a
+  8192-byte contiguous block regardless of total free heap;
+- the fixed 8192-byte codec payload ceiling also violated Section 5.2,
+  which requires encoding capacity to be derived, not fixed.
+
+### 8.2 Codec ceiling analysis
+
+Every encoded record is 1 tag byte plus 12 varint fields. A `uint16` field,
+and a `int16` field after zigzag, needs at most 3 bytes; an `int8`/`uint8`
+field (including its delta) needs at most 2 bytes:
+
+```text
+elapsed(u16,3) ftm_status(i16,3) ftm_dist(u16,3) ftm_spread(u16,3)
+ftm_sessions(u16,3) ble_age(u16,3) csi(u16,3)
+local(i8,2) peer(i8,2) flags(u8,2) ble_rssi(i8,2) env(u8,2)
+= 7*3 + 5*2 = 31 bytes + 1 tag = 32 bytes per record
+```
+
+The worst case is identical for the FIRST and DELTA paths, so the exact
+payload ceiling for 128 records is `128 * 32 = 4096` bytes, not 8192. A
+host test now encodes an adversarial record stream that fills the ceiling
+exactly (4096 bytes) and verifies that one byte less is refused.
+
+### 8.3 Revised allocation design
+
+```text
+Records buffer:  128 * 20 = 2560 bytes   (allocation 1)
+Scratch buffer:  76 + 4096 = 4172 bytes  (allocation 2)
+Each allocation must satisfy:
+  largest_free_block >= allocation + 2048 (margin)
+Worst single-block requirement: 4172 + 2048 = 6220 bytes < 8192 measured floor
+Total requirement: 6732 bytes (previous: 10828 bytes)
+```
+
+Key changes:
+
+- `RADAR_CAPTURE_CODEC_MAX_PAYLOAD`: 8192 → 4096 (exact worst case);
+- `RADAR_CAPTURE_BATCH_MAX_PAYLOAD`: 8192 → 4096 (kept equal to the codec
+  ceiling; flash span per capture shrinks from 16384 to 12288 bytes, so the
+  78–160-capture batch capacity actually improves);
+- `RADAR_CAPTURE_BUDGET_SAFETY_MARGIN`: 1536 → 2048 (matches Section 5.2);
+- `ensure_storage()` performs two independent allocations with a separate
+  `largest` check for each, instead of one combined block;
+- partial failure cleanup: if the records block exists but scratch cannot
+  be allocated, neither is leaked and the failure is reported per block.
+
+### 8.4 Verification
+
+- `capture_codec_worst_case: PASS (4096 bytes, bound 4096)` — adversarial
+  input fills the ceiling exactly; a smaller buffer is refused;
+- `capture_memory_budget: PASS` — both blocks fit the measured 8192-byte
+  floor plus the 2048-byte margin;
+- all existing host tests and repository checks remain PASS;
+- the batch capacity tests were updated for the 12288-byte worst-case span
+  and continue to pass for 78 and 160 captures.

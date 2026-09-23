@@ -52,7 +52,10 @@ _Static_assert(sizeof(capture_storage_header_t) == 76,
 #define CAPTURE_HEAP_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
 #define CAPTURE_RECORD_BYTES \
     (RADAR_CAPTURE_MAX_RECORDS * sizeof(radar_capture_record_t))
-#define CAPTURE_ALLOC_BYTES (CAPTURE_RECORD_BYTES + CAPTURE_BUFFER_MAX)
+#define CAPTURE_RECORD_ALLOC_BYTES CAPTURE_RECORD_BYTES
+#define CAPTURE_SCRATCH_ALLOC_BYTES CAPTURE_BUFFER_MAX
+#define CAPTURE_ALLOC_BYTES \
+    (CAPTURE_RECORD_ALLOC_BYTES + CAPTURE_SCRATCH_ALLOC_BYTES)
 
 _Static_assert(sizeof(radar_capture_record_t) ==
                    RADAR_CAPTURE_BUDGET_RAW_RECORD_BYTES,
@@ -73,25 +76,57 @@ static void log_memory_budget(const char *stage, size_t required) {
 // Capture storage is allocated on demand, after radio/BLE initialization.
 // Keeping these buffers out of BSS preserves the startup heap required by
 // NimBLE; capture/export paths run in the LVGL task and are not concurrent.
+// Records and scratch are separate allocations: after long BLE/LVGL runtime
+// the largest contiguous internal block shrinks below the combined size,
+// so a single allocation would permanently fail (USB monitor 2026-09-23:
+// free=30424 largest=8192). Each block must still fit the measured floor
+// RADAR_CAPTURE_BUDGET_MEASURED_MIN_LARGEST on its own.
 static uint8_t *s_storage;
 static radar_capture_record_t *s_records;
 static uint8_t *s_scratch;
 
+static bool block_fits(size_t bytes) {
+    size_t largest = heap_caps_get_largest_free_block(CAPTURE_HEAP_CAPS);
+    return largest >= bytes + CAPTURE_MEMORY_SAFETY_MARGIN;
+}
+
 static bool ensure_storage(void) {
-    if (!s_storage) {
+    if (!s_storage || !s_records || !s_scratch) {
         log_memory_budget("storage-before", CAPTURE_ALLOC_BYTES);
-        size_t largest = heap_caps_get_largest_free_block(CAPTURE_HEAP_CAPS);
-        if (largest < CAPTURE_ALLOC_BYTES + CAPTURE_MEMORY_SAFETY_MARGIN) {
-            ESP_LOGE(TAG,
-                     "Capture storage rejected: largest=%u required=%u margin=%u",
-                     (unsigned)largest, (unsigned)CAPTURE_ALLOC_BYTES,
-                     (unsigned)CAPTURE_MEMORY_SAFETY_MARGIN);
-            return false;
-        }
-        s_storage = calloc(1, CAPTURE_ALLOC_BYTES);
-        if (s_storage) {
+        if (!s_storage || !s_records) {
+            if (!block_fits(CAPTURE_RECORD_ALLOC_BYTES)) {
+                ESP_LOGE(TAG,
+                         "Capture records rejected: largest=%u required=%u margin=%u",
+                         (unsigned)heap_caps_get_largest_free_block(
+                             CAPTURE_HEAP_CAPS),
+                         (unsigned)CAPTURE_RECORD_ALLOC_BYTES,
+                         (unsigned)CAPTURE_MEMORY_SAFETY_MARGIN);
+                return false;
+            }
+            uint8_t *records = calloc(1, CAPTURE_RECORD_ALLOC_BYTES);
+            if (!records) {
+                log_memory_budget("storage-failed", CAPTURE_RECORD_ALLOC_BYTES);
+                return false;
+            }
+            free(s_storage);
+            s_storage = records;
             s_records = (radar_capture_record_t *)s_storage;
-            s_scratch = s_storage + CAPTURE_RECORD_BYTES;
+        }
+        if (!s_scratch) {
+            if (!block_fits(CAPTURE_SCRATCH_ALLOC_BYTES)) {
+                ESP_LOGE(TAG,
+                         "Capture scratch rejected: largest=%u required=%u margin=%u",
+                         (unsigned)heap_caps_get_largest_free_block(
+                             CAPTURE_HEAP_CAPS),
+                         (unsigned)CAPTURE_SCRATCH_ALLOC_BYTES,
+                         (unsigned)CAPTURE_MEMORY_SAFETY_MARGIN);
+                return false;
+            }
+            s_scratch = calloc(1, CAPTURE_SCRATCH_ALLOC_BYTES);
+            if (!s_scratch) {
+                log_memory_budget("storage-failed", CAPTURE_SCRATCH_ALLOC_BYTES);
+                return false;
+            }
         }
     }
     if (!s_storage || !s_records || !s_scratch) {
