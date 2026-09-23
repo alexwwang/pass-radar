@@ -58,7 +58,9 @@
 固件在 SAVE/EXPORT 时输出的 CSV（`radar_capture.c: emit_csv`）：
 
 ```text
-BATCH_CAPTURE_META capture_id=… firmware=… boot_sequence=… reset_reason=… target_m=… records=… crc32=… generation=… compressed=…/…
+BATCH_CAPTURE_META capture_id=… firmware=… boot_sequence=… reset_reason=… target_m=… records=… crc32=… generation=… compressed=…/… ftm_raw_median_m=… ftm_raw_iqr_m=… ftm_raw_sessions=… ftm_raw_bursts=…
+
+（`ftm_raw_*` 四个字段自 FORMAT_VERSION 4 起存在，见 §10；无数据时 `ftm_raw_sessions=0`。）
 BATCH_CAPTURE_CSV target_m,elapsed_ms,local_rssi,peer_rssi,peer_alive,ftm_valid,ftm_status,ftm_distance_m,ftm_spread_m,ftm_session_count,ble_ready,ble_peer_alive,ble_rssi,ble_age_ms,csi_frames,env_level
 BATCH_CAPTURE_CSV <行…>
 ```
@@ -117,7 +119,7 @@ median = d_true + b0 + ε ,  ε ~ 分布未知（厚尾，多径正偏）
 ftm_offset = b0
 ```
 
-所以偏移拟合就是估计 `b0 = median − d_true` 的鲁棒中心。**采集数据里能用的只有 1 m 标定会话**（理由见 §4.1.4），其余距离的 FTM 观测用于评估偏移修正后的残差与 IQR 门限，不参与偏移本身。
+所以偏移拟合就是估计 `b0 = median − d_true` 的鲁棒中心。FORMAT_VERSION 4 起，每个 run 的 header 聚合了原始 session median（§4.1.4、§10），是 P1 的规范数据源；其余距离的 FTM 观测用于评估偏移修正后的残差与 IQR 门限，不直接参与 `b0` 的中心估计。
 
 ### 2.3 远场分段与两射线折点
 
@@ -244,7 +246,7 @@ typedef struct __attribute__((packed)) {
 5. **FTM 字段语义**：`ftm_valid=0` 时 `ftm_distance_m` 无意义（固件保持旧值/无效值），拟合时必须剔除；
 6. **重复 run**：同条件同距离多次 run 全部保留，进入方差分析；离群 run 由拟合器按 1.5×IQR 判定后**降权**而非丢弃（保留方差信息）。
 
-### 4.1.4 FTM 偏移（P1）的正确数据源——重要
+### 4.1.4 FTM 偏移（P1）的正确数据源
 
 固件采集路径上 `ftm_distance_m` 是 `apply_offset(median, s_offset_m)` 之后、再经 5 点历史 P25 的值：
 
@@ -254,15 +256,16 @@ capture 里的 ftm = P25(hist ∪ {median − offset})
 
 用这个量反推 offset 会把 P25 与旧 offset 全部耦合进去，**逻辑上不可辨识**。
 
-正确做法（与现有 1 m 标定流程对齐）：
+自 FORMAT_VERSION 4 起（实施见 §10），每个 run 的 capture header 记录 run 级原始 session 统计：offset/P25 之前各 session median 的 median、IQR、完成的 session 数与有效 burst 总数。P1 拟合直接使用：
 
-- 1 m 标定会话（`start_calib` → `calib_done`）期间 `radar_ftm_set_offset_m(0.0f)` 已把 offset 清零，且标定期间 `s_calib_ftm_samples` 收集的是**未经 offset 修正、未经 P25** 的 session 输出（`radar_ftm_get_snapshot` 的 `last_session_m` 链路）。等等——需要精确核对：`s_calib_ftm_samples` 取的是 `calib_ftm.distance_m`，而 `distance_m` 在常规会话里是 P25 之后被覆盖的值。**因此采集工具不依赖该字段，而是要求用新的 capture run 在 `offset=0` 条件下采 1 m 数据**：
-  1. 用户在 Capture 页把 offset 清空（新参数包加载前，或调试命令 `FTM_OFF=0`）；
-  2. 1 m 条件采集 ≥3 个 run；
-  3. PC 端 `b0 = robust_center({P25⁻¹(...)})`——由于 P25 不可逆，**改为直接用 run 内 FTM 序列的 median**：30 s 内 5~6 次 session，每 session 记录的 `ftm_distance_m` 序列在 offset=0 且短时间静止时近似等于 `d_true + b0 + ε` 的中值流，取 `median(序列) − 1.0` 作为该 run 的 b0 估计；
-  4. 跨 run 取中位与 MAD，`ftm_offset = median(b0_r)`，MAD 过大（>0.5 m）则报告标定不可信。
+```text
+b0_run     = ftm_raw_median_m − target_m     （每个 run 一个样本）
+ftm_offset = median(b0_run)                  （跨 run 鲁棒中心）
+```
 
-> 实现备注：为让这一步严格可辨识，固件需在 capture 记录里**新增一个字段 `ftm_raw_session_m`**（session 结束时未做 offset/P25 的 median），这是对采集格式的一次小改动，随下一版 `FORMAT_VERSION` 发布。在此之前，PC 工具按上面的近似流程运行，并在拟合报告里标注 `offset_estimate=approximate`。
+跨 run MAD > 0.5 m 时报告标定不可信。早先设想的「offset=0 条件下 1 m 采集」近似流程废止，拟合报告不再出现 `offset_estimate=approximate`。
+
+一致性校验：`b0` 理论上是与距离无关的加性常数。若拟合发现 `b0_run` 随距离系统性漂移（>0.3 m/十倍距），说明存在距离相关处理时延，报告中标记该异常并回退为仅信任 1 m run。
 
 ### 4.2 RSSI 距离模型（P3/P4/P5/P6）
 
@@ -375,8 +378,7 @@ raw RSSI 环形缓冲（`radar_espnow_raw_history`）在采集里逐条落盘（
 
 | 需求 | 用途 | 优先级 |
 | --- | --- | --- |
-| `ftm_raw_session_m`（未修正 median） | P1 偏移的严格可辨识 | 高 |
-| `ftm_raw_valid_count` | session 内有效 burst 数 → IQR 置信权重 | 高 |
+| FTM 原始 session 统计（median/IQR/bursts） | P1 偏移的严格可辨识 | ✅ 已交付（FORMAT_VERSION 4，run 级聚合，§10） |
 | 方位真值标签（采集前 UI 录入 8 方位） | P9 与角误差评估 | 高（PC 端录入可替代） |
 | run 内 `d_rssi` 融合中间量 | excess_loss 复算免重放 | 低 |
 | 扫盘样本子集（谐波拟合输入） | P9 复算免重放 | 低（可用 SWEEP_DONE 日志替代） |
@@ -480,7 +482,7 @@ runs:
 
 ## 9. 实施顺序
 
-1. **固化数据格式**：`ftm_raw_session_m` 加入 capture 记录（FORMAT_VERSION 4），同步 codec/batch/export/host 测试；
+1. **固化数据格式**：按 §10 实施 FORMAT_VERSION 4（run 级 FTM 原始 session 聚合），同步 batch/export/host 测试；
 2. **PC 解析与清洗**：`model_fit.py parse/report` 对真实 USB 日志跑通（用已有测试批次数据验收）；
 3. **第一批拟合**：P3/P4（每条件 n 与 tx_ref）+ P1 复算校验——这两项数据需求最低，先出报告；
 4. **室外远场采集**：60/80/100 m 档补齐后拟合 P5/P6；
@@ -490,3 +492,71 @@ runs:
 8. **回归验收**：按 [测试设计与用例](pass-radar-v3-测试设计与用例.md) 的 F- 系列用例在新参数包下复测。
 
 每一步的产出物（数据集、报告、参数包）按 `docs/assets/fit-history/` 归档，参数包文件名带版本与日期。
+
+---
+
+## 10. FORMAT_VERSION 4 实施方案：FTM 原始 session 记录
+
+### 10.1 方案选择：run 级聚合，不做记录级字段
+
+P1 需要的是 offset 修正与 P25 之前的 session median（§2.2）。两个候选：
+
+| 方案 | 改动面 | 代价 |
+| --- | --- | --- |
+| A. 记录级字段（逐 tick 存 raw median + bursts） | codec +2 字段，worst record 32→35B，MAX_PAYLOAD 4096→4480 | payload 4480 对齐到 8192，flash 每 capture 12288→16384（翻倍），批次余量吃紧；内存/格式全面重验 |
+| B. run 级聚合写入 capture header | header 从 reserved[40] 划出 12B；codec/内存/flash 全部不变 | run 内逐 session 序列不可恢复（只存 median/IQR/count/bursts） |
+
+§4.1.4 的拟合消费量是 run 级 `b0_run`，方案 A 存的逐 tick 重复值对 P1 拟合没有增量信息。**选定方案 B**，同时保留 v3 批次读取兼容。
+
+### 10.2 数据格式增量
+
+batch capture header（总长 112B 不变，从 reserved 划分）：
+
+```text
+float    ftm_raw_median_m;   // run 内各 session 原始 median 的 median；无数据时 sessions=0
+float    ftm_raw_iqr_m;      // session median 的 IQR
+uint16_t ftm_raw_sessions;   // 完成session数（0=无原始数据；v3兼容读出即0）
+uint16_t ftm_raw_bursts;     // 有效 burst 总数
+```
+
+- `RADAR_CAPTURE_BATCH_FORMAT_VERSION` 3→4；读取侧接受 v3 与 v4（v3 的 reserved 全零 → sessions=0 → 自动视为无原始数据），已保存的 v3 记录不会被丢弃；
+- NVS fallback 头 `capture_storage_header_t` 同步 +12B（76→88），`CAPTURE_STORAGE_VERSION` 1→2（旧 blob 走既有 invalid_header 拒绝路径，行为与当前一致）；
+- 导出 META 行新增 `ftm_raw_median_m=… ftm_raw_iqr_m=… ftm_raw_sessions=… ftm_raw_bursts=…`；逐行 CSV 不变。
+
+### 10.3 采集时序语义
+
+- `radar_ftm.c` 成功路径在 `radar_fusion_ftm_filter` 之后、`apply_offset` 之前记录 `median` 与 `valid`，并以完成时的 session 计数为 `raw_session_id`；
+- capture tick 以 `raw_session_id` 去重追加；COUNTDOWN/SETTLE 期间完成的 session 同样计入（同一静态距离下仍是有效 b0 样本）；
+- `radar_capture_start` 快照当前 id，只聚合本 run 内新完成的 session；
+- 30 s run 最多约 8 个 session（2 s 周期 + 失败 2 s 退避），聚合容量 16 留有余量；probe session（8 帧）同样计入，PC 按 bursts 加权。
+
+### 10.4 代码修改位置清单
+
+| 文件 | 修改 |
+| --- | --- |
+| `main/radar_ftm.h` / `radar_ftm.c` | 新增 `radar_ftm_raw_session_id / radar_ftm_last_raw_session_m / radar_ftm_last_raw_bursts`；成功路径记录原始 median/bursts |
+| `main/radar_capture.h` | observation 结构 +`ftm_raw_session_id / ftm_raw_session_m / ftm_raw_bursts` |
+| `main/main.c` | Capture 页 observation 填充新字段 |
+| `main/radar_capture_session_agg.h/.c`（新增） | 纯 C 聚合模块：按 id 去重追加，输出 median/IQR/count/bursts |
+| `main/radar_capture.c` | start/init 复位聚合；tick 追加；save 时写入 NVS 头与 batch meta；export 映射与 META 行扩展；NVS 头 76→88、版本 2 |
+| `main/radar_capture_batch.h/.c` | capture header 新 4 字段、meta 结构透传、FORMAT_VERSION 4、header_valid 接受 v3\|v4 |
+| `main/radar_capture_budget.h` | STORAGE_HEADER_BYTES 76→88 |
+| `tests/test_radar_capture_session_agg.c`（新增） | 聚合单测：0/1/奇偶个数、去重、溢出、IQR 边界 |
+| `tests/test_radar_capture_codec.c` | 仅 budget 断言 76→88（codec 本身零改动） |
+| `tests/test_radar_capture_batch.c` | header 字段透传、v3/v4 兼容、CRC 兼容断言 |
+
+明确不改动：`radar_capture_codec.h/.c`（记录布局、MAX_PAYLOAD=4096、worst=32B）、flash span 12288、批次容量 160、records 缓冲 2560、UI、场景矩阵、编辑器。
+
+### 10.5 内存与容量复核（改动后）
+
+```text
+scratch = 88 + 4096 = 4184；+2048 余量 = 6232 < 8192 实测连续块下限 ✓
+records = 2560 不变 ✓
+flash 每 capture = 4096 + align(≤4096) + commit 4096 = 12288 不变 ✓
+批次空间 = 2,740,224 / 12288 ≈ 222，受 160 上限约束 ✓
+聚合模块静态内存 ≈ 120B BSS
+```
+
+### 10.6 验收
+
+host 全套 + 静态检查 + 正式编译 + sim boot；真机 META 行出现 `ftm_raw_sessions≥1` 且 `ftm_raw_median_m` 非负即确认链路打通。

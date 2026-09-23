@@ -118,7 +118,7 @@ median = d_true + b0 + ε ,  ε ~ unknown distribution (heavy tail, positive mul
 ftm_offset = b0
 ```
 
-So offset fitting is robust estimation of the center of `b0 = median − d_true`. **The only capture data usable for this is the 1 m calibration session** (rationale in §4.1.4); FTM observations at other distances evaluate post-correction residuals and IQR gates but do not enter the offset itself.
+So offset fitting is robust estimation of the center of `b0 = median − d_true`. Starting with FORMAT_VERSION 4, each run's header aggregates the raw session medians (§4.1.4, §10) and is the canonical data source for P1; FTM observations at other distances evaluate post-correction residuals and IQR gates but do not enter the `b0` center estimate itself.
 
 ### 2.3 Far-field segment and two-ray breakpoint
 
@@ -245,7 +245,7 @@ Notation: a run = one 30 s capture with condition labels `(env, link, obs, space
 5. **FTM field semantics**: when `ftm_valid=0`, `ftm_distance_m` carries no meaning (firmware keeps stale/invalid values); exclude from fitting;
 6. **Repeated runs**: same-condition same-distance repeats are all kept and enter variance analysis; outlier runs are **down-weighted** (1.5×IQR rule) rather than dropped, preserving variance information.
 
-### 4.1.4 FTM offset (P1): the correct data source — important
+### 4.1.4 FTM offset (P1): the correct data source
 
 On the capture path, `ftm_distance_m` is `apply_offset(median, s_offset_m)` followed by the 5-point history P25:
 
@@ -255,15 +255,16 @@ capture's ftm = P25(hist ∪ {median − offset})
 
 Inverting the offset from this quantity couples in P25 and the old offset — **logically unidentifiable**.
 
-Correct approach (aligned with the existing 1 m calibration flow):
+Starting with FORMAT_VERSION 4 (implementation in §10), each run's capture header stores run-level raw session statistics: the median/IQR of the pre-offset, pre-P25 session medians, the number of completed sessions, and the total valid burst count. The P1 fit uses them directly:
 
-- During the 1 m calibration session (`start_calib` → `calib_done`) the firmware sets `radar_ftm_set_offset_m(0.0f)`, zeroing the offset. However `s_calib_ftm_samples` records `calib_ftm.distance_m`, and in regular sessions that field is overwritten post-P25. **The capture tool therefore does not rely on that field; it requires 1 m capture runs under `offset=0`:**
-  1. The user clears the offset before the capture (before loading a new pack, or via the debug command `FTM_OFF=0`);
-  2. Capture ≥3 runs at the 1 m condition;
-  3. On the PC, since P25 is not invertible, **use the run's FTM series median instead**: over 30 s there are 5–6 sessions; when the offset is 0 and both cards are static, the recorded `ftm_distance_m` series approximates a median stream of `d_true + b0 + ε`; take `median(series) − 1.0` as that run's b0 estimate;
-  4. Across runs take median and MAD; `ftm_offset = median(b0_r)`; if MAD > 0.5 m report the calibration as untrustworthy.
+```text
+b0_run     = ftm_raw_median_m − target_m     (one sample per run)
+ftm_offset = median(b0_run)                  (robust center across runs)
+```
 
-> Implementation note: to make this strictly identifiable, the firmware should add **one field `ftm_raw_session_m`** (the session's uncorrected, pre-P25 median) to the capture record — a small format change shipped with the next `FORMAT_VERSION`. Until then the PC tool runs the approximate procedure above and flags `offset_estimate=approximate` in the fit report.
+If the cross-run MAD exceeds 0.5 m the calibration is reported as untrustworthy. The previously sketched "capture at 1 m under `offset=0`" approximation is retired; fit reports no longer contain `offset_estimate=approximate`.
+
+Consistency check: `b0` is theoretically a distance-independent additive constant. If the fit finds `b0_run` drifting systematically with distance (>0.3 m per decade), that indicates a distance-dependent processing latency; flag the anomaly in the report and fall back to trusting only the 1 m runs.
 
 ### 4.2 RSSI distance model (P3/P4/P5/P6)
 
@@ -372,12 +373,10 @@ Outputs:
 
 ## 5. Incremental capture needs surfaced by the derivation
 
-The following observables would help fitting but are absent from the current capture format; they are queued as **next FORMAT_VERSION requirements** (non-blocking for this phase):
+The following observables would help fitting but are absent from the current capture format; they are queued as **future FORMAT_VERSION requirements** (non-blocking):
 
 | Need | Purpose | Priority |
 | --- | --- | --- |
-| `ftm_raw_session_m` (uncorrected median) | Strict identifiability of P1 offset | High |
-| `ftm_raw_valid_count` | Bursts per session → IQR confidence weight | High |
 | Bearing ground-truth label (8-way entry before capture) | P9 and angular-error evaluation | High (PC-side entry is a substitute) |
 | In-run `d_rssi` fusion intermediate | excess_loss without replay | Low |
 | Sweep sample subset (harmonic fit input) | P9 without replay | Low (SWEEP_DONE logs suffice) |
@@ -481,7 +480,7 @@ Firmware consumer (new, ~100 lines of C): the Debug page gains a `PARAMS` row sh
 
 ## 9. Implementation order
 
-1. **Freeze the data format**: add `ftm_raw_session_m` to the capture record (FORMAT_VERSION 4), sync codec/batch/export/host tests;
+1. **Freeze the data format**: implement FORMAT_VERSION 4 per §10 (run-level FTM raw session aggregates in the capture header), sync batch/export/host tests;
 2. **PC parsing and cleaning**: get `model_fit.py parse/report` running on real USB logs (validated against the existing test-batch data);
 3. **First fit batch**: P3/P4 (per-condition n and tx_ref) + P1 recomputation check — lowest data requirements, report first;
 4. **Outdoor far-field capture**: after the 60/80/100 m tiers, fit P5/P6;
