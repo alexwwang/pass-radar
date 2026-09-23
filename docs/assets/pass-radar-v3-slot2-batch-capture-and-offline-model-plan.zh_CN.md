@@ -253,6 +253,18 @@ reset_reason
 
 每条 Capture 单独 CRC。只有写入完成并验证回读后，才写该 Capture 的 commit marker。批次完成后写 BATCH_COMMIT。重启扫描时：
 
+### 6.1 NOR 写入语义（已实施修复）
+
+所有带填充的写入，对齐填充区一律填 `0xFF`，禁止填 `0x00`。
+
+原因：ESP32 NOR flash 写入只能把位从 1 清成 0（等效按位与 `new & old`）；要把位写回 1 必须整扇区擦除。Capture 记录布局先把 112 字节 header 作为一个填充到 4 KiB 的块写入，然后从 `offset + 112` 开始写 payload——这个位置与 header 块的填充区重叠。如果填充是 0x00，header 写入就把这些 flash 字节清成了 0，随后的 payload 写入无法恢复（`payload_byte & 0x00 == 0x00`），payload CRC 在导出时校验失败，返回 `ESP_ERR_INVALID_CRC`，而 append 当时报告成功（真机观测：`batch append ... OK`，随后 `BATCH_EXPORT captures=0 used=4096`、`CAPTURE_EXPORT batch failed err=ESP_ERR_INVALID_CRC`）。
+
+填充改为 `0xFF` 后，每个填充字节对写入是中立的（`0xFF & x == x`），payload 完整落盘。该行为已由 host 测试 `test_radar_capture_batch_flash.c` 锁定：该测试把真实 batch 模块编译到带真实 NOR 按位与写语义的 RAM flash mock 上，`0xFF` 填充时通过，`0x00` 填充时失败，精确复现原始真机故障。
+
+header/payload/commit 三个区间的跨度独立计算（`radar_capture_batch_commit_offset` 与 `radar_capture_batch_capture_span`），后续写入不会覆盖前一条记录已提交的区域。
+
+重启扫描时：
+
 - 只接受有效 header、长度、CRC 和 commit marker；
 - 遇到未提交尾记录时停止扫描，不拼接半条数据；
 - 已提交记录保留；

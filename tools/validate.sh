@@ -101,6 +101,13 @@ run_static_checks() {
         tests/test_radar_capture_batch.c main/radar_capture_condition.c \
         -o "${test_dir}/test_radar_capture_batch"
     "${test_dir}/test_radar_capture_batch"
+    # Flash-semantics test: compiles the real batch.c against the RAM-backed
+    # NOR AND-write mock to prove append/export survives padded writes.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Itests/mock_esp \
+        tests/test_radar_capture_batch_flash.c main/radar_capture_batch.c \
+        main/radar_capture_condition.c \
+        -o "${test_dir}/test_radar_capture_batch_flash"
+    "${test_dir}/test_radar_capture_batch_flash"
     "${python_cmd}" tests/test_verify_firmware.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"

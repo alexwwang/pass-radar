@@ -247,6 +247,35 @@ reset_reason
 
 Each Capture has its own CRC. The Capture commit marker is written only after the header and payload have been written and read-back verified. `BATCH_COMMIT` is written only after the batch is complete. On reboot:
 
+### 6.1 NOR write semantics (implemented fix)
+
+All padded writes fill alignment padding with `0xFF`, never `0x00`.
+
+Rationale: ESP32 NOR flash can only clear bits on write (`new & old`);
+bits set back to `1` require a sector erase. The capture record layout
+writes the 112-byte header block as one padded 4 KiB block, then writes
+the payload starting at `offset + 112`, which overlaps the header block's
+padding region. With zero-filled padding, the header write cleared those
+flash bytes, and the subsequent payload write could not restore them
+(`payload_byte & 0x00 == 0x00`). The payload CRC then failed on export
+with `ESP_ERR_INVALID_CRC` while append had reported success
+(observed on device: `batch append ... OK`, then
+`BATCH_EXPORT captures=0 used=4096`, `CAPTURE_EXPORT batch failed
+err=ESP_ERR_INVALID_CRC`).
+
+With `0xFF` padding, every padding byte is write-neutral because
+`0xFF & x == x`, so the payload lands intact. This behavior is now
+locked by the host test `test_radar_capture_batch_flash.c`, which compiles
+the real batch module against a RAM-backed flash mock with true AND-write
+semantics: the test passes with `0xFF` padding and fails with `0x00`
+padding, reproducing the original on-device failure exactly.
+
+Header/payload/commit spans are computed independently
+(`radar_capture_batch_commit_offset` and `radar_capture_batch_capture_span`),
+so no later write can overlap a previous record's committed region.
+
+On reboot:
+
 - accept only valid headers, lengths, CRCs, and commit markers;
 - stop at an uncommitted tail instead of joining a partial record;
 - retain committed Captures;

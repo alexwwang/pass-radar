@@ -269,10 +269,19 @@ static esp_err_t read_bytes(size_t offset, void *data, size_t length) {
     return esp_partition_read(s_partition, offset, data, length);
 }
 
+// Padded writes fill the alignment padding with 0xFF, never 0x00: NOR flash
+// can only clear bits (1 -> 0). The header block [offset, offset+4096) and
+// the payload block [offset+sizeof(header), offset+sizeof(header)+4096)
+// overlap when sizeof(header) < 4096, so a zero-filled header padding would
+// poison the flash bytes the payload needs to write afterwards; AND-write
+// semantics would then corrupt the payload silently and its CRC check would
+// fail on export (observed on device: append OK, export INVALID_CRC).
+// Padding with 0xFF keeps every byte writable because 0xFF & x == x.
 static esp_err_t write_padded(size_t offset, const void *data, size_t length) {
     size_t padded = radar_capture_batch_align(length);
-    uint8_t *buffer = calloc(1, padded);
+    uint8_t *buffer = malloc(padded);
     if (!buffer) return ESP_ERR_NO_MEM;
+    memset(buffer, 0xff, padded);
     memcpy(buffer, data, length);
     esp_err_t err = write_aligned(offset, buffer, padded);
     free(buffer);
