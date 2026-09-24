@@ -112,13 +112,18 @@ def _entry_checks(entry: SidecarEntry, run) -> None:
     # controlled measurement method
     if entry.method.lower() not in CONTROLLED_METHODS:
         entry.errors.append("DISTANCE_SIDECAR_BAD_METHOD")
-    # time anchor: capture (export time or export-session reference)
+    # time anchor: the remediation design pins the anchor to the USB-monitor
+    # timestamp of the run's export (a number). A prose/wall-clock anchor
+    # cannot be verified against the log timeline (esp_timer ms since boot),
+    # so it is rejected instead of silently skipping the alignment check.
     anchor = entry.capture
-    anchor_num = _to_int(anchor) if not isinstance(anchor, str) or \
-        str(anchor).isdigit() else None
+    anchor_num = None
     if anchor is None or (isinstance(anchor, str) and not anchor.strip()):
         entry.errors.append("DISTANCE_SIDECAR_NO_TIME_ANCHOR")
-        anchor_num = None
+    else:
+        anchor_num = _to_int(anchor)
+        if anchor_num is None:
+            entry.errors.append("DISTANCE_SIDECAR_UNVERIFIABLE_ANCHOR")
     # time alignment against the run's export anchor / record window
     if anchor_num is not None and run.log_ts_ms is not None:
         if abs(anchor_num - run.log_ts_ms) > ALIGN_TOLERANCE_MS:

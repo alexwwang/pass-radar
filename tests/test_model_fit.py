@@ -48,9 +48,10 @@ def candidate_line(ts, run, scene, target, records):
     )
 
 
-def meta_line(ts, run, target, records, crc="0x12345678"):
+def meta_line(ts, run, target, records, crc="0x12345678",
+              tag="BATCH_CAPTURE_META"):
     return (
-        f"I ({ts}) radar_capture: BATCH_CAPTURE_META capture_id={run} "
+        f"I ({ts}) radar_capture: {tag} capture_id={run} "
         f"firmware=slot2-batch boot_sequence=2 reset_reason=9 "
         f"target_m={target} records={records} crc32={crc} generation=1 "
         f"compressed=800/1600 ftm_raw_median_m=3.100 ftm_raw_iqr_m=0.200 "
@@ -58,11 +59,11 @@ def meta_line(ts, run, target, records, crc="0x12345678"):
     )
 
 
-def csv_block(ts0, target, count, step=300):
-    rows = [f"I ({ts0}) radar_capture: BATCH_CAPTURE_CSV {CSV_HEADER}"]
+def csv_block(ts0, target, count, step=300, marker="BATCH_CAPTURE_CSV"):
+    rows = [f"I ({ts0}) radar_capture: {marker} {CSV_HEADER}"]
     for i in range(count):
         rows.append(
-            f"I ({ts0 + 1 + i}) radar_capture: BATCH_CAPTURE_CSV "
+            f"I ({ts0 + 1 + i}) radar_capture: {marker} "
             f"{target},{i * step},-64,-63,1,1,0,3.100,0.200,4,1,1,-63,250,10,0"
         )
     return rows
@@ -162,6 +163,17 @@ class VerdictTest(unittest.TestCase):
         rows, _ = report.evaluate(result)
         self.assertIn("CONDITION_SCENE_CONFLICT", rows[0]["flags"])
         self.assertEqual(rows[0]["verdict"], "REJECTED")
+
+    def test_nvs_fallback_without_labels_is_suspect(self) -> None:
+        lines = [
+            meta_line(2, 1, "3.0", 100, tag="CAPTURE_META"),
+            *csv_block(3, "3.0", 100, marker="CAPTURE_CSV"),
+        ]
+        result = parser.parse_lines(lines)
+        rows, _ = report.evaluate(result)
+        self.assertEqual(rows[0]["source"], "nvs")
+        self.assertIn("NO_CONDITION_LABELS", rows[0]["warnings"])
+        self.assertEqual(rows[0]["verdict"], "SUSPECT")
 
 
 def load_entries(yaml_text: str):
@@ -286,6 +298,23 @@ runs:
         self.assertEqual(rows[0]["truth"], "measured")
         self.assertAlmostEqual(rows[0]["truth_m"], 8.0)
         self.assertIn("DISTANCE_LABEL_MISMATCH", rows[0]["warnings"])
+        self.assertEqual(rows[0]["verdict"], "SUSPECT")
+
+    def test_string_anchor_rejected_as_unverifiable(self) -> None:
+        entries = load_entries(f"""
+batch_id: {BATCH}
+runs:
+  - run_id: 1
+    measured_distance_m: 3.04
+    method: tape
+    window_ms: [0, 38000]
+    capture: 2026-09-23T10:00:00
+""")
+        result = parse_log()
+        rows, _ = report.evaluate(result, entries)
+        self.assertIn("DISTANCE_SIDECAR_UNVERIFIABLE_ANCHOR",
+                      rows[0]["flags"])
+        self.assertEqual(rows[0]["truth"], "paced")
         self.assertEqual(rows[0]["verdict"], "SUSPECT")
 
     def test_missing_uncertainty_is_reported(self) -> None:

@@ -113,7 +113,7 @@
 | 项 | 内容 | 必要性 | 验收 |
 | --- | --- | --- | --- |
 | B1 `SWEEP_RESULT` 日志 | `sweep_done` 尾部（共识融合后）加一行 `ESP_LOGI(TAG, "SWEEP_RESULT angle=%.1f spread=%.1f dist=%.2f conf=%d", …)` | **必做**（D1 依赖） | 真机一次扫盘后 USB 日志出现该行；host 全套回归 |
-| B2 `CALIB_RESULT` 日志 | `calib_done` 加 `CALIB_RESULT ref=%.1f offset=%.2f` 一行 | 可选（审计便利） | 真机标定后日志出现该行 |
+| B2 `CALIB_RESULT` 日志 | `calib_done` 加 `CALIB_RESULT ok=%d ref=%.1f offset=%.2f` 一行；`ok=1` = 本次 ref 与 offset 均已新存，`ok=0` = 门控未过/保存失败、当前值为沿用旧值（勿当新标定） | 可选（审计便利） | 真机标定后日志出现该行 |
 
 > 包 B 均为纯日志输出，不改存储格式、不改采集统计，风险面接近零。
 
@@ -122,6 +122,18 @@
 probe/regular 分离、run baseline、聚合容量 32 + `OVERFLOW`、observed run 级众数、canonical CRC、provenance 补强（定义均已冻结于补救设计 R-01~R-11）。
 
 **实施时点**：严格 P1/P2 重拟合之前，或对外发布"已验证 80%"声明之前。
+
+### 5.4 实施审核结论（2026-09-24，包 A/B 落地后复审）
+
+包 A/B 已实施；对照定稿判据（≤20% / ≤22.5° / ≥80% / Wilson 下界 / 清洗带 / 对拍 1e-4）复核，**无目标精确度放宽**。复审发现的边界与简化及处置：
+
+| # | 发现 | 处置 |
+| --- | --- | --- |
+| F1 | sidecar 时间锚为墙钟字符串/散文时无法对齐验证（固件日志时间为 esp_timer 开机毫秒） | 已修：非数字锚标 `DISTANCE_SIDECAR_UNVERIFIABLE_ANCHOR` 拒绝，对齐检查不静默跳过 |
+| F2 | NVS 回退导出无 `BATCH_CAPTURE_CONDITION` 行，标签校验成空转 | 已修：`source=nvs` 且无标签 → `NO_CONDITION_LABELS`（SUSPECT），不入干净分场景集 |
+| F3 | `CALIB_RESULT` 无法区分「新标定成功」与「门控失败沿用旧值」 | 已修：固件行加 `ok=0/1`（§5.2 B2） |
+| F4 | sidecar 锚点对齐用 ±60 s 容差近似补救设计 §4.1 的「时间窗重叠」判定 | 接受（最小集内 window_ms 兜底）；包 C 换成真区间重叠 |
+| F5 | `DISTANCE_SIDECAR_NO_UNCERTAINTY` 计入 SUSPECT 比文档（"可报告，不用于高精度准入"）偏严；`SWEEP_RESULT` 暂不带 weak/hint 字段；双端方位记录语义（本端角含共识融合、对端角为广播原值） | 接受：偏保守方向、不放宽；字段保持 `key=value` 形式向后兼容，包 C 一并补 |
 
 ## 6. 操作员执行清单
 

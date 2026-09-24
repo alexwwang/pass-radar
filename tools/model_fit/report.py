@@ -99,6 +99,11 @@ def evaluate_run(run) -> str:
     errors = []
     warnings = []
 
+    if run.source == "nvs" and not run.condition:
+        # NVS-fallback exports carry no BATCH_CAPTURE_CONDITION line: labels
+        # cannot be verified, so the run stays out of clean per-scene sets.
+        warnings.append("NO_CONDITION_LABELS")
+
     meta = run.meta
     if not meta:
         errors.append("NO_META")
@@ -160,6 +165,7 @@ def evaluate(result: parser.ParseResult, entries=None, sidecar_meta=None):
         rows.append({
             "batch_id": run.batch_id,
             "run_id": run.run_id,
+            "source": run.source,
             "scene": run.scene,
             "target_m": run.target_m,
             "records": len(run.records),

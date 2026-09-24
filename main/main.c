@@ -552,6 +552,8 @@ static void calib_done(lv_timer_t *t) {
     (void)t;
     if (radar_ui_current_page() != RADAR_PAGE_CALIB) return;
 
+    bool ref_stored = false;
+    bool offset_stored = false;
     if (s_calib_cnt >= 10 && s_calib_max_gap_db <= RADAR_SYM_MAX_GAP_DB) {
         qsort(s_calib_samples, s_calib_cnt, sizeof(float), calib_cmp_float);
         unsigned begin = s_calib_cnt >= 5 ? 1 : 0;
@@ -568,6 +570,7 @@ static void calib_done(lv_timer_t *t) {
         if (isfinite(sym) && isfinite(variance) && variance <= 4.0f) {
             s_tx_ref_sym = radar_fusion_calib_ref(sym);
             if (radar_espnow_calib_save(s_tx_ref_sym) == ESP_OK) {
+                ref_stored = true;
                 ESP_LOGI(TAG, "标定完成: tx_ref_sym=%.1f (%u samples, var %.2f)",
                          (double)s_tx_ref_sym, s_calib_cnt, (double)variance);
             } else {
@@ -587,6 +590,7 @@ static void calib_done(lv_timer_t *t) {
         if (isfinite(offset) && radar_espnow_ftm_offset_save(offset) == ESP_OK) {
             radar_ftm_set_offset_m(offset);
             radar_ftm_set_calibrated(true);
+            offset_stored = true;
             ESP_LOGI(TAG, "FTM 标定偏移=%.2f m (%u samples)",
                      (double)offset, s_calib_ftm_cnt);
         } else if (isfinite(offset)) {
@@ -596,8 +600,10 @@ static void calib_done(lv_timer_t *t) {
         radar_ftm_set_offset_m(s_calib_old_ftm_offset);
     }
 
-    // 包 B:标定结果落 USB 日志(门控失败时也记录当前生效值),供 model_fit.py 解析。
-    ESP_LOGI(TAG, "CALIB_RESULT ref=%.1f offset=%.2f",
+    // 包 B:标定结果落 USB 日志,供 model_fit.py 解析。ok=1 表示本次 ref 与
+    // offset 均已新存;0 表示门控未过/保存失败,当前值为沿用旧值(勿当新标定)。
+    ESP_LOGI(TAG, "CALIB_RESULT ok=%d ref=%.1f offset=%.2f",
+             (ref_stored && offset_stored) ? 1 : 0,
              (double)s_tx_ref_sym, (double)radar_ftm_offset_m());
 
     radar_espnow_ftm_set_calibrating(false);

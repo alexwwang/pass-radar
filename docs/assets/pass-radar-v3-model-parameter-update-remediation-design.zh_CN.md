@@ -277,7 +277,7 @@ runs:
 - uncertainty 缺失时可报告但不能用于高精度准入；
 - sidecar 中距离与 Capture 标签差异超过预设阈值时标记 `DISTANCE_LABEL_MISMATCH`；
 - 没有 sidecar 的 run 以 `truth=paced` 参与拟合；`verify`（D6 验收）默认将其标记 `REJECTED_NO_MEASURED_DISTANCE` 并排除出验证集。
-- parser 必须做时间对齐校验：sidecar `measurement_session` 的时间窗必须与该 run 所属固件运行窗重叠；不重叠的条目标记 `DISTANCE_SIDECAR_MISALIGNED` 并拒绝，防止事后补录时错位标注。注意 `boot_sequence` 只提供运行窗的**序**，不提供墙钟时间：时间锚点取该 run 导出时的 USB 监控日志时间戳（或导出操作记录），`boot_sequence` 用于验证同批次内 run 的先后与连续性；
+- parser 必须做时间对齐校验：sidecar `measurement_session` 的时间窗必须与该 run 所属固件运行窗重叠；不重叠的条目标记 `DISTANCE_SIDECAR_MISALIGNED` 并拒绝，防止事后补录时错位标注。注意 `boot_sequence` 只提供运行窗的**序**，不提供墙钟时间：时间锚点取该 run 导出时的 USB 监控日志时间戳（或导出操作记录），`boot_sequence` 用于验证同批次内 run 的先后与连续性；时间锚必须是数字日志时间戳，墙钟字符串/散文锚无法与开机毫秒时间轴比对，解析器必须标 `DISTANCE_SIDECAR_UNVERIFIABLE_ANCHOR` 并拒绝（不得静默跳过对齐校验）；
 - sidecar 条目必须包含 `capture`（导出）时间或引用导出会话；缺失时间锚的条目标记 `DISTANCE_SIDECAR_NO_TIME_ANCHOR` 并拒绝。
 
 ### 4.2 条件字段的验算

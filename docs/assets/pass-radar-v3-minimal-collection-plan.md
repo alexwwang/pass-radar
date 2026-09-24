@@ -113,7 +113,7 @@ Per the 80% review's quantified conclusions, the marginal value of each part of 
 | Item | Content | Necessity | Acceptance |
 | --- | --- | --- | --- |
 | B1 `SWEEP_RESULT` log | one `ESP_LOGI(TAG, "SWEEP_RESULT angle=%.1f spread=%.1f dist=%.2f conf=%d", …)` at the end of `sweep_done` (after consensus fusion) | **mandatory** (D1 depends on it) | line appears in the USB log after one device sweep; host suite regresses green |
-| B2 `CALIB_RESULT` log | one `CALIB_RESULT ref=%.1f offset=%.2f` line in `calib_done` | optional (audit convenience) | line appears after one device calibration |
+| B2 `CALIB_RESULT` log | one `CALIB_RESULT ok=%d ref=%.1f offset=%.2f` line in `calib_done`; `ok=1` = both ref and offset freshly stored this run, `ok=0` = gate failed / save failed and the reported values are the carried-over old ones (not a new calibration) | optional (audit convenience) | line appears after one device calibration |
 
 > Both package-B items are pure log output: no storage-format change, no capture-statistics change; near-zero risk.
 
@@ -122,6 +122,18 @@ Per the 80% review's quantified conclusions, the marginal value of each part of 
 probe/regular separation, run baseline, aggregation capacity 32 + `OVERFLOW`, run-level observed mode, canonical CRC, strengthened provenance (all already frozen in remediation R-01–R-11).
 
 **Time to implement**: before any strict P1/P2 refit, or before publishing an externally-facing "validated 80%" claim.
+
+### 5.4 Implementation review findings (2026-09-24, after landing packages A/B)
+
+Packages A/B are implemented; re-checked against the frozen criteria (≤20% / ≤22.5° / ≥80% / Wilson lower bound / cleaning band / 1e-4 parity), **no target-accuracy relaxation**. Findings and their disposition:
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| F1 | a wall-clock/prose sidecar time anchor cannot be verified against the log timeline (firmware log time is esp_timer ms since boot) | fixed: non-numeric anchors are flagged `DISTANCE_SIDECAR_UNVERIFIABLE_ANCHOR` and rejected; the alignment check never becomes a silent no-op |
+| F2 | NVS-fallback exports carry no `BATCH_CAPTURE_CONDITION` line, so label checks degenerated to no-ops | fixed: `source=nvs` without labels → `NO_CONDITION_LABELS` (SUSPECT), kept out of clean per-scene sets |
+| F3 | `CALIB_RESULT` could not distinguish "freshly calibrated" from "gate failed, old values kept" | fixed: firmware line gains `ok=0/1` (§5.2 B2) |
+| F4 | anchor alignment uses a ±60 s tolerance approximating the remediation §4.1 "time-window overlap" rule | accepted (window_ms backstops it in the minimal set); package C replaces it with true interval overlap |
+| F5 | `DISTANCE_SIDECAR_NO_UNCERTAINTY` counts into SUSPECT, stricter than the doc ("may be reported but not high-precision eligible"); `SWEEP_RESULT` has no weak/hint fields yet; per-end bearing recording semantics (local angle includes consensus fusion, peer angle is the broadcast raw value) | accepted: conservative direction, no relaxation; fields stay `key=value` for backward compatibility, package C adds the rest |
 
 ## 6. Operator checklist
 
