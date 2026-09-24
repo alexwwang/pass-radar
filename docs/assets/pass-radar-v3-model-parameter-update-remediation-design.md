@@ -14,7 +14,7 @@ The last review found that stored data sometimes **cannot say where it came from
 
 Think of it this way: you want to re-calibrate a ruler, but some slips of paper are missing date and location, some had rows torn out without telling anyone, and one says "clear view the whole time" when it was really measured only in the last second. Calibrate from that, and the ruler comes out crooked.
 
-**This design lays down the rules for data**: every datum must answer "**which firmware, which batch, which run, which true distance (tape-measured), which conditions, which complete time window**"; anything uncertain gets `SUSPECT`/`REJECTED` — **better unused than misused**. The compliant format is **FORMAT_VERSION 5**; old data (v3/v4) stays readable and exportable but **must never mix into the formal calibration pile**.
+**This design lays down the rules for data**: every datum must answer "**which firmware, which batch, which run, which true distance (preset tier or tape-measured), which conditions, which complete time window**"; anything uncertain gets `SUSPECT`/`REJECTED` — **better unused than misused**. The compliant format is **FORMAT_VERSION 5**; old data (v3/v4) stays readable and exportable but **must never mix into the formal calibration pile**.
 
 Key terms: `run` = one 38-second capture; `batch` = all runs of one campaign; `sidecar` = the "tape-measured distance receipt" submitted with the data; `OVERFLOW` = the dangerous state where rows past capacity are silently dropped. Full detail starts at §2.
 
@@ -44,7 +44,7 @@ The corrected formal collection format is **FORMAT_VERSION 5**. Principles:
 | --- | --- | --- | --- |
 | R-01 | No raw-FTM run start boundary | P0 | baseline plus wrap-safe comparison |
 | R-02 | Aggregation may silently overflow | P0 | proven upper bound plus overflow flag; overflow runs excluded from fitting |
-| R-03 | `target_m` is not measured truth | P0 | mandatory PC measured-distance sidecar gate |
+| R-03 | `target_m` is not measured truth | P0 | tiered truth: fitting grade = paced preset-tier placement discipline (`truth=paced`); validation grade (external D6) = mandatory PC measured-distance sidecar gate |
 | R-04 | Raw FTM tuple is not coherent | P1 | one snapshot struct API plus sequence lock/critical section |
 | R-05 | Probe and regular sessions are mixed | P1 | P1 uses regular only; probes are diagnostic only |
 | R-06 | Observed fields are final-sample values | P1 | run aggregate semantics; no false whole-run label |
@@ -236,7 +236,14 @@ target_distance_label_m
 
 It is not automatically measured truth.
 
-Formal fitting requires a PC sidecar:
+Truth comes in two grades (revised 2026-09-24 to match real field conditions: outdoor collection uses pacing estimates, no tape available):
+
+- **Fitting grade (daily)**: when `measured_distance_m < 0` (the default), truth = the integer distance tier selected on the Capture page (`target_m`), provided the **placement discipline** is followed — pace into position before START, re-pace or change tier when the distance cannot be placed, never "measure wherever it lands"; such runs are tagged `truth=paced` (≈±3–8%). P7/P8 classification fitting does not depend on distance truth, and P7's error evaluation becomes mildly conservative through paced noise (the safe direction);
+- **Validation grade (before external D6 claims)**: controlled measurements (tape/laser), submitted via the `measured_distance_m` field or a PC sidecar. **Acceptance conclusions proving 80% must use validation-grade truth** — ±5%-scale paced error directly pollutes the numerator/denominator of the 20% criterion.
+
+`measured_distance_m` field semantics: ≥0 = measured override (validation grade); −1.0 = "truth equals the selected integer tier" (`truth=paced`) — the firmware's constant −1.0 is exactly this behavior and needs no change.
+
+Use the PC sidecar when submitting validation-grade measurements:
 
 ```yaml
 batch_id: 493512032
@@ -260,7 +267,7 @@ Rules:
 - method must be `tape`, `laser`, or another controlled method;
 - missing uncertainty may be reported but cannot pass high-accuracy admission;
 - a difference between measured distance and the Capture label beyond a configured tolerance becomes `DISTANCE_LABEL_MISMATCH`;
-- a run without a sidecar may be exported, but `fit` defaults to `REJECTED_NO_MEASURED_DISTANCE`;
+- a run without a sidecar participates in fitting as `truth=paced`; `verify` (D6 acceptance) defaults it to `REJECTED_NO_MEASURED_DISTANCE` and excludes it from the validation set;
 - the parser must perform a time-alignment check: the sidecar `measurement_session` time window must overlap the firmware run window that the run belongs to. Non-overlapping entries are flagged `DISTANCE_SIDECAR_MISALIGNED` and rejected, preventing mislabeled entries from retrospective transcription. Note that `boot_sequence` provides only the **order** of firmware runs, not wall-clock time: the time anchor is the USB monitor timestamp of the run's export (or the recorded export session), and `boot_sequence` verifies ordering and continuity of runs within a batch;
 - each sidecar entry must carry a `capture` (export) time or reference an export session; entries without a time anchor are flagged `DISTANCE_SIDECAR_NO_TIME_ANCHOR` and rejected.
 

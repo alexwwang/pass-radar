@@ -66,7 +66,7 @@ Per the 80% review's quantified conclusions, the marginal value of each part of 
 - **Shape**: 8 core scenarios × 2 distances × 4 repeats = **64 runs** (≥8 valid runs per class);
 - **Distances**: outdoor 3 / 8 m; indoor 3 / 6 m (use 8 m when the room allows);
 - **Order**: indoor first (32 runs), then outdoor (32 runs);
-- **Per run**: the existing 38 s state machine (3 s countdown + 5 s settle + 30 s capture) → SAVE into the batch; **tape-measure the card spacing (±5 cm) into the sidecar**;
+- **Per run**: the existing 38 s state machine (3 s countdown + 5 s settle + 30 s capture) → SAVE into the batch; **distance truth = the selected integer tier** (paced placement + placement discipline, §6), tagged `truth=paced`;
 - **Rough tier**: 2 repeats per scenario (32 runs) is acceptable for time-critical passes, but threshold conclusions are marked `PROVISIONAL` only.
 
 ### 3.3 C3: bearing-labeled runs, 8–16 (D1 bias) — in passing
@@ -92,7 +92,7 @@ Per the 80% review's quantified conclusions, the marginal value of each part of 
 | scene/distance/context editor | ✅ implemented (8 core scenes, conflict graying, OK confirm-and-return) | none | — |
 | 38 s capture state machine | ✅ implemented (COUNTDOWN/SETTLE/RUNNING/SUMMARY) | none | — |
 | SAVE / batch / export | ✅ implemented (CSV/META verified column-by-column against update program §1.1, CRC, compression, NVS fallback) | none | — |
-| tape-measured truth | ⚠️ firmware `measured_distance_m` is constant −1.0 (only the `target_m` preset label exists) | formal fitting needs truth | **package A1** sidecar (operator tape records; no firmware change, per remediation R-03) |
+| distance truth | ✅ zero-change usable: firmware `measured_distance_m` constant −1.0 means "truth = the selected integer tier" (`truth=paced`) — exactly the fitting grade of tiered truth | fitting grade relies on pacing placement discipline (§6); validation grade (tape/laser) is only needed for external D6 claims | zero change daily; upgrade to validation grade via package A1 sidecar before D6 |
 | bearing labels | ❌ the sweep angle **never reaches the USB log** (screen + `radar_espnow_report_result` peer report only; logs contain just `SWEEP_DONE elapsed_ms` and `SWEEP_SAMPLES count`) | D1 cannot obtain the angle series | **package B1** add a `SWEEP_RESULT` log line (mandatory) |
 | P7/P8 feature data | ✅ records carry raw RSSI / ftm_status / ftm_session_count / csi_frames / env_level; the classifier is replayable offline | — (bypasses the known P1-DATA-6 last-frame issue by not trusting the header's observed value) | package A3 replay + cross-check |
 | P1 recheck data | ⚠️ `ftm_raw_*` exists (FORMAT_VERSION 4) but probe/regular mixed, no run baseline (known v4 defects) | strict P1 unidentifiable | minimal set uses it only for sanity rechecks with a report caveat; strict version waits for package C |
@@ -104,7 +104,7 @@ Per the 80% review's quantified conclusions, the marginal value of each part of 
 
 | Item | Content | Effort | Acceptance |
 | --- | --- | --- | --- |
-| A1 sidecar template + operator checklist | YAML template (batch/run/measured_distance_m/bearing_deg/window_ms, format per update program §6.3) + the §6 checklist | docs-level | 3 sample rows filled unambiguously |
+| A1 sidecar template + operator checklist | YAML template (batch/run/measured_distance_m/bearing_deg/window_ms, format per update program §6.3) + the §6 checklist; daily use records bearing only, distance defaults to the integer tier, measured values only for D6 | docs-level | 3 sample rows filled unambiguously |
 | A2 minimal `model_fit.py parse/report` | parse BATCH_*/CAPTURE/CSV rows + `SWEEP_RESULT` + sidecar merge (`DISTANCE_SIDECAR_*` checks); output one quality row per run (reconciliation/CRC/labels/truth present) | ≈400–600 lines Python | runs on existing test-batch logs with a complete run table and correct SUSPECT calls |
 | A3 `features.py` replay | pure-numpy port of `radar_obstruct.c`/`radar_fusion.c` classification features + C/Python cross-check tests (same input, output delta ≤1e-4) | ≈300 lines Python + host cross-check | all cross-check tests green |
 
@@ -129,7 +129,7 @@ probe/regular separation, run baseline, aggregation capacity 32 + `OVERFLOW`, ru
 Start of each device pair:
   1. 1 m calibration x3; record ref / offset (stop and inspect on large spread)
 Per run:
-  2. tape-measure card spacing (±5 cm)
+  2. pace into position at the selected distance tier (re-pace or change tier on a miss; use a reference object, not pacing, for the 1 m calibration)
   3. capture editor: pick scene (1 of 8) and distance tier -> START
   4. wait 38 s for automatic SAVE; note the run number
   5. sidecar row: run number / measured distance / time window
@@ -152,6 +152,7 @@ Batch wrap-up:
 
 - **No far-field collection** → P5/P6 keep compile-time values; the new goal's within-30 m commitments are unaffected, and beyond 45 m remains interval/bin form;
 - **No validation set** → 80% is a design expectation, not statistical proof; external wording must say exactly that and never claim "validated";
+- **Truth is pacing-grade** (`truth=paced`, ±3–8%) → P7/P8 fitting is not materially affected (classification subtracts no distance truth; P7 error evaluation is mildly conservative); but external D6 claims must switch to validation-grade truth (tape/laser/site markers), otherwise 20%-criterion acceptance conclusions are unreliable;
 - **ftm_raw probe mixing (v4)** → P1 rechecks are sanity-only and produce no new offset (strict version waits for package C);
 - **Rough-tier conclusions** are for internal iteration only; any external commitment must rest on the 64-run formal tier;
 - If a class (e.g. I-MULTIPATH) remains highly mixed after 4 repeats, report "insufficient features" honestly and request new features (update program §4.3.1 rule 4) instead of forcing thresholds.

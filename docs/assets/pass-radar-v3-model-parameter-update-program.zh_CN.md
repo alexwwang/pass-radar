@@ -133,7 +133,7 @@ log10(d_true) = (tx_ref_sym − rssi_sym)/(10·n)
 
 这是一个关于 `(tx_ref_sym, n)` 的**线性回归**：令 `y = rssi_sym`，`x = log10(d_true)`，则 `y = a + b·x`，其中 `a = tx_ref_sym`，`b = −10·n`。每个 `(environment, link)` 条件单独拟合一条直线，这就是"按条件分层"的数学形式。
 
-**关键点：d_true 从哪来？** 权威真值是**实测距离 `measured_distance_m`**（卷尺/激光测距，随 sidecar 提交并通过时间对齐校验，见补救设计 §4.1）。`target_m` 只是采集前的预设**标签**（LABEL ONLY），正式拟合不得当真值使用。因此 RSSI 模型的拟合目标是实测距离，不是 FTM 输出——FTM 是另一个待标定的观测量，不能既当老师又当学生。
+**关键点：d_true 从哪来？** 真值分两级（补救设计 §4.1）：**拟合级** = 选定的整数距离档 `target_m` + 步幅摆位纪律（摆不到位就重摆，标 `truth=paced`，±3~8%）；**验证级** = 卷尺/激光实测（`measured_distance_m` 覆盖值，D6 对外验证前强制）。日常拟合用拟合级即可，`measured_distance_m ≥ 0` 时覆盖整数档。因此 RSSI 模型的拟合目标是真值距离，不是 FTM 输出——FTM 是另一个待标定的观测量，不能既当老师又当学生。
 
 ### 2.2 FTM 观测模型（radar_ftm.c）
 
@@ -295,11 +295,11 @@ capture 里的 ftm = P25(hist ∪ {median − offset})
 自 FORMAT_VERSION 4 起（实施见 §10），每个 run 的 capture header 记录 run 级原始 session 统计：offset/P25 之前各 session median 的 median、IQR、完成的 session 数与有效 burst 总数。P1 拟合直接使用：
 
 ```text
-b0_run     = ftm_raw_median_m − measured_distance_m   （每 run 一个样本；真值来自 sidecar 实测）
-ftm_offset = median(b0_run)                           （跨 run 鲁棒中心）
+b0_run     = ftm_raw_median_m − d_true        （每 run 一个样本）
+ftm_offset = median(b0_run)                    （跨 run 鲁棒中心）
 ```
 
-无 `measured_distance_m` 实测真值的 run 不参与 P1；`target_m` 只作分组标签（R-03，见补救设计 §4.1）。
+`d_true` 取值分级：`measured_distance_m ≥ 0` 时为验证级实测值，否则为拟合级整数档 `target_m`（`truth=paced`）。**1 m 标定建议用参照物摆位（目测/地砖/臂长，误差 ≤0.1 m），不要用步幅**——偏移是减法，真值误差 1:1 进 offset（R-03 语义见补救设计 §4.1）。
 
 跨 run MAD > 0.5 m 时报告标定不可信。早先设想的「offset=0 条件下 1 m 采集」近似流程废止，拟合报告不再出现 `offset_estimate=approximate`。
 
@@ -475,7 +475,7 @@ batch: 493512032
 runs:
   - run: 3
     bearing_deg: 45           # 对端相对本端的真实方位（0°=磁北或约定参考）
-    measured_distance_m: 5.0  # 卷尺/激光实测真值（target_m 仅是预设标签）
+    measured_distance_m: 5.0  # 可选：卷尺/激光实测覆盖值（验证级；缺省 −1.0 = 真值即整数档 truth=paced）
     window_ms: [0, 38000]     # 该实测值覆盖的采集时间窗，用于与记录对齐
 ```
 
@@ -522,7 +522,7 @@ runs:
 | 4 | 方向模型的时间→角度映射 | ✅ 已有周期自校正；拟合对象是误差分布与门限，不是映射本身 |
 | 5 | 分类器特征可从 capture 重放 | ✅ p2p_1s/p2p_10s/k_factor 均只依赖 raw RSSI 序列 |
 | 6 | 单向 RSSI 样本的处理 | ✅ 降权 0.5，不剔除（保留量程边缘信息） |
-| 7 | 用户 target_m 作为真值 | ✅ 已修正：真值 = `measured_distance_m` sidecar（补救设计 §4.1），`target_m` 仅作标签（LABEL ONLY），无实测真值的 run 不进正式拟合 |
+| 7 | 用户 target_m 作为真值 | ✅ 已修正为真值分级：拟合级 = 整数档 + 摆位纪律（`truth=paced`），验证级 = `measured_distance_m`/sidecar 实测（D6 前强制）；`target_m` 不再冒充实测值（补救设计 §4.1） |
 | 8 | 训练/留出划分 | ✅ 按场地分层，防同场地泄漏 |
 
 ---

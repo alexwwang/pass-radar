@@ -132,7 +132,7 @@ log10(d_true) = (tx_ref_sym − rssi_sym)/(10·n)
 
 This is a **linear regression** in `(tx_ref_sym, n)`: with `y = rssi_sym` and `x = log10(d_true)`, `y = a + b·x` where `a = tx_ref_sym` and `b = −10·n`. Each `(environment, link)` condition gets its own line — that is the mathematical form of "per-condition stratification".
 
-**Key point: where does d_true come from?** The authoritative truth is the **measured distance `measured_distance_m`** (tape/laser, submitted via sidecar and time-alignment checked; see the remediation design §4.1). `target_m` is only a preset **label** (LABEL ONLY) and must never be used as truth in formal fitting. The RSSI model is therefore fit against the measured distance, not against FTM output — FTM is another observable with its own calibration, and cannot be both teacher and student.
+**Key point: where does d_true come from?** Truth comes in two grades (remediation design §4.1): **fitting grade** = the selected integer distance tier `target_m` under pacing placement discipline (re-pace when placement misses, tagged `truth=paced`, ±3–8%); **validation grade** = tape/laser measurements (`measured_distance_m` override, mandatory before external D6 claims). Daily fitting uses the fitting grade; `measured_distance_m ≥ 0` overrides the tier. The RSSI model is fit against true distance, not against FTM output — FTM is another observable with its own calibration, and cannot be both teacher and student.
 
 ### 2.2 FTM observation model (radar_ftm.c)
 
@@ -294,11 +294,11 @@ Inverting the offset from this quantity couples in P25 and the old offset — **
 Starting with FORMAT_VERSION 4 (implemented per the run-level aggregates in §4.1.4 and the v5 remediation design), each run's capture header stores run-level raw session statistics: the median/IQR of the pre-offset, pre-P25 session medians, the number of completed sessions, and the total valid burst count. The P1 fit uses them directly:
 
 ```text
-b0_run     = ftm_raw_median_m − measured_distance_m   (one sample per run; truth from the sidecar)
-ftm_offset = median(b0_run)                           (robust center across runs)
+b0_run     = ftm_raw_median_m − d_true        (one sample per run)
+ftm_offset = median(b0_run)                    (robust center across runs)
 ```
 
-Runs without a `measured_distance_m` ground truth do not participate in P1; `target_m` serves only as a grouping label (R-03, remediation design §4.1).
+`d_true` is tiered: the validation-grade measured value when `measured_distance_m ≥ 0`, otherwise the fitting-grade integer tier `target_m` (`truth=paced`). **For the 1 m calibration, place by reference object (eye/floor tile/arm span, error ≤0.1 m), never by pacing** — the offset is a subtraction, so truth error enters the offset 1:1 (R-03 semantics in remediation design §4.1).
 
 If the cross-run MAD exceeds 0.5 m the calibration is reported as untrustworthy. The previously sketched "capture at 1 m under `offset=0`" approximation is retired; fit reports no longer contain `offset_estimate=approximate`.
 
@@ -473,7 +473,7 @@ batch: 493512032
 runs:
   - run: 3
     bearing_deg: 45           # true bearing of the peer relative to the holder (0° = agreed reference)
-    measured_distance_m: 5.0  # tape/laser ground truth (target_m is only a preset label)
+    measured_distance_m: 5.0  # optional tape/laser override (validation grade; default −1.0 = tier is truth, truth=paced)
     window_ms: [0, 38000]     # capture time window covered by this measurement, for alignment
 ```
 
@@ -520,7 +520,7 @@ Firmware consumer (new, ~100 lines of C): the Debug page gains a `PARAMS` row sh
 | 4 | Direction model time→angle mapping | ✅ period self-correction exists; fitting targets are error distributions and gates, not the mapping |
 | 5 | Classifier features replayable from capture | ✅ p2p_1s/p2p_10s/k_factor depend only on the raw RSSI series |
 | 6 | One-way RSSI samples | ✅ down-weight ×0.5, not dropped (keeps range-edge information) |
-| 7 | User target_m as truth | ✅ fixed: truth = `measured_distance_m` sidecar (remediation design §4.1); `target_m` is a label only (LABEL ONLY); runs without ground truth stay out of formal fitting |
+| 7 | User target_m as truth | ✅ fixed with tiered truth: fitting grade = integer tier + placement discipline (`truth=paced`), validation grade = `measured_distance_m`/sidecar (mandatory before D6); `target_m` no longer poses as measured truth (remediation design §4.1) |
 | 8 | Train/held-out split | ✅ site-stratified, prevents within-site leakage |
 
 ---

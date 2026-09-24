@@ -14,7 +14,7 @@
 
 打个比方：你要给尺子重新对表，结果尺子上的刻度纸条有的没写日期和地点，有的中间被撕掉几条没告诉任何人，还有一张写着"全程无遮挡"的纸条其实只量了最后一秒。这样的数据拿来对表，对出来的尺子是歪的。
 
-**这份设计就是给数据立规矩**：每条数据必须能回答"**哪个固件、哪一批、哪一次、离多远（尺量的）、什么条件、哪个完整时间窗**"；任何不确定就标 `SUSPECT`/`REJECTED`（可疑/作废），**宁可不用，不许乱用**。规矩齐了以后的新格式叫 **FORMAT_VERSION 5**；旧数据（v3/v4）还能看、能导出，但**不许混进正式对表的数据堆**。
+**这份设计就是给数据立规矩**：每条数据必须能回答"**哪个固件、哪一批、哪一次、离多远（真值：整数档 paced 或尺量）、什么条件、哪个完整时间窗**"；任何不确定就标 `SUSPECT`/`REJECTED`（可疑/作废），**宁可不用，不许乱用**。规矩齐了以后的新格式叫 **FORMAT_VERSION 5**；旧数据（v3/v4）还能看、能导出，但**不许混进正式对表的数据堆**。
 
 关键名词对照：`run`=一次 38 秒采集；`batch`=一整轮活动的所有 run；`sidecar`=随数据一起交的"实测距离小票"；`OVERFLOW`=装满后还在往里塞导致静默丢数据的危险状态。完整细节从 §2 起。
 
@@ -44,7 +44,7 @@
 | --- | --- | --- | --- |
 | R-01 | raw FTM 没有 run 起始边界 | P0 | baseline + 回绕安全比较 |
 | R-02 | 聚合容量可能静默溢出 | P0 | 容量上界证明 + overflow 标志，溢出 run 禁止拟合 |
-| R-03 | `target_m` 不是实测真值 | P0 | PC 实测距离 sidecar 强制门禁 |
+| R-03 | `target_m` 不是实测真值 | P0 | 真值分级：拟合级 = 整数档 paced 摆位纪律（`truth=paced`）；验证级（D6 对外验证）= PC 实测 sidecar 强制门禁 |
 | R-04 | raw FTM 三元组不是一致快照 | P1 | 一次性结构体 API + sequence lock/临界区 |
 | R-05 | probe 与 regular 混合 | P1 | P1 只使用 regular；probe 单独计数，不进入 offset 估计 |
 | R-06 | observed 字段只是最后一帧 | P1 | 改为 run 聚合统计，不再伪装成整段真值 |
@@ -245,7 +245,14 @@ target_distance_label_m
 
 它不是自动测得的真实距离。
 
-正式拟合必须使用 PC sidecar：
+真值分两级（2026-09-24 按实际采集条件修订：户外采集以步幅估距、无卷尺条件）：
+
+- **拟合级（日常）**：`measured_distance_m < 0`（缺省）时，真值 = Capture 页选定的整数距离档 `target_m`，前提是执行**摆位纪律**——步幅摆到位才 START，摆不出该距离就重摆或改档，不允许「摆哪算哪」；此类 run 标 `truth=paced`（精度约 ±3~8%）。P7/P8 分类拟合不依赖距离真值，P7 的误差评估因 paced 噪声略偏保守（安全方向）；
+- **验证级（D6 对外验证前）**：受控实测（tape/laser）值，经 `measured_distance_m` 字段或 PC sidecar 提交。**证明 80% 的验收结论必须使用验证级真值**——paced 真值的 ±5% 量级误差会直接污染 20% 判据的分子分母。
+
+`measured_distance_m` 字段语义：≥0 = 实测覆盖值（验证级）；−1.0 = 「真值=所选整数档」（`truth=paced`），固件当前恒 −1.0 即此行为，无需改动。
+
+提交验证级实测值时使用 PC sidecar：
 
 ```yaml
 batch_id: 493512032
@@ -269,7 +276,7 @@ runs:
 - 方法必须为 `tape`、`laser` 或受控测量方法；
 - uncertainty 缺失时可报告但不能用于高精度准入；
 - sidecar 中距离与 Capture 标签差异超过预设阈值时标记 `DISTANCE_LABEL_MISMATCH`；
-- 没有 sidecar 的 run 可以导出，但 `fit` 默认标记 `REJECTED_NO_MEASURED_DISTANCE`。
+- 没有 sidecar 的 run 以 `truth=paced` 参与拟合；`verify`（D6 验收）默认将其标记 `REJECTED_NO_MEASURED_DISTANCE` 并排除出验证集。
 - parser 必须做时间对齐校验：sidecar `measurement_session` 的时间窗必须与该 run 所属固件运行窗重叠；不重叠的条目标记 `DISTANCE_SIDECAR_MISALIGNED` 并拒绝，防止事后补录时错位标注。注意 `boot_sequence` 只提供运行窗的**序**，不提供墙钟时间：时间锚点取该 run 导出时的 USB 监控日志时间戳（或导出操作记录），`boot_sequence` 用于验证同批次内 run 的先后与连续性；
 - sidecar 条目必须包含 `capture`（导出）时间或引用导出会话；缺失时间锚的条目标记 `DISTANCE_SIDECAR_NO_TIME_ANCHOR` 并拒绝。
 

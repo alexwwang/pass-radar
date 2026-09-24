@@ -66,7 +66,7 @@
 - **构型**：8 个核心场景 × 2 个距离 × 4 次重复 = **64 run**（每类 ≥8 有效 run）；
 - **距离**：室外 3 / 8 m；室内 3 / 6 m（场地允许 8 m 则用 8）；
 - **顺序**：室内 4 场景先采（32 run），再室外 4 场景（32 run）；
-- **每 run**：走现有 38 秒状态机（3 s 倒计时 + 5 s 稳定 + 30 s 采集）→ SAVE 入批次；**卷尺实测两卡间距（±5 cm）记入 sidecar**；
+- **每 run**：走现有 38 秒状态机（3 s 倒计时 + 5 s 稳定 + 30 s 采集）→ SAVE 入批次；**距离真值 = 所选整数档**（步幅摆位 + 摆位纪律，见 §6），标 `truth=paced`；
 - **粗调档**：赶时间可先每场景 2 重复（32 run），但阈值结论只标 `PROVISIONAL`。
 
 ### 3.3 C3：方位标注 8~16 run（D1 偏置）——顺带
@@ -92,7 +92,7 @@
 | 场景/距离/上下文编辑 | ✅ 已实现（8 核心场景、冲突灰显、OK 确认返回） | 无 | — |
 | 38 s 采集状态机 | ✅ 已实现（COUNTDOWN/SETTLE/RUNNING/SUMMARY） | 无 | — |
 | SAVE / 批次 / 导出 | ✅ 已实现（CSV/META 与更新程序 §1.1 逐列核对一致、CRC、压缩、NVS 兜底） | 无 | — |
-| 尺量真值 | ⚠️ 固件 `measured_distance_m` 恒 −1.0（仅 `target_m` 预设标签） | 正式拟合需真值 | **包 A1** sidecar（操作员尺量记录；不改固件，按补救设计 R-03） |
+| 距离真值 | ✅ 零改动可用：固件 `measured_distance_m` 恒 −1.0 = 「真值=所选整数档」（`truth=paced`），即真值分级的拟合级 | 拟合级靠步幅摆位纪律（§6）；验证级（卷尺/激光）仅 D6 对外验证需要 | 日常零改动；D6 前按包 A1 sidecar 升级为验证级 |
 | 方位标注 | ❌ 扫盘角度**不落 USB 日志**（只屏显 + `radar_espnow_report_result` 对端上报；日志仅有 `SWEEP_DONE elapsed_ms` 与 `SWEEP_SAMPLES count`） | D1 拿不到角度序列 | **包 B1** 补 `SWEEP_RESULT` 日志行（必做） |
 | P7/P8 特征数据 | ✅ 记录含 raw RSSI / ftm_status / ftm_session_count / csi_frames / env_level，可离线重放分类器 | —（不依赖 header 的 observed 末帧，绕过已知 P1-DATA-6 问题） | 包 A3 重放 + 对拍 |
 | P1 复算数据 | ⚠️ `ftm_raw_*` 已有（FORMAT_VERSION 4），但 probe/regular 混合、无 run baseline（v4 已知缺陷） | 严格 P1 不可辨识 | 最小集仅作合理性复核并在报告标 caveat；严格版等包 C |
@@ -104,7 +104,7 @@
 
 | 项 | 内容 | 工作量 | 验收 |
 | --- | --- | --- | --- |
-| A1 sidecar 模板与操作清单 | YAML 模板（batch/run/measured_distance_m/bearing_deg/window_ms，格式见更新程序 §6.3）+ §6 操作员清单 | 文档级 | 试填 3 行无歧义 |
+| A1 sidecar 模板与操作清单 | YAML 模板（batch/run/measured_distance_m/bearing_deg/window_ms，格式见更新程序 §6.3）+ §6 操作员清单；日常只记方位，距离默认整数档，D6 才记实测 | 文档级 | 试填 3 行无歧义 |
 | A2 `model_fit.py parse/report` 最小子集 | 解析 BATCH_*/CAPTURE/CSV 行 + `SWEEP_RESULT` + sidecar 合并（`DISTANCE_SIDECAR_*` 校验）；输出每 run 一行质量表（对账/CRC/标签/真值到位） | Python 约 400~600 行 | 对仓库已有测试批次日志跑通，run 表完整、SUSPECT 判定正确 |
 | A3 `features.py` 特征重放 | `radar_obstruct.c`/`radar_fusion.c` 分类特征纯 numpy 移植 + C/Python 对拍测试（同输入输出差 ≤1e-4） | Python 约 300 行 + host 对拍 | 对拍测试全绿 |
 
@@ -129,7 +129,7 @@ probe/regular 分离、run baseline、聚合容量 32 + `OVERFLOW`、observed ru
 每设备对开始前：
   1. 1 m 标定 ×3，记录 ref / offset（偏差过大停下检查）
 每 run：
-  2. 卷尺实测两卡间距（±5 cm）
+  2. 步幅摆位到选定距离档（摆不到位就重摆或改档；1 m 标定用参照物，勿用步幅）
   3. Capture 编辑页选场景（8 选 1）与距离档 → START
   4. 等 38 s 自动 SAVE，记 run 号
   5. 在 sidecar 记一行：run 号 / 实测距离 / 时间窗
@@ -152,6 +152,7 @@ probe/regular 分离、run baseline、聚合容量 32 + `OVERFLOW`、observed ru
 
 - **不采远场** → P5/P6 保持编译期值；新目标 30 m 内承诺不受影响，45 m 以外仍是区间/档位；
 - **不采验证集** → 80% 是设计预期而非统计证明；对外文案必须如实表述，不得写"已验证"；
+- **真值为步幅级**（`truth=paced`，±3~8%）→ P7/P8 拟合不受实质影响（分类不减距离真值；P7 误差评估略偏保守）；但 D6 对外验证必须换验证级真值（卷尺/激光/场地标定物），否则 20% 判据的验收结论不可信；
 - **ftm_raw probe 混合**（v4）→ P1 复算只作合理性检查，不产出新 offset（严格版等包 C）;
 - **粗调档结论**只能用于内部迭代，任何对外承诺必须基于 64 run 正式档；
 - 若某类场景（如 I-MULTIPATH）在 4 次重复后特征仍高度混杂，如实标"特征不足"并提出新增特征需求（更新程序 §4.3.1 规则 4），不硬凑阈值。
