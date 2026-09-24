@@ -525,8 +525,10 @@ void radar_ui_update_capture_editor(radar_capture_context_field_t field,
     static const char *const card_height[] = {
         "LOW<1.0m", "CHEST 1.0-1.8m", "OVERHEAD>=1.8m"};
     static const char *const card_pose[] = {"UPRIGHT", "FLAT", "MIXED"};
+    // device-relative directions (0 = FRONT, clockwise), UNSET last & greyed
     static const char *const bearing[] = {
-        "N", "NE", "E", "SE", "S", "SW", "W", "NW", "UNSET"};
+        "FRONT", "FRONT-RIGHT", "RIGHT", "REAR-RIGHT",
+        "REAR", "REAR-LEFT", "LEFT", "FRONT-LEFT", "UNSET"};
     const char *const *values = NULL;
     unsigned count = 0;
     switch (field) {

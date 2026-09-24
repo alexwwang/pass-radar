@@ -472,7 +472,7 @@ The `parse` subcommand accepts an annotation sidecar (hand-written YAML or notes
 batch: 493512032
 runs:
   - run: 3
-    bearing_deg: 45           # true bearing of the peer relative to the holder (0° = agreed reference)
+    bearing_deg: 45           # peer direction relative to the holder (0° = holder's forward axis, clockwise; same frame as the on-device BEARING annotation)
     measured_distance_m: 5.0  # optional tape/laser override (validation grade; default −1.0 = tier is truth, truth=paced)
     window_ms: [0, 38000]     # capture time window covered by this measurement, for alignment
 ```

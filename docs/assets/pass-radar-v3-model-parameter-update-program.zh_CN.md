@@ -474,7 +474,7 @@ tools/model_fit/
 batch: 493512032
 runs:
   - run: 3
-    bearing_deg: 45           # 对端相对本端的真实方位（0°=磁北或约定参考）
+    bearing_deg: 45           # 对端相对本端的方向（0°=持机正前，顺时针；与设备 BEARING 标注同基准）
     measured_distance_m: 5.0  # 可选：卷尺/激光实测覆盖值（验证级；缺省 −1.0 = 真值即整数档 truth=paced）
     window_ms: [0, 38000]     # 该实测值覆盖的采集时间窗，用于与记录对齐
 ```

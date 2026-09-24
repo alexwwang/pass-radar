@@ -754,7 +754,8 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_HEIGHT ||
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_CARD_POSE ||
                  s_capture_editor_field == RADAR_CAPTURE_CONTEXT_ROOM_SIZE) ? 3u :
-                s_capture_editor_field == RADAR_CAPTURE_CONTEXT_BOUNDARY ? 5u : 6u;
+                s_capture_editor_field == RADAR_CAPTURE_CONTEXT_BOUNDARY ? 5u :
+                s_capture_editor_field == RADAR_CAPTURE_CONTEXT_BEARING ? 9u : 6u;
             unsigned count = room_size_na ? 1u : value_count;
             for (unsigned attempts = 0; !room_size_na && attempts < count; ++attempts) {
                 s_capture_editor_index = btn == BSP_BTN_UP
@@ -891,7 +892,17 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 radar_ui_show_capture_editor(s_capture_editor_field);
                 break;
             }
+            // Menu order (radar_ui.c): ... POSE(10), BEARING(11),
+            // START CAPTURE(12), ... — cases must follow the display order.
             case 11: {
+                s_capture_editor_field = RADAR_CAPTURE_CONTEXT_BEARING;
+                // UNSET(8) maps to 0 so OK commits on first press.
+                s_capture_editor_index =
+                    radar_capture_context_value(s_capture_editor_field) % 8u;
+                radar_ui_show_capture_editor(s_capture_editor_field);
+                break;
+            }
+            case 12: {
                 // v5: bearing annotation is mandatory before START.
                 if (!radar_capture_ready_to_start()) {
                     snprintf(s_capture_action_status,
@@ -909,13 +920,6 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                              sizeof(s_capture_action_status), "START %s",
                              esp_err_to_name(err));
                 }
-                break;
-            }
-            case 12: {
-                s_capture_editor_field = RADAR_CAPTURE_CONTEXT_BEARING;
-                s_capture_editor_index =
-                    radar_capture_context_value(s_capture_editor_field) % 8u;
-                radar_ui_show_capture_editor(s_capture_editor_field);
                 break;
             }
             case 13: {

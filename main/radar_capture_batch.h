@@ -96,30 +96,35 @@ typedef enum {
     RADAR_CAPTURE_CONTEXT_BOUNDARY,
     RADAR_CAPTURE_CONTEXT_CARD_HEIGHT,
     RADAR_CAPTURE_CONTEXT_CARD_POSE,
-    // v5: operator-annotated true bearing of the peer (8 sectors). Annotated
-    // on-device before every capture/sweep so bearing truth ships inside the
-    // run metadata; RADAR_CAPTURE_BEARING_UNSET means "no annotation".
+    // v5: operator-annotated peer bearing relative to the holder's forward
+    // axis (8 device-relative sectors). Annotated on-device before every
+    // capture/sweep so bearing truth ships inside the run metadata;
+    // RADAR_CAPTURE_BEARING_UNSET means "no annotation".
     RADAR_CAPTURE_CONTEXT_BEARING,
 } radar_capture_context_field_t;
 
-// True-bearing annotation values (8 compass sectors, 45 deg each).
-// Unset = 8 so the 0..7 sector codes stay stable in exports.
+// True-bearing annotation values: 8 device-relative sectors, 45 deg each.
+// 0 = FRONT (peer dead ahead of the holder), then clockwise: FRONT_RIGHT(45),
+// RIGHT(90), REAR_RIGHT(135), REAR(180), REAR_LEFT(225), LEFT(270),
+// FRONT_LEFT(315). Unset = 8 so the 0..7 sector codes stay stable in exports.
 typedef enum {
-    RADAR_CAPTURE_BEARING_N = 0,
-    RADAR_CAPTURE_BEARING_NE = 1,
-    RADAR_CAPTURE_BEARING_E = 2,
-    RADAR_CAPTURE_BEARING_SE = 3,
-    RADAR_CAPTURE_BEARING_S = 4,
-    RADAR_CAPTURE_BEARING_SW = 5,
-    RADAR_CAPTURE_BEARING_W = 6,
-    RADAR_CAPTURE_BEARING_NW = 7,
+    RADAR_CAPTURE_BEARING_FRONT = 0,
+    RADAR_CAPTURE_BEARING_FRONT_RIGHT = 1,
+    RADAR_CAPTURE_BEARING_RIGHT = 2,
+    RADAR_CAPTURE_BEARING_REAR_RIGHT = 3,
+    RADAR_CAPTURE_BEARING_REAR = 4,
+    RADAR_CAPTURE_BEARING_REAR_LEFT = 5,
+    RADAR_CAPTURE_BEARING_LEFT = 6,
+    RADAR_CAPTURE_BEARING_FRONT_LEFT = 7,
     RADAR_CAPTURE_BEARING_UNSET = 8,
 } radar_capture_bearing_id_t;
 
-// Sector index -> center bearing in degrees (0 = N, clockwise).
+// Sector index -> center angle in degrees relative to the holder's forward
+// axis (0 = FRONT, clockwise).
 static inline float radar_capture_bearing_center_deg(uint8_t bearing) {
-    return (bearing <= RADAR_CAPTURE_BEARING_NW) ? 45.0f * (float)bearing
-                                                 : -1.0f;
+    return (bearing <= RADAR_CAPTURE_BEARING_FRONT_LEFT)
+               ? 45.0f * (float)bearing
+               : -1.0f;
 }
 
 typedef enum {

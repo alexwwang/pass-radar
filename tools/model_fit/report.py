@@ -162,6 +162,7 @@ def evaluate(result: parser.ParseResult, entries=None, sidecar_meta=None):
             device_bearing = run.meta["bearing"]
         if isinstance(device_bearing, int) and \
                 0 <= device_bearing <= parser.BEARING_SECTOR_MAX:
+            # device-relative sector -> degrees (0=FRONT, clockwise)
             run.bearing_deg = 45.0 * device_bearing
         elif device_bearing is not None:
             run.warnings.append("BEARING_UNSET")

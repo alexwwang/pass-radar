@@ -483,7 +483,7 @@ esp_err_t radar_capture_start(float target_distance_m) {
         return ESP_ERR_NO_MEM;
     }
     // v5: every capture must carry the operator bearing annotation.
-    if (s_true_bearing > RADAR_CAPTURE_BEARING_NW) {
+    if (s_true_bearing > RADAR_CAPTURE_BEARING_FRONT_LEFT) {
         ESP_LOGE(TAG, "CAPTURE_START FAIL BEARING_UNSET");
         return ESP_ERR_INVALID_STATE;
     }
@@ -701,7 +701,7 @@ uint8_t radar_capture_bearing(void) { return s_true_bearing; }
 bool radar_capture_ready_to_start(void) {
     // v5: bearing truth ships inside the run metadata, so an unannotated run
     // must not start (the gate also guards radar_capture_start directly).
-    return s_true_bearing <= RADAR_CAPTURE_BEARING_NW;
+    return s_true_bearing <= RADAR_CAPTURE_BEARING_FRONT_LEFT;
 }
 
 void radar_capture_set_context(uint8_t room_geometry, uint8_t room_size,

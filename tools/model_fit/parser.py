@@ -78,7 +78,9 @@ def _parse_kvs(text: str) -> dict:
 
 
 # Bearing values share the enum of radar_capture_bearing_id_t (v5): 0..7 =
-# N/NE/E/SE/S/SW/W/NW sector centers, 8 (0xFF on v4 records) = UNSET.
+# device-relative sector centers (0=FRONT, then clockwise FRONT_RIGHT ..
+# FRONT_LEFT; angle measured from the holder's forward axis),
+# 8 (0xFF on v4 records) = UNSET.
 BEARING_SECTOR_MAX = 7
 BEARING_UNSET = 8
 

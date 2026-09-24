@@ -72,7 +72,7 @@
 ### 3.3 C3：方位标注 8~16 run（D1 偏置）——顺带
 
 - 在 C2 的室外/室内 LOS run 中顺带挑 8~16 个，各做一次扫盘；
-- 记录：屏显角度 + 真方位（8 方位中选 4~8 个方向，罗盘或场地参照物定真方位）+ sidecar 行；
+- 记录：屏显角度 + 对端相对方向（设备相对 8 方向选 4~8 个：前/前右/右/后右/后/后左/左/前左，0°=持机正前）+ sidecar 行；
 - 用途：`sweep_bias_deg` 环形中值估计（16 run → CI ≈ ±5°；8 run → ±8°）。
 
 ### 3.4 明确推迟项
@@ -114,7 +114,7 @@
 | --- | --- | --- | --- |
 | B1 `SWEEP_RESULT` 日志 | `sweep_done` 尾部（共识融合后）加一行 `ESP_LOGI(TAG, "SWEEP_RESULT angle=%.1f spread=%.1f dist=%.2f conf=%d", …)` | **必做**（D1 依赖） | 真机一次扫盘后 USB 日志出现该行；host 全套回归 |
 | B2 `CALIB_RESULT` 日志 | `calib_done` 加 `CALIB_RESULT ok=%d ref=%.1f offset=%.2f` 一行；`ok=1` = 本次 ref 与 offset 均已新存，`ok=0` = 门控未过/保存失败、当前值为沿用旧值（勿当新标定） | 可选（审计便利） | 真机标定后日志出现该行 |
-| B3 方位设备标注（v5，2026-09-24 审核后升级） | 真方位改为**每笔采集前在卡上标注**：Capture 菜单新增 BEARING 项（8 分区 + 强制门控，未标注不可 START），存入 batch capture header（v4→v5，原 reserved 字节，头长不变），随 `BATCH_CAPTURE_CONDITION bearing=` 与 `SWEEP_RESULT bearing=` 导出；PC 端 sidecar 的 bearing 只作 UNSET 兜底，与设备标注冲突时设备优先并告警 `BEARING_CONFLICT` | **必做**（D1 依赖；替代 A1 手记方位） | 真机每笔采集带 bearing 标注；host 全套回归 |
+| B3 方位设备标注（v5，2026-09-24 审核后升级） | 真方位改为**每笔采集前在卡上标注**：Capture 菜单新增 BEARING 项（设备相对 8 方向 + 强制门控，未标注不可 START），存入 batch capture header（v4→v5，原 reserved 字节，头长不变），随 `BATCH_CAPTURE_CONDITION bearing=` 与 `SWEEP_RESULT bearing=` 导出；PC 端 sidecar 的 bearing 只作 UNSET 兜底，与设备标注冲突时设备优先并告警 `BEARING_CONFLICT` | **必做**（D1 依赖；替代 A1 手记方位） | 真机每笔采集带 bearing 标注；host 全套回归 |
 
 > 包 B 均为纯日志输出，不改存储格式、不改采集统计，风险面接近零。
 
@@ -143,11 +143,11 @@ probe/regular 分离、run baseline、聚合容量 32 + `OVERFLOW`、observed ru
   1. 1 m 标定 ×3，记录 ref / offset（偏差过大停下检查）
 每 run：
   2. 步幅摆位到选定距离档（摆不到位就重摆或改档；1 m 标定用参照物，勿用步幅）
-  3. Capture 编辑页选场景（8 选 1）与距离档，**BEARING 选定对端真方位（罗盘/参照物，必选）** → START
+  3. Capture 编辑页选场景（8 选 1）与距离档，**BEARING 选定对端相对方向（前/前右/右/后右/后/后左/左/前左，0°=正前，必选）** → START
   4. 等 38 s 自动 SAVE，记 run 号
   5. sidecar 仅 D6 实测距离需要（日常不记）；方位已随 run 存档
 方位 run（C3，8~16 个）：
-  6. 选定真方位并标进 BEARING → 做扫盘 → 日志 `SWEEP_RESULT bearing=… angle=…` 自动对账
+  6. 选定相对方向并标进 BEARING → 做扫盘 → 日志 `SWEEP_RESULT bearing=… angle=…` 自动对账
 批次收尾：
   7. 长按 DOWN 导出 → 跑 parse/report
   8. SUSPECT run 当场补采；每类凑满 8 个有效 run

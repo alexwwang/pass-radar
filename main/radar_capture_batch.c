@@ -604,14 +604,14 @@ const char *radar_capture_environment_label(uint8_t environment) {
 
 const char *radar_capture_bearing_label(uint8_t bearing) {
     switch (bearing) {
-    case RADAR_CAPTURE_BEARING_N: return "N";
-    case RADAR_CAPTURE_BEARING_NE: return "NE";
-    case RADAR_CAPTURE_BEARING_E: return "E";
-    case RADAR_CAPTURE_BEARING_SE: return "SE";
-    case RADAR_CAPTURE_BEARING_S: return "S";
-    case RADAR_CAPTURE_BEARING_SW: return "SW";
-    case RADAR_CAPTURE_BEARING_W: return "W";
-    case RADAR_CAPTURE_BEARING_NW: return "NW";
+    case RADAR_CAPTURE_BEARING_FRONT: return "FRONT";
+    case RADAR_CAPTURE_BEARING_FRONT_RIGHT: return "FRONT-RIGHT";
+    case RADAR_CAPTURE_BEARING_RIGHT: return "RIGHT";
+    case RADAR_CAPTURE_BEARING_REAR_RIGHT: return "REAR-RIGHT";
+    case RADAR_CAPTURE_BEARING_REAR: return "REAR";
+    case RADAR_CAPTURE_BEARING_REAR_LEFT: return "REAR-LEFT";
+    case RADAR_CAPTURE_BEARING_LEFT: return "LEFT";
+    case RADAR_CAPTURE_BEARING_FRONT_LEFT: return "FRONT-LEFT";
     default: return "UNSET";
     }
 }

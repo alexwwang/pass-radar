@@ -214,7 +214,7 @@ class SidecarTest(unittest.TestCase):
         self.assertEqual(rows[0]["bearing_deg"], 0)
         self.assertEqual(rows[0]["verdict"], "PASS")
         self.assertEqual(summary["truth_measured"], 1)
-        # v5: every run carries the device bearing annotation (default N=0)
+        # v5: every run carries the device bearing annotation (default FRONT=0)
         self.assertEqual(summary["with_bearing"], 3)
 
     def test_sidecar_bearing_backfills_when_unset(self) -> None:
@@ -247,7 +247,7 @@ runs:
     bearing_deg: 45
 """)
         result = parser.parse_lines(build_log())
-        result.runs[0].condition["bearing"] = 2  # device says E (90 deg)
+        result.runs[0].condition["bearing"] = 2  # device sector 2 = RIGHT (90 deg)
         rows, _ = report.evaluate(result, entries)
         self.assertEqual(rows[0]["bearing_deg"], 90)  # device annotation wins
         self.assertIn("BEARING_CONFLICT", rows[0]["warnings"])

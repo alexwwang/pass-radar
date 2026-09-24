@@ -68,7 +68,7 @@ bool radar_capture_context_option_available(
     case RADAR_CAPTURE_CONTEXT_CARD_POSE:
         return value <= RADAR_CAPTURE_CARD_POSE_MIXED;
     case RADAR_CAPTURE_CONTEXT_BEARING:
-        return value <= RADAR_CAPTURE_BEARING_NW;  // UNSET not settable
+        return value <= RADAR_CAPTURE_BEARING_FRONT_LEFT;  // UNSET not settable
     default:
         return false;
     }
