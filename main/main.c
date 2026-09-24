@@ -531,6 +531,10 @@ static void sweep_done(lv_timer_t *t) {
                          fr.distance_m, conf, spread, weak);
     radar_ui_set_result_hint(radar_hint_label(s_obstruct_hint));
 
+    // 包 B:扫盘结果落 USB 日志,供 PC 端 model_fit.py 解析(纯日志,零行为变化)。
+    ESP_LOGI(TAG, "SWEEP_RESULT angle=%.1f spread=%.1f dist=%.2f conf=%d",
+             (double)angle, (double)spread, (double)fr.distance_m, (int)conf);
+
     if (s_sweep_timer) {
         lv_timer_delete(s_sweep_timer);
         s_sweep_timer = NULL;
@@ -591,6 +595,10 @@ static void calib_done(lv_timer_t *t) {
     } else {
         radar_ftm_set_offset_m(s_calib_old_ftm_offset);
     }
+
+    // 包 B:标定结果落 USB 日志(门控失败时也记录当前生效值),供 model_fit.py 解析。
+    ESP_LOGI(TAG, "CALIB_RESULT ref=%.1f offset=%.2f",
+             (double)s_tx_ref_sym, (double)radar_ftm_offset_m());
 
     radar_espnow_ftm_set_calibrating(false);
     if (s_calib_timer) {

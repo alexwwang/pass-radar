@@ -112,6 +112,15 @@ run_static_checks() {
         main/radar_capture_condition.c \
         -o "${test_dir}/test_radar_capture_batch_flash"
     "${test_dir}/test_radar_capture_batch_flash"
+    # C↔Python feature-replay parity (package A3): the C harness prints
+    # radar_obstruct/radar_fusion features for fixed vectors, the Python side
+    # recomputes them via tools/model_fit/features.py (|Δ| ≤ 1e-4).
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_features_parity.c main/radar_obstruct.c \
+        main/radar_fusion.c main/radar_sweep.c \
+        -o "${test_dir}/test_features_parity" -lm
+    "${python_cmd}" tests/test_features_parity.py "${test_dir}/test_features_parity"
+    "${python_cmd}" tests/test_model_fit.py
     "${python_cmd}" tests/test_verify_firmware.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
