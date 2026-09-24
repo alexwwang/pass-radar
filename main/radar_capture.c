@@ -165,6 +165,8 @@ static uint8_t s_furniture_density = RADAR_CAPTURE_FURNITURE_LOW;
 static uint8_t s_boundary = RADAR_CAPTURE_BOUNDARY_OPEN;
 static uint8_t s_card_height = RADAR_CAPTURE_CARD_HEIGHT_CHEST;
 static uint8_t s_card_pose = RADAR_CAPTURE_CARD_POSE_UPRIGHT;
+// v5: operator true-bearing annotation for the upcoming run (8 sectors).
+static uint8_t s_true_bearing = RADAR_CAPTURE_BEARING_UNSET;
 static uint8_t s_observed_level = RADAR_CAPTURE_OBS_LEVEL_L3_LOST;
 static uint8_t s_observed_obstruction = RADAR_CAPTURE_OBS_CLASS_UNKNOWN;
 // Screen feedback for the DOWN long-press re-export: "" = never attempted,
@@ -411,7 +413,7 @@ static esp_err_t export_batch_record(
     ESP_LOGI(TAG,
              "BATCH_CAPTURE_CONDITION batch=%lu run=%lu scene=%s schema=%u env=%u link=%u obs=%u "
              "prop=%u room=%u size=%u material=%u furniture=%u boundary=%u "
-             "height=%u pose=%u observed_level=%u observed_obstruction=%u",
+             "height=%u pose=%u bearing=%u observed_level=%u observed_obstruction=%u",
              (unsigned long)batch_header->batch_id,
              (unsigned long)batch_header->run_id,
              radar_capture_scene_label(batch_header->scene_id),
@@ -427,6 +429,7 @@ static esp_err_t export_batch_record(
              (unsigned)batch_header->boundary,
              (unsigned)batch_header->card_height,
              (unsigned)batch_header->card_pose,
+             (unsigned)batch_header->true_bearing,
              (unsigned)batch_header->observed_level,
              (unsigned)batch_header->observed_obstruction);
     emit_csv("BATCH_CAPTURE_META", "BATCH_CAPTURE_CSV", &header, s_records);
@@ -478,6 +481,11 @@ esp_err_t radar_capture_start(float target_distance_m) {
         ESP_LOGE(TAG, "CAPTURE_START FAIL BATCH_SPACE next_capture_max=%u",
                  (unsigned)RADAR_CAPTURE_CODEC_MAX_PAYLOAD);
         return ESP_ERR_NO_MEM;
+    }
+    // v5: every capture must carry the operator bearing annotation.
+    if (s_true_bearing > RADAR_CAPTURE_BEARING_NW) {
+        ESP_LOGE(TAG, "CAPTURE_START FAIL BEARING_UNSET");
+        return ESP_ERR_INVALID_STATE;
     }
     memset(s_records, 0,
            RADAR_CAPTURE_MAX_RECORDS * sizeof(*s_records));
@@ -667,6 +675,7 @@ bool radar_capture_set_context_field(radar_capture_context_field_t field,
     case RADAR_CAPTURE_CONTEXT_BOUNDARY: s_boundary = value; break;
     case RADAR_CAPTURE_CONTEXT_CARD_HEIGHT: s_card_height = value; break;
     case RADAR_CAPTURE_CONTEXT_CARD_POSE: s_card_pose = value; break;
+    case RADAR_CAPTURE_CONTEXT_BEARING: s_true_bearing = value; break;
     default: return false;
     }
     return true;
@@ -682,8 +691,17 @@ uint8_t radar_capture_context_value(radar_capture_context_field_t field) {
     case RADAR_CAPTURE_CONTEXT_BOUNDARY: return s_boundary;
     case RADAR_CAPTURE_CONTEXT_CARD_HEIGHT: return s_card_height;
     case RADAR_CAPTURE_CONTEXT_CARD_POSE: return s_card_pose;
+    case RADAR_CAPTURE_CONTEXT_BEARING: return s_true_bearing;
     default: return UINT8_MAX;
     }
+}
+
+uint8_t radar_capture_bearing(void) { return s_true_bearing; }
+
+bool radar_capture_ready_to_start(void) {
+    // v5: bearing truth ships inside the run metadata, so an unannotated run
+    // must not start (the gate also guards radar_capture_start directly).
+    return s_true_bearing <= RADAR_CAPTURE_BEARING_NW;
 }
 
 void radar_capture_set_context(uint8_t room_geometry, uint8_t room_size,
@@ -862,6 +880,7 @@ esp_err_t radar_capture_save(void) {
         .boundary = s_boundary,
         .card_height = s_card_height,
         .card_pose = s_card_pose,
+        .true_bearing = s_true_bearing,
         .target_distance_m = verified.target_distance_m,
         .measured_distance_m = -1.0f,
         .record_count = verified.record_count,

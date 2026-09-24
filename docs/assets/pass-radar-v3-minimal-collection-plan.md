@@ -104,7 +104,7 @@ Per the 80% review's quantified conclusions, the marginal value of each part of 
 
 | Item | Content | Effort | Acceptance |
 | --- | --- | --- | --- |
-| A1 sidecar template + operator checklist | YAML template (batch/run/measured_distance_m/bearing_deg/window_ms, format per update program §6.3) + the §6 checklist; daily use records bearing only, distance defaults to the integer tier, measured values only for D6 | docs-level | 3 sample rows filled unambiguously |
+| A1 sidecar template + operator checklist | YAML template (batch/run/measured_distance_m/window_ms/capture anchor, format per update program §6.3) + the §6 checklist; **only D6 measured distances are recorded daily** (bearings come from B3 on-device annotation, so the sidecar is no longer an everyday tool) | docs-level | 3 sample rows filled unambiguously |
 | A2 minimal `model_fit.py parse/report` | parse BATCH_*/CAPTURE/CSV rows + `SWEEP_RESULT` + sidecar merge (`DISTANCE_SIDECAR_*` checks); output one quality row per run (reconciliation/CRC/labels/truth present) | ≈400–600 lines Python | runs on existing test-batch logs with a complete run table and correct SUSPECT calls |
 | A3 `features.py` replay | pure-numpy port of `radar_obstruct.c`/`radar_fusion.c` classification features + C/Python cross-check tests (same input, output delta ≤1e-4) | ≈300 lines Python + host cross-check | all cross-check tests green |
 
@@ -114,6 +114,7 @@ Per the 80% review's quantified conclusions, the marginal value of each part of 
 | --- | --- | --- | --- |
 | B1 `SWEEP_RESULT` log | one `ESP_LOGI(TAG, "SWEEP_RESULT angle=%.1f spread=%.1f dist=%.2f conf=%d", …)` at the end of `sweep_done` (after consensus fusion) | **mandatory** (D1 depends on it) | line appears in the USB log after one device sweep; host suite regresses green |
 | B2 `CALIB_RESULT` log | one `CALIB_RESULT ok=%d ref=%.1f offset=%.2f` line in `calib_done`; `ok=1` = both ref and offset freshly stored this run, `ok=0` = gate failed / save failed and the reported values are the carried-over old ones (not a new calibration) | optional (audit convenience) | line appears after one device calibration |
+| B3 on-device bearing annotation (v5, upgraded after the 2026-09-24 review) | true bearing is now **annotated on the card before every capture**: the Capture menu gains a BEARING entry (8 sectors + a mandatory gate — START is refused while UNSET), stored in the batch capture header (v4→v5, former reserved byte, header size unchanged) and exported via `BATCH_CAPTURE_CONDITION bearing=` and `SWEEP_RESULT bearing=`; PC-side sidecar bearing only backfills UNSET runs, and on conflict the device annotation wins with a `BEARING_CONFLICT` warning | **mandatory** (D1 depends on it; replaces A1 hand-recorded bearings) | every on-device capture carries a bearing annotation; host suite regresses green |
 
 > Both package-B items are pure log output: no storage-format change, no capture-statistics change; near-zero risk.
 
@@ -142,11 +143,11 @@ Start of each device pair:
   1. 1 m calibration x3; record ref / offset (stop and inspect on large spread)
 Per run:
   2. pace into position at the selected distance tier (re-pace or change tier on a miss; use a reference object, not pacing, for the 1 m calibration)
-  3. capture editor: pick scene (1 of 8) and distance tier -> START
+  3. capture editor: pick scene (1 of 8) and distance tier, **set BEARING to the peer's true bearing (compass/landmark, mandatory)** -> START
   4. wait 38 s for automatic SAVE; note the run number
-  5. sidecar row: run number / measured distance / time window
+  5. sidecar is only needed for D6 measured distances (not daily); bearings ship inside the run metadata
 Bearing runs (C3, 8-16 of them):
-  6. fix the true bearing (compass/landmark) -> run one sweep -> record displayed angle + true bearing
+  6. fix the true bearing and set BEARING -> run one sweep -> the `SWEEP_RESULT bearing=… angle=…` log reconciles automatically
 Batch wrap-up:
   7. long-press DOWN to export -> run parse/report
   8. re-collect SUSPECT runs on the spot; reach 8 valid runs per class

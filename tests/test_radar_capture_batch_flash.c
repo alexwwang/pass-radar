@@ -154,6 +154,7 @@ int main(void) {
         header.observed_obstruction = RADAR_CAPTURE_OBS_CLASS_UNKNOWN;
         header.room_geometry = RADAR_CAPTURE_ROOM_GEOMETRY_ROOM;
         header.room_size = RADAR_CAPTURE_ROOM_SIZE_LARGE;
+        header.true_bearing = RADAR_CAPTURE_BEARING_UNSET;
         header.material = RADAR_CAPTURE_MATERIAL_MIXED;
         header.furniture_density = RADAR_CAPTURE_FURNITURE_LOW;
         header.boundary = RADAR_CAPTURE_BOUNDARY_OPEN;

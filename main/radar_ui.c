@@ -488,6 +488,7 @@ static const char *capture_editor_title(radar_capture_context_field_t field) {
     case RADAR_CAPTURE_CONTEXT_BOUNDARY: return "BOUNDARY";
     case RADAR_CAPTURE_CONTEXT_CARD_HEIGHT: return "HEIGHT";
     case RADAR_CAPTURE_CONTEXT_CARD_POSE: return "POSE";
+    case RADAR_CAPTURE_CONTEXT_BEARING: return "BEARING";
     default: return "CONTEXT";
     }
 }
@@ -524,6 +525,8 @@ void radar_ui_update_capture_editor(radar_capture_context_field_t field,
     static const char *const card_height[] = {
         "LOW<1.0m", "CHEST 1.0-1.8m", "OVERHEAD>=1.8m"};
     static const char *const card_pose[] = {"UPRIGHT", "FLAT", "MIXED"};
+    static const char *const bearing[] = {
+        "N", "NE", "E", "SE", "S", "SW", "W", "NW", "UNSET"};
     const char *const *values = NULL;
     unsigned count = 0;
     switch (field) {
@@ -538,6 +541,7 @@ void radar_ui_update_capture_editor(radar_capture_context_field_t field,
     case RADAR_CAPTURE_CONTEXT_BOUNDARY: values = boundary; count = 5; break;
     case RADAR_CAPTURE_CONTEXT_CARD_HEIGHT: values = card_height; count = 3; break;
     case RADAR_CAPTURE_CONTEXT_CARD_POSE: values = card_pose; count = 3; break;
+    case RADAR_CAPTURE_CONTEXT_BEARING: values = bearing; count = 9; break;
     default: break;
     }
     if (!values) return;
@@ -578,6 +582,7 @@ void radar_ui_update_capture_menu(const char *environment_name,
                                   const char *boundary_name,
                                   const char *card_height_name,
                                   const char *card_pose_name,
+                                  const char *bearing_name,
                                   float target_distance_m, unsigned batch_count,
                                   const char *batch_status,
                                   unsigned selected_item, bool confirm_erase,
@@ -585,7 +590,7 @@ void radar_ui_update_capture_menu(const char *environment_name,
     if (s_page != RADAR_PAGE_CAPTURE_MENU || !s_capture_menu_label) return;
     static const char *const items[] = {
         "ENV", "LINK", "DIST", "SPACE", "ROOM SIZE", "OBSTACLE",
-        "MATERIAL", "FURNITURE", "BOUNDARY", "HEIGHT", "POSE",
+        "MATERIAL", "FURNITURE", "BOUNDARY", "HEIGHT", "POSE", "BEARING",
         "START CAPTURE", "EXPORT BATCH", "NEW BATCH", "BATCH STATUS", "BACK",
     };
     const unsigned item_count = sizeof(items) / sizeof(items[0]);
@@ -622,8 +627,8 @@ void radar_ui_update_capture_menu(const char *environment_name,
         } else {
             (void)snprintf(menu_lines, sizeof(menu_lines),
                            "%cBOUNDARY    %s\n%cHEIGHT      %s\n%cPOSE        %s\n"
-                           "%cSTART CAPTURE\n%cEXPORT BATCH\n%cNEW BATCH\n"
-                           "%cBATCH STATUS\n%cBACK",
+                           "%cBEARING     %s\n%cSTART CAPTURE\n%cEXPORT BATCH\n"
+                           "%cNEW BATCH\n%cBATCH STATUS\n%cBACK",
                            selected_item == 8 ? '>' : ' ',
                            boundary_name ? boundary_name : "UNKNOWN",
                            selected_item == 9 ? '>' : ' ',
@@ -631,10 +636,12 @@ void radar_ui_update_capture_menu(const char *environment_name,
                            selected_item == 10 ? '>' : ' ',
                            card_pose_name ? card_pose_name : "UNKNOWN",
                            selected_item == 11 ? '>' : ' ',
+                           bearing_name ? bearing_name : "UNSET",
                            selected_item == 12 ? '>' : ' ',
                            selected_item == 13 ? '>' : ' ',
                            selected_item == 14 ? '>' : ' ',
-                           selected_item == 15 ? '>' : ' ');
+                           selected_item == 15 ? '>' : ' ',
+                           selected_item == 16 ? '>' : ' ');
         }
         (void)snprintf(text, sizeof(text), "PAGE %u/2\n%s",
                        selected_item < 8u ? 1u : 2u, menu_lines);

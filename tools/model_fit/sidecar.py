@@ -166,7 +166,14 @@ def merge_sidecar(runs, entries) -> None:
             run.sidecar = {"present": False}
             continue
         _entry_checks(entry, run)
-        run.bearing_deg = entry.bearing_deg
+        # bearing precedence (v5): the on-device annotation wins; the sidecar
+        # only backfills runs without one. Disagreement beyond a half-sector
+        # is a conflict warning, not a silent overwrite.
+        if entry.bearing_deg is not None:
+            if run.bearing_deg is None:
+                run.bearing_deg = entry.bearing_deg
+            elif abs(entry.bearing_deg - run.bearing_deg) > 22.5:
+                run.warnings.append("BEARING_CONFLICT")
         run.sidecar = {
             "present": True,
             "accepted": entry.accepted,

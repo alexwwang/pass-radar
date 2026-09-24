@@ -50,6 +50,12 @@ void radar_capture_set_obstacle(uint8_t obstacle);
 bool radar_capture_set_context_field(radar_capture_context_field_t field,
                                      uint8_t value);
 uint8_t radar_capture_context_value(radar_capture_context_field_t field);
+// v5: operator true-bearing annotation (RADAR_CAPTURE_CONTEXT_BEARING).
+// Returns RADAR_CAPTURE_BEARING_UNSET when not annotated for this run.
+uint8_t radar_capture_bearing(void);
+// True when the current context carries all labels required to START a run
+// (v5: bearing must be annotated for every capture).
+bool radar_capture_ready_to_start(void);
 uint16_t radar_capture_scene(void);
 const char *radar_capture_scene_name(void);
 const char *radar_capture_context_name(void);

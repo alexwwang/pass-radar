@@ -152,6 +152,20 @@ def evaluate_run(run) -> str:
 
 def evaluate(result: parser.ParseResult, entries=None, sidecar_meta=None):
     """Evaluate all runs; returns (rows, summary)."""
+    # v5: apply device bearing annotations FIRST so the sidecar backfill and
+    # conflict logic in merge_sidecar sees the on-device values.
+    for run in result.runs:
+        device_bearing = None
+        if run.condition and "bearing" in run.condition:
+            device_bearing = run.condition["bearing"]
+        elif run.meta and "bearing" in run.meta:
+            device_bearing = run.meta["bearing"]
+        if isinstance(device_bearing, int) and \
+                0 <= device_bearing <= parser.BEARING_SECTOR_MAX:
+            run.bearing_deg = 45.0 * device_bearing
+        elif device_bearing is not None:
+            run.warnings.append("BEARING_UNSET")
+
     orphans = []
     if entries is not None:
         orphans = sidecar.merge_sidecar(result.runs, entries)

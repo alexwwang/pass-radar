@@ -57,6 +57,7 @@ uint32_t radar_capture_batch_record_crc32(
     if (!header || (!payload && payload_length != 0)) return 0;
     radar_capture_batch_capture_header_t copy = *header;
     copy.record_crc32 = 0;
+    copy.true_bearing = 0;  // operator annotation: outside integrity CRC
     return radar_capture_batch_crc32(&copy, sizeof(copy)) ^
            radar_capture_batch_crc32(payload, payload_length);
 }
@@ -101,11 +102,12 @@ bool radar_capture_batch_capture_header_valid(
             !isfinite(header->ftm_raw_iqr_m) ||
             header->ftm_raw_iqr_m < 0.0f ||
             (header->ftm_raw_sessions == 0u &&
-             (header->ftm_raw_bursts != 0u || header->ftm_raw_median_m != 0.0f)) ||
-            (header->ftm_raw_sessions > 0u &&
-             (header->ftm_raw_bursts == 0u ||
-              header->ftm_raw_median_m <= 0.0f))) return false;
+             (header->ftm_raw_bursts != 0u || header->ftm_raw_median_m != 0.0f)) ||        (header->ftm_raw_sessions > 0u &&
+         (header->ftm_raw_bursts == 0u ||
+          header->ftm_raw_median_m <= 0.0f))) return false;
     }
+    // v5: bearing annotation may be a valid sector or UNSET (v4 = 0xFF).
+    if (header->true_bearing > RADAR_CAPTURE_BEARING_UNSET) return false;
     return header->batch_id != 0 && header->run_id != 0 &&
            header->batch_id != 0 && header->run_id != 0 &&
            scene_dimensions_valid(header->scene_id, header->condition_environment,
@@ -447,6 +449,7 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
         .boundary = meta->boundary,
         .card_height = meta->card_height,
         .card_pose = meta->card_pose,
+        .true_bearing = meta->true_bearing,
         .target_distance_m = meta->target_distance_m,
         .measured_distance_m = meta->measured_distance_m,
         .record_count = meta->record_count,
@@ -597,6 +600,20 @@ unsigned radar_capture_scene_menu_count(void) {
 const char *radar_capture_environment_label(uint8_t environment) {
     return environment == RADAR_CAPTURE_ENV_INDOOR ? "INDOOR" :
            environment == RADAR_CAPTURE_ENV_OUTDOOR ? "OUTDOOR" : "UNKNOWN";
+}
+
+const char *radar_capture_bearing_label(uint8_t bearing) {
+    switch (bearing) {
+    case RADAR_CAPTURE_BEARING_N: return "N";
+    case RADAR_CAPTURE_BEARING_NE: return "NE";
+    case RADAR_CAPTURE_BEARING_E: return "E";
+    case RADAR_CAPTURE_BEARING_SE: return "SE";
+    case RADAR_CAPTURE_BEARING_S: return "S";
+    case RADAR_CAPTURE_BEARING_SW: return "SW";
+    case RADAR_CAPTURE_BEARING_W: return "W";
+    case RADAR_CAPTURE_BEARING_NW: return "NW";
+    default: return "UNSET";
+    }
 }
 
 const char *radar_capture_link_label(uint8_t link) {

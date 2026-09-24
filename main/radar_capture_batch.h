@@ -33,7 +33,7 @@ typedef int esp_err_t;
 #define RADAR_CAPTURE_BATCH_MAGIC 0x52434231u /* RCB1 */
 #define RADAR_CAPTURE_BATCH_CAPTURE_MAGIC 0x52434331u /* RCC1 */
 #define RADAR_CAPTURE_BATCH_COMMIT_MAGIC 0x52434f4bu /* RCOK */
-#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 4u
+#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 5u
 // 读取侧兼容：v3 批次的 reserved 区全零（sessions=0），v4 接受 [3,4]。
 #define RADAR_CAPTURE_BATCH_FORMAT_VERSION_MIN 3u
 #define RADAR_CAPTURE_CONDITION_SCHEMA_VERSION 1u
@@ -96,7 +96,31 @@ typedef enum {
     RADAR_CAPTURE_CONTEXT_BOUNDARY,
     RADAR_CAPTURE_CONTEXT_CARD_HEIGHT,
     RADAR_CAPTURE_CONTEXT_CARD_POSE,
+    // v5: operator-annotated true bearing of the peer (8 sectors). Annotated
+    // on-device before every capture/sweep so bearing truth ships inside the
+    // run metadata; RADAR_CAPTURE_BEARING_UNSET means "no annotation".
+    RADAR_CAPTURE_CONTEXT_BEARING,
 } radar_capture_context_field_t;
+
+// True-bearing annotation values (8 compass sectors, 45 deg each).
+// Unset = 8 so the 0..7 sector codes stay stable in exports.
+typedef enum {
+    RADAR_CAPTURE_BEARING_N = 0,
+    RADAR_CAPTURE_BEARING_NE = 1,
+    RADAR_CAPTURE_BEARING_E = 2,
+    RADAR_CAPTURE_BEARING_SE = 3,
+    RADAR_CAPTURE_BEARING_S = 4,
+    RADAR_CAPTURE_BEARING_SW = 5,
+    RADAR_CAPTURE_BEARING_W = 6,
+    RADAR_CAPTURE_BEARING_NW = 7,
+    RADAR_CAPTURE_BEARING_UNSET = 8,
+} radar_capture_bearing_id_t;
+
+// Sector index -> center bearing in degrees (0 = N, clockwise).
+static inline float radar_capture_bearing_center_deg(uint8_t bearing) {
+    return (bearing <= RADAR_CAPTURE_BEARING_NW) ? 45.0f * (float)bearing
+                                                 : -1.0f;
+}
 
 typedef enum {
     RADAR_CAPTURE_ROOM_GEOMETRY_ROOM = 0,
@@ -201,6 +225,9 @@ typedef struct __attribute__((packed)) {
     uint8_t boundary;
     uint8_t card_height;
     uint8_t card_pose;
+    // FORMAT_VERSION 5: operator true-bearing annotation (former reserved
+    // byte 0). v4 records read back as 0xFF == RADAR_CAPTURE_BEARING_UNSET.
+    uint8_t true_bearing;
     float target_distance_m;
     float measured_distance_m;
     uint32_t record_count;
@@ -216,7 +243,8 @@ typedef struct __attribute__((packed)) {
     float ftm_raw_iqr_m;      // session median 的 IQR
     uint16_t ftm_raw_sessions; // 完成的 session 数；0 = 无原始数据
     uint16_t ftm_raw_bursts;  // 有效 burst 总数
-    uint8_t reserved[28];
+    // reserved[27]: byte 0 became true_bearing in FORMAT_VERSION 5.
+    uint8_t reserved[27];
 } radar_capture_batch_capture_header_t;
 
 _Static_assert(sizeof(radar_capture_batch_capture_header_t) == 112,
@@ -251,6 +279,7 @@ typedef struct {
     uint8_t boundary;
     uint8_t card_height;
     uint8_t card_pose;
+    uint8_t true_bearing;
     float target_distance_m;
     float measured_distance_m;
     uint32_t record_count;
@@ -336,6 +365,7 @@ const char *radar_capture_batch_space_status(void);
 uint32_t radar_capture_batch_id(void);
 uint32_t radar_capture_batch_count(void);
 const char *radar_capture_scene_label(uint16_t scene_id);
+const char *radar_capture_bearing_label(uint8_t bearing);
 const char *radar_capture_environment_label(uint8_t environment);
 const char *radar_capture_link_label(uint8_t link);
 const char *radar_capture_obstacle_label(uint8_t obstacle);

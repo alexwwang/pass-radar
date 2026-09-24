@@ -287,24 +287,24 @@ static void poll_tick(lv_timer_t *t) {
                 RADAR_CAPTURE_CONTEXT_SPACE),
             s_capture_editor_index);
     } else if (page == RADAR_PAGE_CAPTURE_MENU) {            radar_ui_update_capture_menu(
-            radar_capture_environment_label(s_capture_environment_index),
-            radar_capture_link_label(s_capture_link_index),
+            radar_capture_environment_label(s_capture_environment_index),            radar_capture_link_label(s_capture_link_index),
             radar_capture_context_name(),
             radar_capture_room_size_label_for_space(
                 radar_capture_context_value(RADAR_CAPTURE_CONTEXT_SPACE),
                 radar_capture_context_value(RADAR_CAPTURE_CONTEXT_ROOM_SIZE)),
-            radar_capture_obstacle_label(
-                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_OBSTACLE)),
-            radar_capture_material_label(
-                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_MATERIAL)),
-            radar_capture_furniture_label(
-                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_FURNITURE)),
-            radar_capture_boundary_label(
-                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_BOUNDARY)),
-            radar_capture_card_height_label(
-                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_CARD_HEIGHT)),
-            radar_capture_card_pose_label(
-                radar_capture_context_value(RADAR_CAPTURE_CONTEXT_CARD_POSE)),
+            radar_capture_obstacle_label(radar_capture_context_value(
+                RADAR_CAPTURE_CONTEXT_OBSTACLE)),
+            radar_capture_material_label(radar_capture_context_value(
+                RADAR_CAPTURE_CONTEXT_MATERIAL)),
+            radar_capture_furniture_label(radar_capture_context_value(
+                RADAR_CAPTURE_CONTEXT_FURNITURE)),
+            radar_capture_boundary_label(radar_capture_context_value(
+                RADAR_CAPTURE_CONTEXT_BOUNDARY)),
+            radar_capture_card_height_label(radar_capture_context_value(
+                RADAR_CAPTURE_CONTEXT_CARD_HEIGHT)),
+            radar_capture_card_pose_label(radar_capture_context_value(
+                RADAR_CAPTURE_CONTEXT_CARD_POSE)),
+            radar_capture_bearing_label(radar_capture_bearing()),
             radar_capture_targets_m[s_capture_target_index],
 
             radar_capture_batch_count(),
@@ -532,7 +532,9 @@ static void sweep_done(lv_timer_t *t) {
     radar_ui_set_result_hint(radar_hint_label(s_obstruct_hint));
 
     // 包 B:扫盘结果落 USB 日志,供 PC 端 model_fit.py 解析(纯日志,零行为变化)。
-    ESP_LOGI(TAG, "SWEEP_RESULT angle=%.1f spread=%.1f dist=%.2f conf=%d",
+    // v5: bearing 为操作员标注真方位,每笔采集/扫盘前在卡上标注。
+    ESP_LOGI(TAG, "SWEEP_RESULT bearing=%u angle=%.1f spread=%.1f dist=%.2f conf=%d",
+             (unsigned)radar_capture_bearing(),
              (double)angle, (double)spread, (double)fr.distance_m, (int)conf);
 
     if (s_sweep_timer) {
@@ -805,7 +807,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         }
         if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) &&
             ev == BSP_BTN_CLICK) {
-            const unsigned item_count = 16u;
+            const unsigned item_count = 17u;
             if (btn == BSP_BTN_UP) {
                 s_capture_menu_item =
                     (s_capture_menu_item + item_count - 1u) % item_count;
@@ -890,6 +892,12 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 break;
             }
             case 11: {
+                // v5: bearing annotation is mandatory before START.
+                if (!radar_capture_ready_to_start()) {
+                    snprintf(s_capture_action_status,
+                             sizeof(s_capture_action_status), "SET BEARING!");
+                    break;
+                }
                 esp_err_t err = radar_capture_start(
                     radar_capture_targets_m[s_capture_target_index]);
                 if (err == ESP_OK) {
@@ -904,16 +912,23 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 break;
             }
             case 12: {
+                s_capture_editor_field = RADAR_CAPTURE_CONTEXT_BEARING;
+                s_capture_editor_index =
+                    radar_capture_context_value(s_capture_editor_field) % 8u;
+                radar_ui_show_capture_editor(s_capture_editor_field);
+                break;
+            }
+            case 13: {
                 esp_err_t err = radar_capture_export_saved();
                 snprintf(s_capture_action_status,
                          sizeof(s_capture_action_status), "EXPORT %s",
                          esp_err_to_name(err));
                 break;
             }
-            case 13:
+            case 14:
                 s_capture_erase_confirm = true;
                 break;
-            case 14:
+            case 15:
                 snprintf(s_capture_action_status,
                          sizeof(s_capture_action_status), "COUNT %lu %s",
                          (unsigned long)radar_capture_batch_count(),

@@ -77,12 +77,19 @@ def _parse_kvs(text: str) -> dict:
     return {key: _to_number(val) for key, val in _KV_RE.findall(text)}
 
 
+# Bearing values share the enum of radar_capture_bearing_id_t (v5): 0..7 =
+# N/NE/E/SE/S/SW/W/NW sector centers, 8 (0xFF on v4 records) = UNSET.
+BEARING_SECTOR_MAX = 7
+BEARING_UNSET = 8
+
+
 @dataclass
 class SweepResult:
     angle_deg: float
     spread_deg: float
     dist_m: float
     conf: int
+    bearing: int = BEARING_UNSET  # v5: operator annotation, 0..7 (UNSET on v4)
     log_ts_ms: Optional[int] = None
 
 
@@ -229,6 +236,7 @@ def parse_lines(lines, source_name: str = "<log>") -> ParseResult:
                 spread_deg=float(kv.get("spread", float("nan"))),
                 dist_m=float(kv.get("dist", float("nan"))),
                 conf=int(kv.get("conf", -1)),
+                bearing=int(kv.get("bearing", BEARING_UNSET)),
                 log_ts_ms=log_ts,
             ))
             continue

@@ -31,12 +31,13 @@ CSV_HEADER = (
 )
 
 
-def condition_line(ts, run, scene, env, link, prop, obs=0):
+def condition_line(ts, run, scene, env, link, prop, obs=0, bearing=0):
     return (
         f"I ({ts}) radar_capture: BATCH_CAPTURE_CONDITION batch={BATCH} "
         f"run={run} scene={scene} schema=1 env={env} link={link} obs={obs} "
         f"prop={prop} room=5 size=3 material=0 furniture=0 boundary=0 "
-        f"height=1 pose=0 observed_level=0 observed_obstruction=0"
+        f"height=1 pose=0 bearing={bearing} observed_level=0 "
+        f"observed_obstruction=0"
     )
 
 
@@ -84,8 +85,9 @@ def build_log(step=300):
     lines.append(condition_line(300000, 3, "O-MULTIPATH", 0, 3, 0))
     lines.append(meta_line(301000, 3, "8.0", 100))
     lines.extend(csv_block(301001, "8.0", 100, step))
-    # package B result lines
-    lines.append("I (400000) main: SWEEP_RESULT angle=123.4 spread=10.0 dist=3.05 conf=3")
+    # package B result lines (v5: bearing annotation on every sweep)
+    lines.append("I (400000) main: SWEEP_RESULT bearing=3 angle=123.4 "
+                 "spread=10.0 dist=3.05 conf=3")
     lines.append("I (401000) main: CALIB_RESULT ref=-45.3 offset=0.12")
     return lines
 
@@ -113,6 +115,7 @@ class ParseRunsTest(unittest.TestCase):
     def test_package_b_result_lines(self) -> None:
         result = parse_log()
         self.assertEqual(len(result.sweeps), 1)
+        self.assertEqual(result.sweeps[0].bearing, 3)
         self.assertAlmostEqual(result.sweeps[0].angle_deg, 123.4)
         self.assertAlmostEqual(result.sweeps[0].dist_m, 3.05)
         self.assertEqual(result.sweeps[0].conf, 3)
@@ -155,7 +158,7 @@ class VerdictTest(unittest.TestCase):
 
     def test_scene_conflict_is_rejected(self) -> None:
         lines = [
-            condition_line(1, 1, "O-LOS", 1, 3, 2),  # label says (0,0)
+            condition_line(1, 1, "O-LOS", 1, 3, 2, bearing=5),  # label says (0,0)
             meta_line(2, 1, "3.0", 100),
             *csv_block(3, "3.0", 100),
         ]
@@ -171,6 +174,7 @@ class VerdictTest(unittest.TestCase):
         ]
         result = parser.parse_lines(lines)
         rows, _ = report.evaluate(result)
+        self.assertIsNone(result.runs[0].bearing_deg)
         self.assertEqual(rows[0]["source"], "nvs")
         self.assertIn("NO_CONDITION_LABELS", rows[0]["warnings"])
         self.assertEqual(rows[0]["verdict"], "SUSPECT")
@@ -196,7 +200,6 @@ runs:
     measured_distance_m: 3.04
     method: tape
     uncertainty_m: 0.03
-    bearing_deg: 45
     window_ms: [0, 38000]
     capture: 101000
 """
@@ -208,10 +211,47 @@ class SidecarTest(unittest.TestCase):
         rows, summary = report.evaluate(result, load_entries(VALID_ENTRY))
         self.assertEqual(rows[0]["truth"], "measured")
         self.assertAlmostEqual(rows[0]["truth_m"], 3.04)
-        self.assertEqual(rows[0]["bearing_deg"], 45)
+        self.assertEqual(rows[0]["bearing_deg"], 0)
         self.assertEqual(rows[0]["verdict"], "PASS")
         self.assertEqual(summary["truth_measured"], 1)
-        self.assertEqual(summary["with_bearing"], 1)
+        # v5: every run carries the device bearing annotation (default N=0)
+        self.assertEqual(summary["with_bearing"], 3)
+
+    def test_sidecar_bearing_backfills_when_unset(self) -> None:
+        # device annotation UNSET (v4-style log): sidecar bearing backfills
+        entries = load_entries(f"""
+batch_id: {BATCH}
+runs:
+  - run_id: 1
+    measured_distance_m: 3.02
+    method: tape
+    capture: 101000
+    bearing_deg: 45
+""")
+        # rebuild run 1 without a device bearing annotation
+        result = parser.parse_lines(build_log())
+        result.runs[0].condition["bearing"] = parser.BEARING_UNSET
+        result.runs[0].meta["bearing"] = parser.BEARING_UNSET
+        rows, _ = report.evaluate(result, entries)
+        self.assertEqual(rows[0]["bearing_deg"], 45)
+        self.assertEqual(rows[0]["truth"], "measured")
+
+    def test_bearing_conflict_warns_and_device_wins(self) -> None:
+        entries = load_entries(f"""
+batch_id: {BATCH}
+runs:
+  - run_id: 1
+    measured_distance_m: 3.02
+    method: tape
+    capture: 101000
+    bearing_deg: 45
+""")
+        result = parser.parse_lines(build_log())
+        result.runs[0].condition["bearing"] = 2  # device says E (90 deg)
+        rows, _ = report.evaluate(result, entries)
+        self.assertEqual(rows[0]["bearing_deg"], 90)  # device annotation wins
+        self.assertIn("BEARING_CONFLICT", rows[0]["warnings"])
+        self.assertEqual(rows[0]["truth"], "measured")
 
     def test_missing_time_anchor_rejected(self) -> None:
         entries = load_entries(f"""
