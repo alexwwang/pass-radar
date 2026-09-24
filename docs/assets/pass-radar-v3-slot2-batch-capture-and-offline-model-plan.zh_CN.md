@@ -45,24 +45,33 @@ English version: `pass-radar-v3-slot2-batch-capture-and-offline-model-plan.md`
 
 ## 3. 采集矩阵
 
-### 3.1 基础 LOS 矩阵
+### 3.1 距离档分层
 
 ```text
-距离：1 / 3 / 5 / 8 / 10 / 15 / 20 / 30 m
-每个距离：3 次重复
-总 Capture：8 × 3 = 24 次
+核心档（第一轮必做，与最小条件矩阵一致）：1 / 3 / 5 m
+扩展档（可选，按场地追加，加深距离曲线）：8 / 10 / 15 / 20 / 30 m
+远场扩展档（v3.1 远距阶段，P5/P6 折点拟合支撑）：60 / 80 / 100 m
+每个距离点：2~3 次重复
 ```
 
-### 3.2 完整户外矩阵
+O-LOS 一条线扫完核心档 + 扩展档即原「基础 LOS 矩阵」：1/3/5/8/10/15/20/30 m × 3 次 = 24 次。
 
-| 场景 | 距离点 | 重复次数 | Capture 数 |
-| --- | --- | ---: | ---: |
-| O-LOS：无遮挡视距 | 1/3/5/8/10/15/20/30 m | 3 | 24 |
-| O-HUMAN：静态人体遮挡 | 3/5/8/10/15 m | 3 | 15 |
-| O-DYNAMIC：动态人体遮挡 | 3/5/8/10/15 m | 3 | 15 |
-| O-FOLIAGE：树丛/灌木遮挡 | 8/15/20/30 m | 3 | 12 |
-| O-WALL：墙/围栏遮挡 | 8/15/20/30 m | 3 | 12 |
-| **合计** |  |  | **78** |
+### 3.2 统一场景矩阵（8 个核心场景）
+
+场景全集以最小条件矩阵为唯一来源：`ENV(INDOOR/OUTDOOR) × LINK(LOS/STATIC/DYNAMIC/MULTIPATH)` 共 8 个核心场景，固件已全部内置。遮挡物种类（人体/植被/墙体/金属）不是独立场景，而是上下文标签（`condition_obstruction` 等字段）。
+
+| 场景 | 核心档 | 扩展档 | 远场扩展档 | 定位 |
+| --- | --- | --- | --- | --- |
+| I-LOS | 1/3/5 m | +8 m | — | 室内基线 |
+| I-STATIC | 1/3/5 m | +8 m | — | 室内静态遮挡 |
+| I-DYNAMIC | 1/3/5 m | +8 m | — | 室内动态遮挡 |
+| I-MULTIPATH | 1/3/5 m | +8 m | — | 室内多径 |
+| O-LOS | 1/3/5 m | 8/10/15/20/30 m | 60/80/100 m | 户外基线 |
+| O-STATIC | 1/3/5 m | 8/10/15 m | — | 户外静态遮挡 |
+| O-DYNAMIC | 1/3/5 m | 8/10/15 m | — | 户外动态遮挡 |
+| O-MULTIPATH | 1/3/5 m | 8/15/20 m | — | 户外多径 |
+
+Capture 数参考：核心档全做（每场景 3 次重复）= 72 次，只做 2 次重复 = 48 次（与最小矩阵一致）。远场扩展档 60/80/100 m × 2 次 = 6 次，属 v3.1 远距阶段；未采集前 P5/P6 保持编译期值。
 
 每个 Capture 仍只允许一个距离、一个场景、一个固定姿态和一个约 38 秒窗口。
 
@@ -74,10 +83,10 @@ English version: `pass-radar-v3-slot2-batch-capture-and-offline-model-plan.md`
 
 ```text
 TEST CONDITION（Capture 前由开发者设置的测试条件）
-condition_scene_id       稳定的组合 ID，例如 O-LOS 或 I-MULTIPATH
+condition_scene_id       稳定的 8 场景组合 ID，例如 O-LOS 或 I-MULTIPATH
 condition_environment    OUTDOOR 或 INDOOR
-condition_obstruction   NONE / HUMAN_STATIC / HUMAN_DYNAMIC / FOLIAGE / WALL / METAL
-condition_propagation   LOS / NLOS / MULTIPATH
+condition_link           LOS / STATIC / DYNAMIC / MULTIPATH（与 environment 一起决定 scene_id）
+condition_obstruction    NONE / HUMAN_STATIC / HUMAN_DYNAMIC / FOLIAGE / WALL / METAL / UNKNOWN（上下文）
 
 DEVICE OBSERVATION（根据采集到的无线数据自动计算）
 observed_level           L0_LOS / L1_INDOOR / L2_NLOS / L3_LOST
@@ -85,25 +94,20 @@ observed_obstruction     NONE_LOS / FAR_LOS / ATTENUATING_STATIC /
                          FOLIAGE_DYNAMIC / REFLECTION / UNKNOWN
 ```
 
-菜单和电脑端解析器使用以下稳定的组合条件 ID：
+菜单和电脑端解析器使用以下 8 个核心场景 ID（固件内置 scene label）：
 
-| ID | 环境 | 遮挡 | 传播特征 | 阶段 |
+| ID | 环境 | 链路条件 | 典型上下文（`condition_obstruction` 等） | 定位 |
 | --- | --- | --- | --- | --- |
-| O-LOS | 室外 | 无 | LOS | 户外基线 |
-| O-HUMAN | 室外 | 静态人体 | NLOS | 户外遮挡 |
-| O-DYNAMIC | 室外 | 动态人体 | NLOS | 户外遮挡 |
-| O-FOLIAGE | 室外 | 植被 | NLOS | 户外遮挡 |
-| O-WALL | 室外 | 墙体/围栏 | NLOS | 户外遮挡 |
-| O-METAL | 室外 | 金属围栏/结构 | MULTIPATH/NLOS | 户外遮挡 |
-| O-MULTIPATH | 室外 | 无或未知 | MULTIPATH | 户外多径 |
-| I-LOS | 室内 | 无 | LOS | 室内基线 |
-| I-HUMAN | 室内 | 静态人体 | NLOS | 室内遮挡 |
-| I-DYNAMIC | 室内 | 动态人体 | NLOS | 室内遮挡 |
-| I-WALL | 室内 | 墙体/隔断 | NLOS | 室内遮挡 |
-| I-METAL | 室内 | 金属/家具 | MULTIPATH | 室内多径 |
-| I-MULTIPATH | 室内 | 无或未知 | MULTIPATH | 室内多径 |
+| I-LOS | 室内 | LOS 无遮挡视距 | NONE | 室内基线 |
+| I-STATIC | 室内 | STATIC 静态遮挡 | HUMAN_STATIC / WALL / FOLIAGE | 室内遮挡 |
+| I-DYNAMIC | 室内 | DYNAMIC 动态遮挡 | HUMAN_DYNAMIC | 室内遮挡 |
+| I-MULTIPATH | 室内 | MULTIPATH 多径 | METAL / 墙角强回波 | 室内多径 |
+| O-LOS | 室外 | LOS 无遮挡视距 | NONE | 户外基线 |
+| O-STATIC | 室外 | STATIC 静态遮挡 | HUMAN_STATIC / WALL / FOLIAGE | 户外遮挡 |
+| O-DYNAMIC | 室外 | DYNAMIC 动态遮挡 | HUMAN_DYNAMIC / 车辆 | 户外遮挡 |
+| O-MULTIPATH | 室外 | MULTIPATH 多径 | METAL / 建筑反射 | 户外多径 |
 
-以上是菜单预设，不是所有有效组合的全集；上面的结构化维度和组合 ID 规则才是权威定义。
+这 8 个场景就是模型场景的全集，与最小条件矩阵一致；遮挡物种类不新增场景，只写入上下文字段。旧文档中的 O-HUMAN/O-FOLIAGE/O-WALL/I-HUMAN/I-WALL/I-METAL 等复合场景名已废弃，一律映射到 8 个核心场景 + 上下文标签。
 
 #### ELI5 操作规则
 
@@ -113,18 +117,11 @@ observed_obstruction     NONE_LOS / FAR_LOS / ATTENUATING_STATIC /
 | --- | --- | --- |
 | 两张卡在哪里？ | environment | 建筑物内部 = INDOOR；空地/公园/道路 = OUTDOOR。 |
 | 两张卡中间有什么？ | obstruction | 没有 = NONE；静止的人 = HUMAN_STATIC；移动的人 = HUMAN_DYNAMIC；树丛/树木 = FOLIAGE；墙/围栏/隔断 = WALL；大型金属物体 = METAL。 |
-| 主要信号路径怎么走？ | propagation | 能直接看见且路径无遮挡 = LOS；直达路径穿过或绕过障碍 = NLOS；存在明显回波或多个可能路径 = MULTIPATH。 |
+| 两张卡之间发生了什么？ | link | 能直接看见且中间没东西 = LOS；中间有不动的东西挡着 = STATIC；中间有人/车/门在动 = DYNAMIC；直达路径被挡但信号经墙角/金属多次反射到达 = MULTIPATH。 |
 | 空间是什么形状？ | room_geometry | ROOM、CORRIDOR、OPEN_HALL、CORNER、STAIR 或 OUTDOOR_OPEN。 |
 | 空间有多大？ | room_size | SMALL、MEDIUM 或 LARGE；尽量在测试记录中填写实际尺寸。 |
 | 主要表面是什么？ | material | SOFT、MIXED、HARD 或 METAL_GLASS。 |
 | 空间有多拥挤？ | furniture_density | LOW <20% / MEDIUM 20–50% / HIGH >50%，按大型家具/固定反射体占可用面积估计。 |
-boundary
-card_height_class
-card_pose
-observed_level
-observed_obstruction
-
- | LOW、MEDIUM 或 HIGH；只统计大型反射体/遮挡物。 |
 | 附近有重要边界吗？ | boundary | OPEN >2m、WALL_NEAR <=2m、AT_CORNER <=2m、DOORWAY 或 PARTITION。 |
 | 卡片怎么拿？ | card_height/card_pose | 记录高度，以及 UPRIGHT、FLAT 或 MIXED；重复测试保持一致。 |
 
@@ -136,24 +133,24 @@ observed_obstruction
 I-LOS + ROOM + MIXED + MEDIUM
 I-LOS + CORRIDOR + HARD
 I-MULTIPATH + CORNER 或 METAL_GLASS
-I-WALL + PARTITION 或 WALL_NEAR
+I-STATIC + PARTITION 或 WALL_NEAR（隔断/近距离墙遮挡）
 ```
 
-当前 78 次户外矩阵使用 O-LOS、O-HUMAN、O-DYNAMIC、O-FOLIAGE 和 O-WALL。开始室内、金属或多径采集前，必须先把其他条件 ID 加入固件。设备必须同时保存组合 ID 和拆解维度，电脑端不能依赖字符串解析标签。
+8 个核心场景已全部内置在固件中，无需再向固件添加条件 ID；人体/植被/墙体/金属等差异通过上下文字段区分。设备必须同时保存组合 ID 和拆解维度，电脑端不能依赖字符串解析标签。
 
 ### 3.4 一个统一的室内/室外混合批次
 
 室内和室外不是两个 Capture 阶段，也不是两套存储格式，而是一个统一批次中的独立条件维度。采集顺序自由：开发者可以先采集室内，再在同一批次中继续采集室外。
 
-条件使用稳定的 16 位组合 ID 编码，而不是只能表示 12 个固定标签：
+条件使用稳定的 16 位组合 ID 编码（固件实际实现，`radar_capture_condition_scene_id()`）：
 
 ```text
-condition_scene_id = (environment << 8) | (obstruction << 4) | propagation
+condition_scene_id = (environment << 8) | (link << 4)
 ```
 
-拆解后的维度仍是电脑端分析的权威字段。UI 提供常用组合，记录格式则支持所有有效的环境/遮挡/传播组合，不需要再次修改二进制结构。
+其中 `environment ∈ {OUTDOOR=0, INDOOR=1}`，`link ∈ {LOS=0, STATIC=1, DYNAMIC=2, MULTIPATH=3}`，共 8 个核心场景，非法组合返回 `0xFFFF`。拆解后的维度仍是电脑端分析的权威字段；环境/链路决定 8 个核心场景，遮挡物等差异由上下文字段承载，不需要再次修改二进制结构。
 
-原来的 78 次户外 Capture 仍是计划中的一个子集，不再是整个批次的最大值。批次容量门禁根据 slot2 实际空间和最坏 Capture span 计算。室内和室外记录可以任意顺序追加，直到剩余空间不足以完整容纳下一次 Capture；此时必须在倒计时开始前拒绝新的 Capture，不能覆盖或静默丢弃已有条件数据。
+原 78 次户外矩阵已被 §3.2 的统一矩阵取代（核心档 48~72 次 + 可选扩展档），不再是整个批次的最大值。批次容量门禁根据 slot2 实际空间和最坏 Capture span 计算。室内和室外记录可以任意顺序追加，直到剩余空间不足以完整容纳下一次 Capture；此时必须在倒计时开始前拒绝新的 Capture，不能覆盖或静默丢弃已有条件数据。
 
 批次生命周期统一为：
 
@@ -236,7 +233,7 @@ room_size
 material
 furniture_density
 boundary
-card_height_class
+card_height
 card_pose
 observed_level
 observed_obstruction
@@ -250,6 +247,8 @@ firmware_version
 boot_sequence
 reset_reason
 ```
+
+其中 `condition_propagation` 不是独立设置项，而是由 `condition_link` 推导后持久化（LOS→LOS、STATIC/DYNAMIC→NLOS、MULTIPATH→MULTIPATH）。
 
 每条 Capture 单独 CRC。只有写入完成并验证回读后，才写该 Capture 的 commit marker。批次完成后写 BATCH_COMMIT。重启扫描时：
 
@@ -371,7 +370,7 @@ CRC全部通过
 
 ### 仅保存 NVS
 
-不采用。24 KiB 共享 NVS 且当前只有两个 key，无法保存 78 次 Capture。
+不采用。24 KiB 共享 NVS 且当前只有两个 key，无法保存当时规划的 78 次户外矩阵规模的 Capture 数据。
 
 ### slot2 原始批次 + 在线摘要 + 电脑拟合
 
@@ -395,7 +394,7 @@ CRC全部通过
 6. 增加完整条件标签和设备观察分类字段；
 7. 增加 host 批次编码、恢复、容量、标签一致性和 CRC 测试；
 8. 在不擦除 NVS 的情况下进行带标签的真机单批次验证；
-9. 再执行 24/78 次户外矩阵；
+9. 再执行 §3.2 统一矩阵（从核心档开始，按场地追加扩展档）；
 10. 验证统一的室内/室外混合批次；可以先采集室内，再不改变批次格式地继续采集室外。
 
 ## 13. 最小场景矩阵与 Capture 编辑器基线

@@ -115,14 +115,18 @@ static void test_fusion_update(void) {
     CHECK(fabsf(r.distance_m - expect) < 0.01f, "dual-rssi distance %.2f vs %.2f",
           r.distance_m, expect);
 
-    // 4) FTM 有效且一致 → HIGH,0.7*ftm + 0.3*rssi
+    // 4) FTM 有效且一致 → HIGH,按距离逆方差加权融合(D8)
     float rssi_d = radar_fusion_sym_distance(-63.0f, -42.0f, RADAR_ENV_OUTDOOR);
     r = radar_fusion_update(true, 8.0f, -60.0f, -66.0f, -42.0f, RADAR_ENV_OUTDOOR);
     CHECK(r.conf == RADAR_CONF_HIGH, "ftm+sym should be HIGH, got %d", r.conf);
     CHECK(r.ftm_used, "ftm should be used");
-    float fused = 0.7f * 8.0f + 0.3f * rssi_d;
+    float w4 = radar_fusion_ftm_weight(0.5f * (8.0f + rssi_d));
+    float fused = w4 * 8.0f + (1.0f - w4) * rssi_d;
     CHECK(fabsf(r.distance_m - fused) < 0.01f, "fused distance %.2f vs %.2f",
           r.distance_m, fused);
+    CHECK(fabsf(r.ftm_weight - w4) < 0.001f, "ftm_weight %.3f vs %.3f",
+          r.ftm_weight, w4);
+    CHECK(w4 > 0.5f, "weight near 9m should favor FTM, got %.2f", w4);
 
     // 5) FTM 疑似反射径 → 降级 RSSI,MED,ftm_used=false
     r = radar_fusion_update(true, 30.0f, -60.0f, -66.0f, -42.0f, RADAR_ENV_OUTDOOR);
@@ -258,11 +262,67 @@ static void test_calib(void) {
     printf("  calib: PASS\n");
 }
 
+static void test_ftm_weight_model(void) {
+    // 无效输入 → 中性权重
+    CHECK(fabsf(radar_fusion_ftm_weight(NAN) - 0.5f) < 0.001f, "NaN → 0.5");
+    CHECK(fabsf(radar_fusion_ftm_weight(0.0f) - 0.5f) < 0.001f, "0 → 0.5");
+    CHECK(fabsf(radar_fusion_ftm_weight(-5.0f) - 0.5f) < 0.001f, "negative → 0.5");
+
+    // 单调不减:FTM 权重随距离上升(绝对误差底被摊薄,n 斜率墙随 ln d 增高)
+    float prev = 0.0f;
+    for (float d = 0.5f; d <= 30.5f; d += 0.5f) {
+        float w = radar_fusion_ftm_weight(d);
+        CHECK(w >= prev - 0.0005f, "weight not monotone at %.1fm: %.3f < %.3f",
+              d, w, prev);
+        prev = w;
+    }
+
+    // 关键锚点:<=3m 偏 RSSI、约 5m 交叉、>=8m 偏 FTM(80% 精度评审 D8)
+    float w3 = radar_fusion_ftm_weight(3.0f);
+    float w5 = radar_fusion_ftm_weight(5.0f);
+    float w8 = radar_fusion_ftm_weight(8.0f);
+    float w25 = radar_fusion_ftm_weight(25.0f);
+    CHECK(w3 < 0.5f, "3m should favor RSSI, w=%.3f", w3);
+    CHECK(w5 > 0.35f && w5 < 0.65f, "5m should be the crossover, w=%.3f", w5);
+    CHECK(w8 > 0.7f, "8m should favor FTM, w=%.3f", w8);
+    CHECK(w25 > 0.9f, "25m should be FTM-dominant, w=%.3f", w25);
+
+    printf("  ftm_weight_model: PASS\n");
+}
+
+static void test_fusion_v3_weighted(void) {
+    // 近距:RSSI 3.0m / FTM 3.6m 一致 → 融合值应更靠近 RSSI
+    radar_fusion_ftm_observation_t ftm = {
+        .valid = true, .fresh = true, .calibrated = true,
+        .distance_m = 3.6f, .spread_m = 0.3f, .valid_bursts = 16,
+    };
+    radar_fusion_result_t r = radar_fusion_update_v3(&ftm, -52.5f, -52.5f, -42.0f,
+                                                     RADAR_LEVEL_L0_LOS, true);
+    CHECK(r.ftm_used, "v3 near: ftm should contribute");
+    CHECK(r.ftm_weight < 0.5f, "v3 near: weight should favor RSSI, w=%.3f", r.ftm_weight);
+    CHECK(fabsf(r.distance_m - 3.0f) < fabsf(r.distance_m - 3.6f),
+          "v3 near: fused %.2f should lean to rssi 3.0 over ftm 3.6", r.distance_m);
+
+    // 远距:RSSI ~11.9m / FTM 12.6m 一致 → 融合值应更靠近 FTM
+    ftm.distance_m = 12.6f;
+    r = radar_fusion_update_v3(&ftm, -65.7f, -65.7f, -42.0f,
+                               RADAR_LEVEL_L0_LOS, true);
+    CHECK(r.ftm_used, "v3 far: ftm should contribute");
+    CHECK(r.ftm_weight > 0.7f, "v3 far: weight should favor FTM, w=%.3f", r.ftm_weight);
+    CHECK(fabsf(r.distance_m - 12.6f) < fabsf(r.distance_m - r.rssi_dist_m),
+          "v3 far: fused %.2f should lean to ftm 12.6 over rssi %.2f",
+          r.distance_m, r.rssi_dist_m);
+
+    printf("  fusion_v3_weighted: PASS\n");
+}
+
 int main(void) {
     test_sym_rssi();
     test_ftm_filter();
     test_ftm_suspicious();
     test_fusion_update();
+    test_ftm_weight_model();
+    test_fusion_v3_weighted();
     test_angles();
     test_env_est();
     test_calib();

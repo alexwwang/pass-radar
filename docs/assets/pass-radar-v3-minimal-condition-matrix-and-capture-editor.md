@@ -89,7 +89,7 @@ Recommended first distances:
 1 m / 3 m / 5 m
 ```
 
-If the space permits, 8 m can be added to indoor or outdoor long-range conditions without creating another model scene.
+If the space permits, 8 m can be added to indoor or outdoor long-range conditions without creating another model scene. The 60/80/100 m far-field extension tiers (P5/P6 breakpoint support) belong to the v3.1 far-range phase; see the slot2 batch-capture plan §3.1. Until they are collected, P5/P6 keep their compile-time values.
 
 Forty-eight Captures is the minimum useful set; seventy-two is better for estimating repeat variance. Failed runs marked `INVALID` do not count as valid matrix data.
 

@@ -39,24 +39,33 @@ The card may maintain progress and candidate summaries such as sample count, FTM
 
 ## 3. Outdoor campaign matrix
 
-### 3.1 Basic LOS matrix
+### 3.1 Distance-tier structure
 
 ```text
-Distances: 1 / 3 / 5 / 8 / 10 / 15 / 20 / 30 m
-Repeats per distance: 3
-Total Captures: 8 × 3 = 24
+Core tier (mandatory first round, matches the minimal condition matrix): 1 / 3 / 5 m
+Extension tier (optional, added per available field): 8 / 10 / 15 / 20 / 30 m
+Far-field extension tier (v3.1 far-range phase, P5/P6 breakpoint support): 60 / 80 / 100 m
+Repeats per distance: 2–3
 ```
 
-### 3.2 Full outdoor matrix
+The O-LOS line sweeping the core tier plus the extension tier is exactly the former "basic LOS matrix": 1/3/5/8/10/15/20/30 m × 3 = 24 Captures.
 
-| Scene | Distances | Repeats | Captures |
-| --- | --- | ---: | ---: |
-| O-LOS: unobstructed line of sight | 1/3/5/8/10/15/20/30 m | 3 | 24 |
-| O-HUMAN: static human obstruction | 3/5/8/10/15 m | 3 | 15 |
-| O-DYNAMIC: moving human obstruction | 3/5/8/10/15 m | 3 | 15 |
-| O-FOLIAGE: shrub/tree obstruction | 8/15/20/30 m | 3 | 12 |
-| O-WALL: wall/fence obstruction | 8/15/20/30 m | 3 | 12 |
-| **Total** |  |  | **78** |
+### 3.2 Unified scene matrix (eight core scenes)
+
+The complete scene set follows the minimal condition matrix as its single source: `ENV(INDOOR/OUTDOOR) × LINK(LOS/STATIC/DYNAMIC/MULTIPATH)` gives eight core scenes, all built into the firmware. Obstruction kinds (human/foliage/wall/metal) are not separate scenes; they are context labels (`condition_obstruction` and friends).
+
+| Scene | Core tier | Extension tier | Far-field tier | Role |
+| --- | --- | --- | --- | --- |
+| I-LOS | 1/3/5 m | +8 m | — | indoor baseline |
+| I-STATIC | 1/3/5 m | +8 m | — | indoor static obstruction |
+| I-DYNAMIC | 1/3/5 m | +8 m | — | indoor dynamic obstruction |
+| I-MULTIPATH | 1/3/5 m | +8 m | — | indoor multipath |
+| O-LOS | 1/3/5 m | 8/10/15/20/30 m | 60/80/100 m | outdoor baseline |
+| O-STATIC | 1/3/5 m | 8/10/15 m | — | outdoor static obstruction |
+| O-DYNAMIC | 1/3/5 m | 8/10/15 m | — | outdoor dynamic obstruction |
+| O-MULTIPATH | 1/3/5 m | 8/15/20 m | — | outdoor multipath |
+
+Capture-count reference: the full core tier with 3 repeats per scene is 72 Captures; 2 repeats give 48 (matching the minimal matrix). The far-field tier 60/80/100 m × 2 = 6 Captures belongs to the v3.1 far-range phase; until it is collected, P5/P6 keep their compile-time values.
 
 Each Capture remains exactly one distance, one scene, one fixed pose, and one approximately 38-second window.
 
@@ -68,10 +77,10 @@ Each raw Capture must carry two independent label groups:
 
 ```text
 TEST CONDITION (set by the developer before Capture)
-condition_scene_id       stable composite ID, for example O-LOS or I-MULTIPATH
+condition_scene_id       stable 8-scene composite ID, for example O-LOS or I-MULTIPATH
 condition_environment    OUTDOOR or INDOOR
-condition_obstruction   NONE / HUMAN_STATIC / HUMAN_DYNAMIC / FOLIAGE / WALL / METAL
-condition_propagation   LOS / NLOS / MULTIPATH
+condition_link           LOS / STATIC / DYNAMIC / MULTIPATH (with environment, decides scene_id)
+condition_obstruction    NONE / HUMAN_STATIC / HUMAN_DYNAMIC / FOLIAGE / WALL / METAL / UNKNOWN (context)
 
 DEVICE OBSERVATION (computed from the recorded radio data)
 observed_level           L0_LOS / L1_INDOOR / L2_NLOS / L3_LOST
@@ -79,25 +88,20 @@ observed_obstruction     NONE_LOS / FAR_LOS / ATTENUATING_STATIC /
                          FOLIAGE_DYNAMIC / REFLECTION / UNKNOWN
 ```
 
-The menu presets and host parser use labels such as:
+The menu presets and host parser use these eight core scene IDs (the firmware's built-in scene labels):
 
-| ID | Environment | Obstruction | Propagation | Phase |
+| ID | Environment | Link condition | Typical context (`condition_obstruction` etc.) | Role |
 | --- | --- | --- | --- | --- |
-| O-LOS | outdoor | none | LOS | outdoor baseline |
-| O-HUMAN | outdoor | static human | NLOS | outdoor obstruction |
-| O-DYNAMIC | outdoor | dynamic human | NLOS | outdoor obstruction |
-| O-FOLIAGE | outdoor | foliage | NLOS | outdoor obstruction |
-| O-WALL | outdoor | wall/fence | NLOS | outdoor obstruction |
-| O-METAL | outdoor | metal fence/structure | MULTIPATH/NLOS | outdoor obstruction |
-| O-MULTIPATH | outdoor | none or unknown | MULTIPATH | outdoor multipath |
-| I-LOS | indoor | none | LOS | indoor baseline |
-| I-HUMAN | indoor | static human | NLOS | indoor obstruction |
-| I-DYNAMIC | indoor | dynamic human | NLOS | indoor obstruction |
-| I-WALL | indoor | wall/partition | NLOS | indoor obstruction |
-| I-METAL | indoor | metal/furniture | MULTIPATH | indoor multipath |
-| I-MULTIPATH | indoor | none or unknown | MULTIPATH | indoor multipath |
+| I-LOS | indoor | LOS clear view | NONE | indoor baseline |
+| I-STATIC | indoor | STATIC obstruction | HUMAN_STATIC / WALL / FOLIAGE | indoor obstruction |
+| I-DYNAMIC | indoor | DYNAMIC obstruction | HUMAN_DYNAMIC | indoor obstruction |
+| I-MULTIPATH | indoor | MULTIPATH | METAL / strong corner echo | indoor multipath |
+| O-LOS | outdoor | LOS clear view | NONE | outdoor baseline |
+| O-STATIC | outdoor | STATIC obstruction | HUMAN_STATIC / WALL / FOLIAGE | outdoor obstruction |
+| O-DYNAMIC | outdoor | DYNAMIC obstruction | HUMAN_DYNAMIC / vehicles | outdoor obstruction |
+| O-MULTIPATH | outdoor | MULTIPATH | METAL / building reflection | outdoor multipath |
 
-These are menu presets, not the complete universe of valid combinations. The structured dimensions and composite-ID rule above are authoritative.
+These eight scenes are the complete model scene set and match the minimal condition matrix. Obstruction kinds never create new scenes; they are written to context fields. The old composite names (O-HUMAN/O-FOLIAGE/O-WALL/I-HUMAN/I-WALL/I-METAL and similar) are deprecated and map to one of the eight core scenes plus context labels.
 
 #### ELI5 operator rules
 
@@ -107,18 +111,11 @@ Before pressing START, answer these simple questions:
 | --- | --- | --- |
 | Where are the cards? | environment | Inside a building = INDOOR; open yard/park/road = OUTDOOR. |
 | What is between them? | obstruction | Nothing = NONE; still person = HUMAN_STATIC; moving person = HUMAN_DYNAMIC; bushes/trees = FOLIAGE; wall/fence/partition = WALL; large metal object = METAL. |
-| How does the main signal path go? | propagation | Clear direct view = LOS; direct path crosses/goes around an obstacle = NLOS; strong echoes or several plausible paths = MULTIPATH. |
+| What happens between the two cards? | link | Clear direct view with nothing between = LOS; a still object blocks the path = STATIC; a moving person/vehicle/door blocks the path = DYNAMIC; no direct path but the signal arrives after bouncing off corners/metal = MULTIPATH. |
 | What is the space shape? | room_geometry | ROOM, CORRIDOR, OPEN_HALL, CORNER, STAIR, or OUTDOOR_OPEN. |
 | How large is it? | room_size | SMALL, MEDIUM, or LARGE; use measured dimensions in the test record. |
 | What surfaces dominate? | material | SOFT, MIXED, HARD, or METAL_GLASS. |
-| How crowded is it? |furniture_density
-boundary
-card_height_class
-card_pose
-observed_level
-observed_obstruction
-
- | LOW, MEDIUM, or HIGH; count only large reflectors/blockers. |
+| How crowded is it? | furniture_density | LOW <20% / MEDIUM 20–50% / HIGH >50%, estimated by the share of usable area occupied by large furniture or fixed reflectors. |
 | Is a boundary close? | boundary | OPEN, WALL_NEAR, CORNER, DOORWAY, or PARTITION. |
 | How are cards held? | card_height/card_pose | Record height and UPRIGHT, FLAT, or MIXED; keep them fixed for repeats. |
 
@@ -130,24 +127,24 @@ Recommended indoor starting set:
 I-LOS + ROOM + MIXED + MEDIUM
 I-LOS + CORRIDOR + HARD
 I-MULTIPATH + CORNER or METAL_GLASS
-I-WALL + PARTITION or WALL_NEAR
+I-STATIC + PARTITION or WALL_NEAR (partition or near-wall obstruction)
 ```
 
-The current 78-Capture outdoor matrix uses O-LOS, O-HUMAN, O-DYNAMIC, O-FOLIAGE, and O-WALL. The other condition IDs must be added before indoor or metal/multipath collection begins. The device must write both the composite ID and its decomposed dimensions, so host analysis never has to parse labels.
+All eight core scenes are already built into the firmware; no further condition IDs need to be added. Human/foliage/wall/metal differences are carried by context fields. The device must write both the composite ID and its decomposed dimensions, so host analysis never has to parse labels.
 
 ### 3.4 One unified mixed-condition batch
 
 Indoor and outdoor are not separate Capture phases or separate storage formats. They are independent condition dimensions in one unified batch. Collection order is free: the developer may start with indoor scenes, then continue with outdoor scenes in the same batch.
 
-A condition is encoded as a stable 16-bit composite ID rather than a fixed list of only 12 labels:
+A condition is encoded as a stable 16-bit composite ID (the firmware's actual implementation, `radar_capture_condition_scene_id()`):
 
 ```text
-condition_scene_id = (environment << 8) | (obstruction << 4) | propagation
+condition_scene_id = (environment << 8) | (link << 4)
 ```
 
-The decomposed fields remain authoritative for host analysis. The UI provides the planned common combinations, while the record format remains able to represent every valid environment/obstruction/propagation combination without changing the binary format.
+where `environment ∈ {OUTDOOR=0, INDOOR=1}` and `link ∈ {LOS=0, STATIC=1, DYNAMIC=2, MULTIPATH=3}`, giving the eight core scenes; invalid combinations return `0xFFFF`. The decomposed fields remain authoritative for host analysis: environment and link decide the core scene, while obstruction and other differences are carried by context fields, so no binary format change is needed.
 
-The original 78 outdoor Captures remain a planned subset, not the batch maximum. The batch capacity gate is calculated from the actual slot2 region and the worst-case Capture span. Indoor and outdoor records may be appended in any order until the next complete Capture no longer fits. At that point the UI must refuse a new Capture before countdown; it must never overwrite or silently discard a previous condition.
+The original 78-Capture outdoor matrix has been superseded by the unified matrix in §3.2 (core tier 48–72 Captures plus optional extension tiers), and is no longer the batch maximum. The batch capacity gate is calculated from the actual slot2 region and the worst-case Capture span. Indoor and outdoor records may be appended in any order until the next complete Capture no longer fits. At that point the UI must refuse a new Capture before countdown; it must never overwrite or silently discard a previous condition.
 
 The batch therefore has this lifecycle:
 
@@ -230,7 +227,7 @@ room_size
 material
 furniture_density
 boundary
-card_height_class
+card_height
 card_pose
 observed_level
 observed_obstruction
@@ -244,6 +241,8 @@ firmware_version
 boot_sequence
 reset_reason
 ```
+
+The `condition_propagation` field is not an independent setting; it is derived from `condition_link` and persisted (LOS→LOS, STATIC/DYNAMIC→NLOS, MULTIPATH→MULTIPATH).
 
 Each Capture has its own CRC. The Capture commit marker is written only after the header and payload have been written and read-back verified. `BATCH_COMMIT` is written only after the batch is complete. On reboot:
 
@@ -377,7 +376,7 @@ Rejected. It cannot reliably handle bad labels, mixed obstruction conditions, ou
 
 ### Existing NVS only
 
-Rejected. The shared 24 KiB NVS and two-key design cannot retain 78 Captures.
+Rejected. The shared 24 KiB NVS and two-key design cannot retain the 78 Captures of the then-planned outdoor matrix.
 
 ### slot2 raw batch + online summaries + computer fitting
 
@@ -401,7 +400,7 @@ Approved. It provides:
 6. add the complete condition-label schema and observed-class fields;
 7. add host batch encoding, recovery, capacity, label-consistency, and CRC tests;
 8. hardware-test one labelled batch without erasing NVS;
-9. run the 24/78-Capture outdoor matrix;
+9. run the unified matrix in §3.2 (core tier first, extension tiers as the field allows);
 10. validate the unified mixed-condition batch, beginning with indoor records if desired and continuing with outdoor records without changing batch format.
 
 ## 13. Minimal condition matrix and Capture editor baseline

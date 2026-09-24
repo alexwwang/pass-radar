@@ -177,6 +177,19 @@ radar_env_t radar_fusion_env_of_level(radar_level_t level) {
 
 // ---- 融合主入口 ----
 
+float radar_fusion_ftm_weight(float dist_m) {
+    if (!isfinite(dist_m) || dist_m <= 0.05f) return 0.5f;
+    float d = fmaxf(dist_m, 0.5f);
+    // 相对误差模型:FTM 绝对误差底随距离摊薄,RSSI n 斜率不确定随 ln(d) 增长
+    float sigma_ftm = RADAR_FTM_ABS_SIGMA_M / d;
+    float slope = RADAR_RSSI_NSLOPE_REL * logf(d);
+    float sigma_rssi = sqrtf(RADAR_RSSI_RANDOM_REL * RADAR_RSSI_RANDOM_REL +
+                             slope * slope);
+    float v_ftm = sigma_ftm * sigma_ftm;
+    float v_rssi = sigma_rssi * sigma_rssi;
+    return v_rssi / (v_ftm + v_rssi);
+}
+
 radar_fusion_result_t radar_fusion_update_ftm(
     const radar_fusion_ftm_observation_t *ftm,
     float local_rssi_dbm, float peer_rssi_dbm,
@@ -226,9 +239,11 @@ radar_fusion_result_t radar_fusion_update_ftm(
             r.conf = RADAR_CONF_MED;
             r.ftm_used = false;
         } else {
-            r.distance_m = RADAR_FTM_FUSION_WEIGHT * ftm->distance_m +
-                           (1.0f - RADAR_FTM_FUSION_WEIGHT) * rssi_d;
-            r.ftm_used = true;
+            // 距离相关逆方差加权:近距 RSSI 占优,远距 FTM 占优(D8)
+            float w = radar_fusion_ftm_weight(0.5f * (ftm->distance_m + rssi_d));
+            r.distance_m = w * ftm->distance_m + (1.0f - w) * rssi_d;
+            r.ftm_weight = w;
+            r.ftm_used = w > 0.0f;
             r.conf = (enough_bursts && spread_high && symmetric_link)
                          ? RADAR_CONF_HIGH : RADAR_CONF_MED;
         }
@@ -289,11 +304,15 @@ radar_fusion_result_t radar_fusion_update_v3(
         r.ftm_dist_m = ftm->distance_m;
         float tolerance = fmaxf(2.0f, 0.5f * r.rssi_dist_m);
         if (fabsf(ftm->distance_m - r.rssi_dist_m) <= tolerance) {
-            r.distance_m = ftm->distance_m;
+            // 一致时不再「FTM 有效即优先」:按距离逆方差加权(3~5m 段 RSSI 覆盖率
+            // 优于 FTM,>=8m 反之,见 80% 精度评审 D8)
+            float w = radar_fusion_ftm_weight(0.5f * (ftm->distance_m + r.rssi_dist_m));
+            r.ftm_weight = w;
+            r.distance_m = w * ftm->distance_m + (1.0f - w) * r.rssi_dist_m;
             float band = fmaxf(0.5f, isfinite(ftm->spread_m) ? ftm->spread_m : 0.5f);
             r.dist_lo_m = fmaxf(0.1f, r.distance_m - band);
             r.dist_hi_m = r.distance_m + band;
-            r.ftm_used = true;
+            r.ftm_used = w > 0.0f;
             r.conf = (level == RADAR_LEVEL_L0_LOS && peer_ok)
                          ? RADAR_CONF_HIGH : RADAR_CONF_MED;
         } else if (ftm->distance_m > r.rssi_dist_m * 1.8f + 2.0f) {

@@ -89,8 +89,13 @@ static void test_v3_fusion(void) {
     };
     r = radar_fusion_update_v3(&ftm, -60.0f, -66.0f, -42.0f,
                                RADAR_LEVEL_L0_LOS, true);
-    CHECK(r.ftm_used && r.conf == RADAR_CONF_HIGH && fabsf(r.distance_m - 6.0f) < 0.01f,
-          "calibrated FTM");
+    // D8:FTM/RSSI 一致时按距离逆方差加权,不再「FTM 有效即取 FTM 值」
+    float w = radar_fusion_ftm_weight(0.5f * (6.0f + r.rssi_dist_m));
+    float expect = w * 6.0f + (1.0f - w) * r.rssi_dist_m;
+    CHECK(r.ftm_used && r.conf == RADAR_CONF_HIGH && fabsf(r.distance_m - expect) < 0.01f,
+          "calibrated FTM weighted blend");
+    CHECK(r.distance_m > 6.0f && r.distance_m < r.rssi_dist_m,
+          "blend must stay between ftm 6.0 and rssi %.2f", r.rssi_dist_m);
 }
 
 int main(void) {

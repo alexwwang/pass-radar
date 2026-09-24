@@ -67,8 +67,16 @@ radar_env_t radar_fusion_env_of_level(radar_level_t level);
 // FTM 与 RSSI 距离分歧超过该比例(且超出 2m 滞回)判为疑似反射径
 #define RADAR_FTM_SUSPICIOUS_RATIO 1.8f
 #define RADAR_FTM_SUSPICIOUS_MARGIN_M 2.0f
-// FTM/RSSI 加权融合中 FTM 的权重
-#define RADAR_FTM_FUSION_WEIGHT 0.7f
+// ---- FTM/RSSI 距离相关逆方差加权模型(80% 精度评审 D8) ----
+// FTM 绝对误差底 σ(米):含 P25 平滑后残余多径/首径误差,不随距离缩小
+#define RADAR_FTM_ABS_SIGMA_M 0.9f
+// RSSI 随机相对误差 σ(融合拍显示级,含标定残差)
+#define RADAR_RSSI_RANDOM_REL 0.12f
+// RSSI 路径损耗指数不确定 Δn/n:相对误差随 ln(d) 增长(跨场地 n 斜率墙)
+#define RADAR_RSSI_NSLOPE_REL 0.0909f
+// 距离相关 FTM 融合权重(逆方差):<=3m 偏 RSSI、约 5m 交叉、>=8m 偏 FTM。
+// dist_m 无效时返回 0.5f。
+float radar_fusion_ftm_weight(float dist_m);
 // 双向 RSSI 差异超过该值(dB)说明链路不对称,不给 HIGH
 #define RADAR_SYM_MAX_GAP_DB 8.0f
 // 环境检测:RSSI 峰峰抖动超过该值(dB)判为室内
@@ -129,7 +137,8 @@ typedef struct {
     float sym_rssi_dbm;      // 对称 RSSI(供显示)
     float rssi_dist_m;       // 纯 RSSI 推算距离(供调试/降级)
     float ftm_dist_m;
-    bool ftm_used;           // 本次是否采纳了 FTM
+    bool ftm_used;           // 本次是否采纳了 FTM(融合权重 > 0)
+    float ftm_weight;        // 本次融合中 FTM 的实际权重(0 = 未采纳)
     bool obstructed;
     bool upper_bound_only;
 } radar_fusion_result_t;

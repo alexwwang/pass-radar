@@ -302,7 +302,7 @@ Model: y = a + b1·x                     (x ≤ log10(d_break))
 Search d_break over a [30, 200] m grid minimizing total squared residuals:
 
 - The optimum `d̂_break` → P5; the far-segment slope `b̂2` → `n_far = −b̂2/10` → P6;
-- Requires capture points with `d > 45 m` (that is why the outdoor matrix has 60/80/100 m tiers);
+- Requires capture points with `d > 45 m` (the far-field extension tiers 60/80/100 m in the capture matrix belong to the v3.1 far-range phase; see the slot2 batch-capture plan §3.1. Until they are collected, P5/P6 keep their compile-time values);
 - If the data only reaches 30 m, the breakpoint has too few degrees of freedom: **keep the compile-time value and mark `d_break=not-identifiable` in the report**; never extrapolate the breakpoint from near-field data.
 
 ### 4.3 Classification thresholds (P7/P8)
