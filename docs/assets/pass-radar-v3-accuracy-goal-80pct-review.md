@@ -14,6 +14,22 @@
 
 ---
 
+## ELI5 summary (read this first)
+
+**Question: after everything is done, how accurate can "8 meters" be, and what exactly can be promised?**
+
+Imagine three walls:
+
+1. **The near-range wall (FTM's scale error)**: FTM is like a tape measure with a built-in ≈0.8 m error. At 1 m the tolerance is ±0.2 m — this tape cannot do it. Not a calibration failure; a physical limit;
+2. **The far-range wall (site differences grow with distance)**: RSSI back-computes distance from "how the signal fades", but every site fades a bit differently. Farther out, that difference gets amplified — no fitting removes the difference of a *new* site;
+3. **The bouncing wall (multipath and dynamic obstruction)**: signals bounce around people/walls/metal, and bouncing always "looks farther". One reading cannot tell direct from bounced.
+
+**Conclusion**: with "model calibration" alone, 80% everywhere is impossible. **But if the committed output form is stated clearly — points up close, intervals farther out, ranges/sectors when obstructed — every scene can commit to "≥80% of answers are correct"**, and every commitment can be statistically proven with an independent validation set. That is the honest version this document delivers.
+
+> Criterion erratum: the requirement formula `abs(measured/true − 1) ≥ 0.8` was inverted (bigger error scored as "accurate"); it is corrected to "accuracy score ≥0.8 ⇔ relative error ≤20%", and direction uses octant hit (error ≤22.5°); see §0.
+
+---
+
 ## 0. Criteria Confirmation and Corrections
 
 The criterion as originally stated, `abs(measured/true - 1) >= 0.8`, is **inverted** (it would score relative error ≥80% as "accurate"). After confirmation, this review uniformly adopts:
@@ -42,7 +58,7 @@ Two operational clarifications (without them the conclusions drift):
 
 **The two walls move in opposite directions with distance (FTM relative error ∝ 1/d; RSSI n-wall ∝ ln d); they cross at 4–6 m** — yielding the most important design finding of this review:
 
-> **The current fusion rule (D5: "FTM valid and calibrated → d = FTM(P25)") is wrong for the 3–5 m segment**: there, RSSI run-level coverage (anchored by 1 m calibration, small ln d) is 79–90% while FTM is only 28–68%. Estimator selection/weighting by distance is required (§8 D8).
+> **The current fusion rule ("FTM valid and calibrated → d = FTM(P25)") is wrong for the 3–5 m segment**: there, RSSI run-level coverage (anchored by 1 m calibration, small ln d) is 79–90% while FTM is only 28–68%. Estimator selection/weighting by distance is required (§8 D8; ✅ implemented 2026-09-24).
 
 **After criteria revision + §8 design additions: achievable.** Unified commitment:
 
@@ -63,7 +79,7 @@ Verdicts after revision:
 | I-DYNAMIC / O-DYNAMIC | T4 bin/interval @≈80% (instantaneous ±40% rules out points) | A2 | conditionally reachable (degraded commitment) |
 | I-MULTIPATH / O-MULTIPATH / metal | T4 upper bound / bin | A2 | conditionally reachable (degraded commitment) |
 
-Two **document-level contradictions** must also be fixed (§6.1): the 60/80/100 m points required by P5/P6 fitting exist in no capture matrix; and the slot2 plan's scene ID scheme (O-HUMAN/O-FOLIAGE/…) conflicts with the current 8 core scenes (ENV×LINK). Fitting inputs are self-contradictory until these are fixed.
+The two **document-level contradictions** have been fixed by D5 (§6.1, committed 2026-09-24): the far-field 60/80/100 m tiers were added to the capture matrix (P5/P6 stay locked at compile-time values until collected), and the scene taxonomy is now unified on the 8 core scenes (ENV×LINK, including indoor rows). Both are aligned; the fitting inputs are no longer self-contradictory.
 
 ---
 
@@ -194,19 +210,19 @@ Core proposition: **calibration removes bias; coverage is governed by variance.*
 | ---: | ---: |
 | 100% | ≥16 |
 | 95% | ≥30 |
-| 90% | ≥40 |
+| 90% | ≥65 |
 | 85% | ≈250 |
 | 80% (exactly at threshold) | **impossible to prove** (point estimate at threshold always has a lower bound below it) |
 
 The current matrix gives 6–9 runs per scene. Conclusions:
 
 1. 48/72 is a **fitting** data-volume floor, not a **validation** volume; plan them separately;
-2. Committing to 80% requires true capability ≥90% (D6: hold-out validation set of ≥40–60 independent runs per committed scenario, across ≥5 sites × 2 time windows);
+2. Committing to 80% requires true capability ≥90%, and an observed ≈90% hit rate needs ≥65 independent runs to push the Wilson 95% lower bound past 0.80 (D6: hold-out validation set tiered by expected hit rate — ≥65 for ≈90% scenarios, ≥30 for ≥95% scenarios, across ≥5 sites × 2 time windows);
 3. "≥20 independent readings per point" ([test design §6](pass-radar-v3-测试设计与用例.md)) is insufficient for 80% validation and must be run-cluster-corrected.
 
 ### 6.3 P3 fitting degrees of freedom insufficient
 
-Three distance points per condition (log10 span only 0.70) fit (a, b) — 2 parameters with 1 residual dof; the n̂ width ≤0.4 admission gate (update program §4.6) will most likely fail → P3/P4 rejected, falling back to compile-time values. Fix: ≥5 distance points per condition (including ≥2 spanning a decade of distance, D7).
+Three distance points per condition (log10 span only 0.70) fit (a, b) — 2 parameters with 1 residual dof; the n̂ width ≤0.4 admission gate (update program §4.6) will most likely fail → P3/P4 rejected, falling back to compile-time values. Fix: ≥5 distance points per condition with log10 span ≥1.4 (about 1–30 m, D7; width worked example in the update program §4.2.1 note).
 
 ### 6.4 Relationship between the remediation design (v5) and the 80% goal
 
@@ -248,10 +264,10 @@ Coverage is uniformly ≥80% (Wilson 95% lower bound, §6.2 sample sizes). This 
 | D2 | the 1 m point serves as P1/P2 calibration only, excluded from accuracy stats; near-range point commitments move to T2 (RSSI run-level) | dismantles the near-range tolerance wall (0.2 m tolerance below FTM error floor) | test criteria + acceptance scripts |
 | D3 | fix coverage denominator semantics (rejections/degradations count) | closes the reject-option score-inflation loophole | test criteria + `model_fit.py verify` |
 | D4 | define "measured value = run-level displayed-sequence stable-segment median" in the statistics spec | legitimizes aggregation noise reduction | test criteria + verify spec |
-| D5 | fix C-1/C-2: align distance points with P5/P6; unify scene taxonomy to the 8 core scenes including indoor | removes fitting-input conflicts | slot2 plan + minimal matrix |
-| D6 | separate fitting/validation sets: ≥40–60 independent runs per committed scenario for validation (≥5 sites × 2 windows) | makes 80% statistically provable | collection plan + verify report |
-| D7 | ≥5 distance points per condition (≥2 spanning a decade) | P3 dof and CI-width admission | capture matrix |
-| D8 | **distance-based estimator selection/weighting in fusion**: weight RSSI run-level below 5 m, FTM above 8 m, inverse-variance weighting in the crossover; replace the current "FTM valid wins" rule | captures the §1 complementarity gain, 5 m segment +7–14 pp | `radar_fusion.c` fusion rules + host tests |
+| D5 | fix C-1/C-2 (✅ implemented 2026-09-24): align distance points with P5/P6; unify scene taxonomy to the 8 core scenes including indoor | removes fitting-input conflicts | slot2 plan + minimal matrix |
+| D6 | separate fitting/validation sets: validation runs per committed scenario tiered by expected hit rate — ≥65 for ≈90% scenarios, ≥30 for ≥95% scenarios (≥5 sites × 2 windows) | makes 80% statistically provable (Wilson 95% lower bound) | collection plan + verify report |
+| D7 | ≥5 distance points per condition (log10 span ≥1.4, i.e. about 1–30 m — not literally "two decades") | P3 dof and CI-width admission | capture matrix |
+| D8 | **distance-based estimator selection/weighting in fusion** (✅ implemented 2026-09-24): favor RSSI below 5 m, FTM above 8 m, inverse-variance weighting in the crossover; the "FTM valid wins" rule has been replaced | captures the §1 complementarity gain, 5 m segment +7–14 pp | `radar_fusion.c` fusion rules + host tests |
 
 ### 8.2 Release gates (all must hold before promising 80% externally)
 

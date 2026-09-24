@@ -67,6 +67,8 @@ The complete scene set follows the minimal condition matrix as its single source
 
 Capture-count reference: the full core tier with 3 repeats per scene is 72 Captures; 2 repeats give 48 (matching the minimal matrix). The far-field tier 60/80/100 m × 2 = 6 Captures belongs to the v3.1 far-range phase; until it is collected, P5/P6 keep their compile-time values.
 
+**Fitting vs validation sets (D6)**: the table above is the **fitting-set** floor. Statistically proving the 80% commitment additionally needs an independent **validation set**: per committed scenario, tiered by expected hit rate — ≥65 independent runs for ≈90% scenarios, ≥30 for ≥95% scenarios (across ≥5 sites × 2 time windows; Wilson 95% lower-bound derivation in the 80% goal review §6.2). **Distance points per condition (D7)**: P3 admission needs ≥5 distance points per condition with log10 span ≥1.4 (e.g. 1/3/5/10/20/30 m); see the model parameter update program §4.2.1/§4.6.
+
 Each Capture remains exactly one distance, one scene, one fixed pose, and one approximately 38-second window.
 
 ### 3.3 Complete condition-label design

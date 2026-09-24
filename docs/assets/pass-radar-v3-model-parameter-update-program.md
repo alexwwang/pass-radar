@@ -15,6 +15,40 @@
 
 ---
 
+## ELI5 summary (read this first if statistics is not your day job)
+
+Think of the card as a **ruler that guesses distance from radio**: weaker signal means farther (RSSI), longer round-trip time means farther (FTM), and a full spin finds the loudest direction (sweep). A few numbers in the factory formula (like "how much weaker per 10× distance") were taken generically and may not hold in your building.
+
+**What this document does**: measure at known distances → let a computer find the numbers that best fit those measurements → ship them back to the card. In plain terms: re-calibrating the ruler.
+
+**Three rules**:
+
+1. The card only consumes results and never fits — a wrong computation must not happen on the card;
+2. True distance must be measured with a tape/laser (`measured_distance_m`); the `target_m` typed at capture time is only a label;
+3. New numbers take an exam first (held-out validation); failed numbers stay at factory defaults.
+
+**Glossary** (in order of appearance):
+
+| Term | Plain language |
+| --- | --- |
+| RSSI | signal-strength reading; weaker means farther |
+| FTM | round-trip-time ranging; stable but with a fixed zero-point bias |
+| tx_ref_sym | "how strong the signal should be at 1 m" reference |
+| n (path-loss exponent) | the attenuation tier per 10× distance (≈2.2 outdoors, ≥3.0 indoors) |
+| P25 | the value at 1/4 of the sorted list — deliberately conservative |
+| IQR | width of the middle half of the data; "how steady is this set" |
+| median / MAD | middle value / typical deviation; robust to outliers |
+| Huber weighted least squares | line fitting that lets outlying points "speak less" |
+| intercept / slope | the line's height / tilt; here = 1 m reference / −10n |
+| d_break (two-ray breakpoint) | past this distance, ground reflection interferes and the formula switches segments |
+| confusion matrix | "what it really is" vs "what the device says" scorecard |
+| macro-F1 | a score where every class's errors weigh equally |
+| held-out set | the exam uses unseen questions — no memorization |
+| CI width | the plausible range of an estimate; narrower is better |
+| Wilson 95% lower bound | the conservative "at least this accurate" guarantee line |
+
+---
+
 ## 0. Summary
 
 1. **Parameter updates happen on the PC; the firmware only consumes results.** All fitting, validation, and versioning run in the PC-side Python tool `tools/model_fit.py`. The output is a `radar_model_params_t` binary block with a version number and CRC, delivered through the existing Debug-page serial channel or preloaded into NVS. The card never fits anything (MVP principle, upstream plan §6).
@@ -98,7 +132,7 @@ log10(d_true) = (tx_ref_sym − rssi_sym)/(10·n)
 
 This is a **linear regression** in `(tx_ref_sym, n)`: with `y = rssi_sym` and `x = log10(d_true)`, `y = a + b·x` where `a = tx_ref_sym` and `b = −10·n`. Each `(environment, link)` condition gets its own line — that is the mathematical form of "per-condition stratification".
 
-**Key point: where does d_true come from?** At capture time the user enters `target_m` (tape/laser-measured truth). The RSSI model is therefore fit against `target_m`, not against FTM output — FTM is another observable with its own calibration, and cannot be both teacher and student.
+**Key point: where does d_true come from?** The authoritative truth is the **measured distance `measured_distance_m`** (tape/laser, submitted via sidecar and time-alignment checked; see the remediation design §4.1). `target_m` is only a preset **label** (LABEL ONLY) and must never be used as truth in formal fitting. The RSSI model is therefore fit against the measured distance, not against FTM output — FTM is another observable with its own calibration, and cannot be both teacher and student.
 
 ### 2.2 FTM observation model (radar_ftm.c)
 
@@ -185,7 +219,7 @@ p ← p + q ;  k = p/(p+r) ;  x ← x + k(z − x) ;  p ← (1−k)p
 | P6 | `n_far` | 4.0 | `RADAR_FAR_N` | Far-segment regression slope | 4.0 |
 | P7 | FTM gates (IQR 1.0/2.0, rate 0.3/0.7, suspicious 1.8×+2m) | compile-time | `radar_level_classify`, `radar_fusion_ftm_suspicious` | Align with error quantiles of FTM-valid/invalid (§4.3.2) | compile-time |
 | P8 | Obstruction thresholds (K, excess, p2p_1s/10s, sel) | compile-time | `radar_obstruct.c`, `radar_level_classify` | Confusion-matrix-driven threshold search (§4.3.1) | compile-time |
-| P9 | Sweep gates (residual 5.0, amp 6.0) | compile-time | `SWEEP_MAX_RMS_RESIDUAL_DB` etc. | Angular error vs (amp, residual) scatter boundary (§4.5) | compile-time |
+| P9 | sweep bias `sweep_bias_deg` + gates (residual 5.0, amp 6.0) | bias not implemented / gates compile-time | `SWEEP_MAX_RMS_RESIDUAL_DB` etc. | estimate circular-median bias first (D1), then per-bucket angular error and gate ROC (§4.5) | bias 0° / gates compile-time |
 | P10 | Kalman (q, r) | 0.15 / 4.0 | `radar_kalman.c` | Offline raw-series replay grid search (§4.4) | 0.15 / 4.0 |
 
 P1/P2 are **on-device calibrations**: the PC tool only recomputes and cross-checks them from exported data; it never rewrites them directly. P3–P10 are the **model parameter pack**, produced by the PC tool.
@@ -203,6 +237,7 @@ typedef struct __attribute__((packed)) {
     uint32_t params_crc32;      // CRC32 of the whole block except this field
     uint32_t fitted_at_unix;    // fitting time
     char     source_firmware[16]; // capturing firmware version
+    uint32_t device_pair_hash32;  // D1: device-pair id (MAC-pair hash); owns sweep_bias_deg
     // P3/P4: per-env path loss (index = radar_env_t)
     float    path_loss_n[3];
     float    tx_ref_per_env[3];
@@ -220,11 +255,12 @@ typedef struct __attribute__((packed)) {
     float    obs_sel_los_max_db;
     float    level_mean_rssi_obstructed_db;
     // P9
+    float    sweep_bias_deg;    // D1: device-pair angular systematic bias
     float    sweep_max_rms_residual_db;
     float    sweep_min_prominence_db;
     // P10
     float    kalman_q, kalman_r;
-    uint8_t  reserved[?];       // pad to 4-byte alignment
+    uint8_t  reserved[112];     // pads the block to 256 B (incl. sweep_bias_deg and pair id)
 } radar_model_params_t;
 ```
 
@@ -234,14 +270,14 @@ Load rule: apply only if the CRC passes and `version` is compatible; any out-of-
 
 ## 4. Fitting derivations
 
-Notation: a run = one 30 s capture with condition labels `(env, link, obs, space, …)` and `N≈99` records; dataset D = all valid runs; condition group `G(env, link)` is a partition of D.
+Notation: a run = one 30 s capture with condition labels `(env, link, obs, space, …)` and `N≈100` records (effective sampling cadence 300 ms, see §4.1); dataset D = all valid runs; condition group `G(env, link)` is a partition of D.
 
 ### 4.1 Data cleaning (all mandatory before fitting)
 
-1. **Completeness**: `records == 99` (30 s / 250 ms); short runs are marked `SUSPECT`;
+1. **Completeness**: expected `records = 100` (30 s window ÷ 300 ms effective cadence — the 250 ms sampling gate is quantized to 300 ms by the 100 ms poll grid; firmware cap 128). `95–102` counts as complete; runs outside this range are marked `SUSPECT`;
 2. **CRC**: `BATCH_CAPTURE_META` crc32 matches a recomputation after decode; otherwise reject the run;
 3. **Label validity**: `scene_id` must invert via `radar_capture_condition_scene_id`; context fields must be in their legal domains;
-4. **Timing**: `elapsed_ms` monotonic with 250±30 ms spacing;
+4. **Timing**: `elapsed_ms` monotonic with ≈300 ms spacing (legal range 250–450 ms; any gap >500 ms counts as one dropped sample);
 5. **FTM field semantics**: when `ftm_valid=0`, `ftm_distance_m` carries no meaning (firmware keeps stale/invalid values); exclude from fitting;
 6. **Repeated runs**: same-condition same-distance repeats are all kept and enter variance analysis; outlier runs are **down-weighted** (1.5×IQR rule) rather than dropped, preserving variance information.
 
@@ -258,9 +294,11 @@ Inverting the offset from this quantity couples in P25 and the old offset — **
 Starting with FORMAT_VERSION 4 (implemented per the run-level aggregates in §4.1.4 and the v5 remediation design), each run's capture header stores run-level raw session statistics: the median/IQR of the pre-offset, pre-P25 session medians, the number of completed sessions, and the total valid burst count. The P1 fit uses them directly:
 
 ```text
-b0_run     = ftm_raw_median_m − target_m     (one sample per run)
-ftm_offset = median(b0_run)                  (robust center across runs)
+b0_run     = ftm_raw_median_m − measured_distance_m   (one sample per run; truth from the sidecar)
+ftm_offset = median(b0_run)                           (robust center across runs)
 ```
+
+Runs without a `measured_distance_m` ground truth do not participate in P1; `target_m` serves only as a grouping label (R-03, remediation design §4.1).
 
 If the cross-run MAD exceeds 0.5 m the calibration is reported as untrustworthy. The previously sketched "capture at 1 m under `offset=0`" approximation is retired; fit reports no longer contain `offset_estimate=approximate`.
 
@@ -286,6 +324,8 @@ Estimation uses **Huber-weighted least squares** (δ = 1.345·MAD) because heavy
 - One-way samples (peer_rssi invalid) get weight ×0.5: one-way RSSI contains the local antenna-pattern bias, a biased version of the symmetric mean;
 - Weights also include FTM independence: samples with `ftm_valid=1` are not down-weighted (RSSI and FTM are independent observables);
 - Output `n̂_G = −b̂_G/10` with a confidence interval; n outside [1.6, 5.0] rejects the group fit (systematic data problem).
+
+> **CI-width worked example (sets the D7 distance-point requirement)**: the 95% CI width of `n̂` is ≈ `2·t·σ̂/(10·√Sxx)`. Eight distance points (1/3/5/8/10/15/20/30 m, log10 span 1.48) give width ≈0.58 at residual σ̂=1.5 dB and ≈1.16 at σ̂=3 dB; five points squeezed into 1–8 m (span 0.90) give width ≈0.91·σ̂. Therefore **≥5 distance points per condition with log10 span ≥1.4** (e.g. 1/3/5/10/20/30 m) is the floor for the gate to have any chance; indoor 1–8 m span is expected to be insufficient, and indoor P3 falls back to the compile-time n.
 
 Fusing `tx_ref_per_env`: the regression intercept `â_G` estimates "sym RSSI at 1 m under this condition". Within one `env`, intercept differences across `link` reflect obstruction shifts of the 1 m reference; the sample-weighted mean of intercepts becomes `tx_ref_per_env[env]`. The on-device NVS calibration (P2) still takes precedence — the pack value is used only when NVS has no calibration.
 
@@ -350,24 +390,27 @@ Rationale for the constraints: optimizing prediction error alone yields infinite
 Direction ground truth comes from **bearing labels entered at capture time** (recorded on the PC; format in §6.3). For each labeled run:
 
 ```text
-error e = circular diff(sweep_angle, true_bearing)    (radar_fusion_angle_diff)
-Bucket by (amp_db, residual_db, spread_deg, env); report P50/P90 of e per bucket
+bias = circular median of e across runs    (D1; per device pair)
+error e' = circular diff(e, bias)          (remove systematic bias before residual stats)
+Bucket by (amp_db, residual_db, spread_deg, env); report P50/P90 of e' per bucket
 ```
 
 Outputs:
 
 1. Per-bucket P50/P90 table → decide which buckets produce trustworthy direction under the current `residual ≤ 5.0` and `2·amp ≥ 6` gates, and which should be rejected (ROC of rejection rate vs false-rejection rate; choose the Youden optimum);
-2. If `spread_deg` correlates strongly with angular error (r > 0.5), promote spread to a continuous confidence input (today it only derates at >20°/>45°).
+2. If `spread_deg` correlates strongly with angular error (r > 0.5), promote spread to a continuous confidence input (today it only derates at >20°/>45°);
+3. `sweep_bias_deg` (the circular-median bias) goes into the parameter pack — antenna/body asymmetry is a systematic term that must be corrected before any gate tuning (80% goal review D1). The bias is calibrated **per device pair** and must be re-estimated when the pair changes.
 
 ### 4.6 Cross-validation and acceptance
 
 - Split runs into train/held-out (80/20, **stratified by site**: runs from one site never cross sets, preventing site-memory leakage);
 - A pack must pass:
   1. Held-out RSSI distance error P50 no worse than compile-time defaults (compared per condition);
-  2. `n̂_G` confidence interval excludes 0 with width ≤0.4;
+  2. `n̂_G` confidence interval excludes 0, with a three-tier width gate: ≤0.4 apply directly (tag `n_ci_tight`); (0.4, 0.8] apply with tag `n_ci_wide` and an extrapolation-risk note; >0.8 reject and keep the compile-time value (width worked example in the §4.2.1 note);
   3. No class's F1 drops by more than 0.05 due to threshold changes;
   4. FTM offset estimate MAD ≤0.5 m;
-- Any failure: that parameter keeps its default and is marked FAIL in the report; **the pack is still publishable containing only passing parameters** (partial application beats all-or-nothing).
+- Any failure: that parameter keeps its default and is marked FAIL in the report; **the pack is still publishable containing only passing parameters** (partial application beats all-or-nothing);
+- **80% verification semantics (D3/D4, consistent with the graded criteria of the [80% goal review §7](pass-radar-v3-accuracy-goal-80pct-review.md))**: `model_fit.py verify` reports per-scenario coverage with the Wilson 95% lower bound under the graded criteria (T1–T4/A1–A2); **the denominator is all valid measurement requests (rejections and degraded outputs stay in)**; **the measured value is the run-level displayed-sequence stable-segment median (3 s sliding window in dynamic scenarios)**; a scenario passes only when the lower bound is ≥0.80, otherwise its committed output form is downgraded automatically.
 
 ---
 
@@ -429,9 +472,12 @@ The `parse` subcommand accepts an annotation sidecar (hand-written YAML or notes
 batch: 493512032
 runs:
   - run: 3
-    bearing_deg: 45     # true bearing of the peer relative to the holder (0° = agreed reference)
-    tape_distance_m: 5.0 # if it differs from target_m, this field wins (target is a label only)
+    bearing_deg: 45           # true bearing of the peer relative to the holder (0° = agreed reference)
+    measured_distance_m: 5.0  # tape/laser ground truth (target_m is only a preset label)
+    window_ms: [0, 38000]     # capture time window covered by this measurement, for alignment
 ```
+
+Alignment checks for measured distances (time-window overlap, missing-anchor rejection) follow the sidecar spec of the remediation design §4.1 (`DISTANCE_SIDECAR_*`).
 
 Runs without bearing labels participate in distance/classification fitting only, never direction fitting.
 
@@ -459,6 +505,7 @@ Firmware consumer (new, ~100 lines of C): the Debug page gains a `PARAMS` row sh
 | kalman_q | [0.01, 1.0] | reject pack |
 | kalman_r | [1.0, 20.0] | reject pack |
 | sweep gates | residual [2, 10], prominence [2, 15] | reject pack |
+| sweep_bias_deg | [−30°, 30°] | reject pack |
 | observation thresholds | within ±50% of compile-time values | reject pack |
 
 ---
@@ -473,7 +520,7 @@ Firmware consumer (new, ~100 lines of C): the Debug page gains a `PARAMS` row sh
 | 4 | Direction model time→angle mapping | ✅ period self-correction exists; fitting targets are error distributions and gates, not the mapping |
 | 5 | Classifier features replayable from capture | ✅ p2p_1s/p2p_10s/k_factor depend only on the raw RSSI series |
 | 6 | One-way RSSI samples | ✅ down-weight ×0.5, not dropped (keeps range-edge information) |
-| 7 | User target_m as truth | ⚠️ label semantics: UI must show LABEL ONLY; PC supports tape_distance override |
+| 7 | User target_m as truth | ✅ fixed: truth = `measured_distance_m` sidecar (remediation design §4.1); `target_m` is a label only (LABEL ONLY); runs without ground truth stay out of formal fitting |
 | 8 | Train/held-out split | ✅ site-stratified, prevents within-site leakage |
 
 ---

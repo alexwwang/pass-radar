@@ -15,6 +15,40 @@
 
 ---
 
+## ELI5 通俗摘要（不熟悉统计的读者先读这段）
+
+把卡片想象成一把**用无线电猜距离的尺子**：信号越弱说明越远（RSSI），信号往返越久也说明越远（FTM），转一圈找信号最强的方向（扫盘）。出厂公式里的几个数字（比如"每远 10 倍信号弱多少"）是通用拍出来的，搬到你家就不一定准。
+
+**这份文档做的事**：到已知距离的地方测一批数据 → 让电脑找出"最贴合这批数据的那几个数字" → 打包发回卡片。相当于给尺子重新对表。
+
+**三条纪律**：
+
+1. 卡片只收结果、不算数——算错了也不能在卡片上现场算；
+2. 真距离必须用尺量（`measured_distance_m`），采集时按键填的 `target_m` 只是标签；
+3. 新数字先"考试"（留出集验证），考不过就继续用出厂值。
+
+**术语表**（按出现顺序，都是本文用到的行话）：
+
+| 术语 | 人话 |
+| --- | --- |
+| RSSI | 信号强度读数，越远越弱 |
+| FTM | 信号往返计时测距；较稳定但有固定零点偏差 |
+| tx_ref_sym | "1 米处信号应该多强"的参考值 |
+| n（路径损耗指数） | 信号每远 10 倍衰减的档位（室外约 2.2，室内 3.0 以上） |
+| P25 | 一组数排序后 1/4 位置的值——宁可少报、不远报（偏保守） |
+| IQR | 中间一半数据的宽度，看"这组数稳不稳" |
+| median / MAD | 中位数 / 典型偏差；厚尾数据比均值/方差稳 |
+| Huber 加权最小二乘 | 拟合直线时让离谱点"少说话"的算法 |
+| 截距 / 斜率 | 直线的起点高度 / 倾斜度；此处 = 1 m 参考 / −10n |
+| d_break（两射线折点） | 超过这个距离地面反射开始捣乱，公式换一段 |
+| 混淆矩阵 | "实际是什么"对上"设备说是什么"的对错表 |
+| macro-F1 | 每类错误一样重要的打分，防常见类淹没稀有类 |
+| 留出集 | 考试用没教过的题，防死记硬背 |
+| 置信区间宽度 | 估计值的"可能范围"，越窄越可信 |
+| Wilson 95% 下界 | "至少这么准"的保守保证线（95% 把握） |
+
+---
+
 ## 0. 结论摘要
 
 1. **参数更新在电脑上完成，固件只消费结果。** 拟合、验证、版本管理都在 PC 端 Python 工具 `tools/model_fit.py` 完成；产出是一个带版本号和 CRC 的 `radar_model_params_t` 二进制块，通过现有 Debug 页串口通道或 NVS 预置写入固件。卡片上不做任何拟合（MVP 原则见上游文档 §6）。
@@ -99,7 +133,7 @@ log10(d_true) = (tx_ref_sym − rssi_sym)/(10·n)
 
 这是一个关于 `(tx_ref_sym, n)` 的**线性回归**：令 `y = rssi_sym`，`x = log10(d_true)`，则 `y = a + b·x`，其中 `a = tx_ref_sym`，`b = −10·n`。每个 `(environment, link)` 条件单独拟合一条直线，这就是"按条件分层"的数学形式。
 
-**关键点：d_true 从哪来？** 采集时用户输入的是 `target_m`（卷尺/激光测距真值）。因此 RSSI 模型的拟合目标是 `target_m`，不是 FTM 输出——FTM 是另一个待标定的观测量，不能既当老师又当学生。
+**关键点：d_true 从哪来？** 权威真值是**实测距离 `measured_distance_m`**（卷尺/激光测距，随 sidecar 提交并通过时间对齐校验，见补救设计 §4.1）。`target_m` 只是采集前的预设**标签**（LABEL ONLY），正式拟合不得当真值使用。因此 RSSI 模型的拟合目标是实测距离，不是 FTM 输出——FTM 是另一个待标定的观测量，不能既当老师又当学生。
 
 ### 2.2 FTM 观测模型（radar_ftm.c）
 
@@ -186,7 +220,7 @@ p ← p + q ;  k = p/(p+r) ;  x ← x + k(z − x) ;  p ← (1−k)p
 | P6 | `n_far` | 4.0 | `RADAR_FAR_N` | 折点以上段回归斜率 | 4.0 |
 | P7 | FTM 门限（IQR 1.0/2.0，rate 0.3/0.7，suspicious 1.8×+2m） | 编译期 | `radar_level_classify`, `radar_fusion_ftm_suspicious` | FTM 有效/无效与误差分位数对齐（§4.3.2） | 编译期值 |
 | P8 | 遮挡阈值（K、excess、p2p_1s/10s、sel） | 编译期 | `radar_obstruct.c`, `radar_level_classify` | 混淆矩阵驱动的阈值搜索（§4.3.1） | 编译期值 |
-| P9 | 扫盘门限（residual 5.0，amp 6.0） | 编译期 | `SWEEP_MAX_RMS_RESIDUAL_DB` 等 | 角误差 vs (amp,residual) 散点分界（§4.5） | 编译期值 |
+| P9 | 扫盘偏置 `sweep_bias_deg` + 门限（residual 5.0，amp 6.0） | 偏置未实现 / 门限编译期 | `SWEEP_MAX_RMS_RESIDUAL_DB` 等 | 先估环形中值偏置（D1），再做角误差 vs (amp,residual) 分桶/ROC（§4.5） | 偏置 0° / 门限编译期值 |
 | P10 | 卡尔曼 (q, r) | 0.15 / 4.0 | `radar_kalman.c` | raw 序列离线重放网格搜索（§4.4） | 0.15 / 4.0 |
 
 P1/P2 属于**机内标定**，PC 工具只做复算校验（用导出数据验证机内值是否合理），不直接改写；P3–P10 属于**模型参数包**，由 PC 工具产出。
@@ -204,6 +238,7 @@ typedef struct __attribute__((packed)) {
     uint32_t params_crc32;      // 除本字段外全块的 CRC32
     uint32_t fitted_at_unix;    // 拟合时间
     char     source_firmware[16]; // 采集固件版本
+    uint32_t device_pair_hash32;  // D1：设备对标识(MAC 对散列)，sweep_bias_deg 归属
     // P3/P4: per-env 路径损耗(索引 = radar_env_t)
     float    path_loss_n[3];
     float    tx_ref_per_env[3];
@@ -221,11 +256,12 @@ typedef struct __attribute__((packed)) {
     float    obs_sel_los_max_db;
     float    level_mean_rssi_obstructed_db;
     // P9
+    float    sweep_bias_deg;    // D1：设备对级角度系统偏置
     float    sweep_max_rms_residual_db;
     float    sweep_min_prominence_db;
     // P10
     float    kalman_q, kalman_r;
-    uint8_t  reserved[?];       // 补齐到 4 字节对齐
+    uint8_t  reserved[112];     // 补齐到 256 B 整块（含 sweep_bias_deg 与设备对标识）
 } radar_model_params_t;
 ```
 
@@ -235,14 +271,14 @@ typedef struct __attribute__((packed)) {
 
 ## 4. 各参数的拟合算法推导
 
-统一记号：一个 run = 一次 30 s 采集，含条件标签 `(env, link, obs, space, …)` 与 `N≈99` 条记录；数据集 D = 所有有效 run；条件组 `G(env, link)` 是 D 的划分。
+统一记号：一个 run = 一次 30 s 采集，含条件标签 `(env, link, obs, space, …)` 与 `N≈100` 条记录（有效采样节拍 300 ms，见 §4.1）；数据集 D = 所有有效 run；条件组 `G(env, link)` 是 D 的划分。
 
 ### 4.1 数据清洗（拟合前必须全部通过）
 
-1. **完整性对账**：`records == 99`（30 s / 250 ms），不齐的 run 标记 `SUSPECT`；
+1. **完整性对账**：期望 `records = 100`（30 s 窗口 ÷ 300 ms 有效节拍——250 ms 采样门限被 100 ms poll 栅格量化成 300 ms，固件上限 128），`95~102` 视为完整，超出范围的 run 标记 `SUSPECT`；
 2. **CRC**：`BATCH_CAPTURE_META` 的 `crc32` 与解码后重算一致，不一致整 run 拒绝；
 3. **条件标签合法**：`scene_id` 能被 `radar_capture_condition_scene_id` 反解，上下文字段在合法域内；
-4. **样本时序**：`elapsed_ms` 单调、间隔 250±30 ms；
+4. **样本时序**：`elapsed_ms` 单调、间隔 ≈300 ms（合法范围 250~450 ms；出现 >500 ms 间隔记一次丢拍）；
 5. **FTM 字段语义**：`ftm_valid=0` 时 `ftm_distance_m` 无意义（固件保持旧值/无效值），拟合时必须剔除；
 6. **重复 run**：同条件同距离多次 run 全部保留，进入方差分析；离群 run 由拟合器按 1.5×IQR 判定后**降权**而非丢弃（保留方差信息）。
 
@@ -259,9 +295,11 @@ capture 里的 ftm = P25(hist ∪ {median − offset})
 自 FORMAT_VERSION 4 起（实施见 §10），每个 run 的 capture header 记录 run 级原始 session 统计：offset/P25 之前各 session median 的 median、IQR、完成的 session 数与有效 burst 总数。P1 拟合直接使用：
 
 ```text
-b0_run     = ftm_raw_median_m − target_m     （每个 run 一个样本）
-ftm_offset = median(b0_run)                  （跨 run 鲁棒中心）
+b0_run     = ftm_raw_median_m − measured_distance_m   （每 run 一个样本；真值来自 sidecar 实测）
+ftm_offset = median(b0_run)                           （跨 run 鲁棒中心）
 ```
+
+无 `measured_distance_m` 实测真值的 run 不参与 P1；`target_m` 只作分组标签（R-03，见补救设计 §4.1）。
 
 跨 run MAD > 0.5 m 时报告标定不可信。早先设想的「offset=0 条件下 1 m 采集」近似流程废止，拟合报告不再出现 `offset_estimate=approximate`。
 
@@ -287,6 +325,8 @@ ftm_offset = median(b0_run)                  （跨 run 鲁棒中心）
 - 单向样本（peer_rssi 无效）权重 ×0.5：单向 RSSI 含本端天线方向图偏差，是对称平均的有偏版本；
 - 权重还包括 FTM 无关性：`ftm_valid=1` 的样本不降权（RSSI 与 FTM 独立）；
 - 输出 `n̂_G = −b̂_G/10` 及其置信区间，n 超出 [1.6, 5.0] 时拒绝该条件组的拟合（数据有系统性问题）。
+
+> **置信宽度算例（决定 D7 距离点要求）**：`n̂` 的 95% 区间宽度 ≈ `2·t·σ̂/(10·√Sxx)`。8 个距离点（1/3/5/8/10/15/20/30 m，log10 跨度 1.48）在残差 σ̂=1.5 dB 时宽度 ≈0.58、σ̂=3 dB 时 ≈1.16；5 个点挤在 1~8 m（跨度 0.90）宽度 ≈0.91·σ̂。所以**每条件 ≥5 个距离点且 log10 跨度 ≥1.4**（如 1/3/5/10/20/30 m）是门限有机会通过的下限；室内 1~8 m 跨度不足属预期，室内 P3 回退编译期 n。
 
 `tx_ref_per_env` 的融合：回归截距 `â_G` 是「该条件下 1 m 对称 RSSI」的估计。同一 `env` 下不同 `link` 的截距差异反映遮挡对 1 m 参考的偏移，取 `env` 内按样本数加权的截距均值作为 `tx_ref_per_env[env]`；机内 NVS 标定值（P2）仍优先——参数包的值只在 NVS 无标定时使用。
 
@@ -351,24 +391,27 @@ raw RSSI 环形缓冲（`radar_espnow_raw_history`）在采集里逐条落盘（
 方向数据的真值来自**采集时的方位标注**（PC 端录入，格式见 §6.3）。对每个带方位标签的 run：
 
 ```text
-误差 e = 环形差(sweep_angle, true_bearing)    (radar_fusion_angle_diff)
-按 (amp_db, residual_db, spread_deg, env) 分桶统计 e 的 P50/P90
+偏置 bias = e 的环形中值（跨 run 汇总，D1；per-设备对）
+误差 e' = 环形差(e, bias)                    （先校正系统偏置，再统计残差）
+按 (amp_db, residual_db, spread_deg, env) 分桶统计 e' 的 P50/P90
 ```
 
 输出：
 
 1. 各桶 P50/P90 表 → 判定当前 `residual ≤ 5.0` 与 `2·amp ≥ 6` 门限下哪些桶仍在产出可信方向，哪些桶应该拒绝（拒绝率 vs 误报率的 ROC 曲线，选 Youden 最优点）；
-2. 若发现 `spread_deg` 与角误差强相关（相关系数 >0.5），把 spread 升级为角度置信度的直接输入（当前只在 >20°/>45° 时降档，可改为连续映射）。
+2. 若发现 `spread_deg` 与角误差强相关（相关系数 >0.5），把 spread 升级为角度置信度的直接输入（当前只在 >20°/>45° 时降档，可改为连续映射）；
+3. `sweep_bias_deg`（环形中值偏置）写入参数包——天线/人体不对称是系统项，必须先校正再谈门限（80% 目标评审 D1）。偏置按**设备对**标定，换设备对必须重估。
 
 ### 4.6 交叉验证与准入
 
 - 数据集按 run 划分训练/留出集（80/20，**按场地分层**，同一场地的 run 不跨集，防止环境记忆泄漏）；
 - 每个参数包必须通过：
   1. 留出集 RSSI 距离误差 P50 不劣于编译期默认参数（按条件分组比较）；
-  2. `n̂_G` 置信区间不跨 0 且宽度 ≤0.4；
+  2. `n̂_G` 置信区间不跨 0，宽度三级门限：≤0.4 直接采用（标 `n_ci_tight`）；(0.4, 0.8] 采用但标 `n_ci_wide` 并注明外推风险；>0.8 拒绝、回退编译期值（宽度算例见 §4.2.1 注）；
   3. 分类阈值变化不使任何一类 F1 下降超过 0.05；
   4. FTM offset 估计的 MAD ≤0.5 m；
-- 任一不通过：该参数保持默认值并只在报告中标 FAIL，**参数包整体仍可发布但只包含通过的参数**（部分应用优于全有全无）。
+- 任一不通过：该参数保持默认值并只在报告中标 FAIL，**参数包整体仍可发布但只包含通过的参数**（部分应用优于全有全无）；
+- **80% 验证口径（D3/D4，与 [80% 目标评审 §7](pass-radar-v3-accuracy-goal-80pct-review.zh_CN.md) 分级判据一致）**：`model_fit.py verify` 按分级判据（T1~T4/A1~A2）输出每场景覆盖率与 Wilson 95% 下界；**分母 = 全部有效测量请求（拒绝与降级输出计入分母）**；**测量值 = run 显示序列稳定段中值（动态场景 3 s 滑窗）**；下界 ≥0.80 才记达标，否则该场景承诺自动降档。
 
 ---
 
@@ -431,9 +474,12 @@ tools/model_fit/
 batch: 493512032
 runs:
   - run: 3
-    bearing_deg: 45     # 对端相对本端的真实方位（0°=磁北或约定参考）
-    tape_distance_m: 5.0 # 若与 target_m 不同，以本字段为准（target 仅是标签）
+    bearing_deg: 45           # 对端相对本端的真实方位（0°=磁北或约定参考）
+    measured_distance_m: 5.0  # 卷尺/激光实测真值（target_m 仅是预设标签）
+    window_ms: [0, 38000]     # 该实测值覆盖的采集时间窗，用于与记录对齐
 ```
+
+实测距离的对齐校验（时间窗重叠、缺锚拒绝）以补救设计 §4.1 的 sidecar 规范为准（`DISTANCE_SIDECAR_*`）。
 
 没有方位标注的 run 只参与距离/分类拟合，不参与方向拟合。
 
@@ -461,6 +507,7 @@ runs:
 | kalman_q | [0.01, 1.0] | 整包拒绝 |
 | kalman_r | [1.0, 20.0] | 整包拒绝 |
 | sweep 门限 | residual [2, 10], prominence [2, 15] | 整包拒绝 |
+| sweep_bias_deg | [−30°, 30°] | 整包拒绝 |
 | 观测阈值组 | 各自在编译期值 ±50% 内 | 整包拒绝 |
 
 ---
@@ -475,7 +522,7 @@ runs:
 | 4 | 方向模型的时间→角度映射 | ✅ 已有周期自校正；拟合对象是误差分布与门限，不是映射本身 |
 | 5 | 分类器特征可从 capture 重放 | ✅ p2p_1s/p2p_10s/k_factor 均只依赖 raw RSSI 序列 |
 | 6 | 单向 RSSI 样本的处理 | ✅ 降权 0.5，不剔除（保留量程边缘信息） |
-| 7 | 用户 target_m 作为真值 | ⚠️ 标签语义：文档要求 UI 显示 LABEL ONLY；PC 端支持 tape_distance 覆盖 |
+| 7 | 用户 target_m 作为真值 | ✅ 已修正：真值 = `measured_distance_m` sidecar（补救设计 §4.1），`target_m` 仅作标签（LABEL ONLY），无实测真值的 run 不进正式拟合 |
 | 8 | 训练/留出划分 | ✅ 按场地分层，防同场地泄漏 |
 
 ---

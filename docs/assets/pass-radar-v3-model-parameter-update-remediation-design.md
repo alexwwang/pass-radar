@@ -8,6 +8,18 @@
 
 ---
 
+## ELI5 summary (read this first)
+
+The last review found that stored data sometimes **cannot say where it came from** (which capture, which distance, which firmware), sometimes **loses rows silently** (no stop when full), and some labels were computed from **a single last frame instead of the whole run**.
+
+Think of it this way: you want to re-calibrate a ruler, but some slips of paper are missing date and location, some had rows torn out without telling anyone, and one says "clear view the whole time" when it was really measured only in the last second. Calibrate from that, and the ruler comes out crooked.
+
+**This design lays down the rules for data**: every datum must answer "**which firmware, which batch, which run, which true distance (tape-measured), which conditions, which complete time window**"; anything uncertain gets `SUSPECT`/`REJECTED` — **better unused than misused**. The compliant format is **FORMAT_VERSION 5**; old data (v3/v4) stays readable and exportable but **must never mix into the formal calibration pile**.
+
+Key terms: `run` = one 38-second capture; `batch` = all runs of one campaign; `sidecar` = the "tape-measured distance receipt" submitted with the data; `OVERFLOW` = the dangerous state where rows past capacity are silently dropped. Full detail starts at §2.
+
+---
+
 ## 1. Design decision
 
 The previous review confirmed that FORMAT_VERSION 4 fixed important Flash, CRC, and raw-FTM storage issues, but still has risks in run attribution, aggregation overflow, measured distance, snapshot consistency, probe semantics, observed labels, firmware provenance, and the missing PC verification tool.
