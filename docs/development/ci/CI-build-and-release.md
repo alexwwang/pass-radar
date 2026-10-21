@@ -4,7 +4,7 @@
 
 # Automated Build and Release
 
-`.github/workflows/build-firmware.yml` builds and publishes firmware for tags and supports manual dispatch. Ordinary branch pushes do not trigger it. Keep this page synchronized with the workflow.
+`.github/workflows/build-firmware.yml` builds and publishes firmware for tags and supports manual dispatch. Ordinary branch pushes do not trigger it. Keep this page synchronized with the workflow. All workflows that invoke `tools/validate.sh` first source `tools/ci-uv-env.sh`, which provisions the required uv-managed Python environment (`PASS_RADAR_PYTHON`, PyYAML included).
 
 The build job restores ccache, runs `./tools/validate.sh --firmware` with ESP-IDF 5.5.3 for ESP32-C3, verifies the bootloader at `0x0`, partition table at `0x8000`, application at `0x10000`, 8 MB Flash arguments, and the protected Flash layout, then uploads `pass-radar-full.bin`. A separate least-privilege release job publishes that artifact only for a tag.
 

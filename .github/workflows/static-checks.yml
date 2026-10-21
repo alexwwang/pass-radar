@@ -27,4 +27,4 @@ jobs:
           echo "ACTIONLINT_BIN=${actionlint_bin}" >> "$GITHUB_ENV"
 
       - name: Validate repository and run host tests
-        run: ./tools/validate.sh --static
+        run: source ./tools/ci-uv-env.sh && ./tools/validate.sh --static

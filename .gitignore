@@ -8,3 +8,6 @@ managed_components/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# CI bootstrap (tools/ci-uv-env.sh)
+.ci-venv/
