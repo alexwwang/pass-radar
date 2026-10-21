@@ -8,6 +8,8 @@
 
 本文件与 `.github/workflows/build-firmware.yml` 一同维护，工作流行为变化时必须同步更新。
 
+所有调用 `tools/validate.sh` 的工作流都先 source `tools/ci-uv-env.sh`，由它统一提供 validate 要求的 uv 管理 Python 环境（`PASS_RADAR_PYTHON`，含 PyYAML）。
+
 ## 触发条件
 
 - **push tag**：当向仓库推送 tag（如 `v1.0.0`、`v0.1.0-feature/xxx`）时触发自动构建，并在构建成功后自动创建 Release（带固件产物）。
