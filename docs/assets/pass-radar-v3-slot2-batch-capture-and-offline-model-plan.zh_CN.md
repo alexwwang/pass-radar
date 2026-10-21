@@ -165,42 +165,55 @@ NEW BATCH
 
 如果预定总次数超过容量，必须在明确的活动边界导出当前批次，再由用户明确创建新批次。这是容量限制，不是室内/室外设计上的拆分。
 
-## 4. slot2 数据布局
+## 4. 批次数据区
 
-meta-pass 分区表确认：
+`radar_capture_batch_open()` 按顺序尝试两条发现路径：
+
+1. **meta-pass v2（dynslot）——主路径。** pass-radar 在自己的分区表中
+   声明一个 DATA 分区（`capture`，subtype `0x81`，1 MiB）。meta-pass
+   安装器从镜像内嵌表中读取该声明，安装时从池内 carve 出 DATA 记录；
+   用户可以在声明值以上自选更大容量（1 MiB 步进，声明值为下限）。
+   启动器引导 pass-radar 时按 active play 物化 DATA 条目，固件通过
+   `esp_partition_find_first()` 按标签解析到该区。carve 全额可用
+   （DATA carve 无尾扇区），容量即 carve 大小，不会低于声明的 1 MiB。
+   声明的 1 MiB 可存 85 个最坏情况 Capture；`begin()` 把请求批次量
+   钳制到容量而不是失败。v2 生命周期归启动器所有：卸载即归档，
+   池压力可回收 ARCHIVED 数据，重装请求更小尺寸会被拒绝。
+2. **meta-pass v1——legacy 回退。** 空的 `ota_2` 槽：
 
 ```text
 ota_2: 0x560000 ~ 0x7FE000，size=0x29E000，约2.61 MiB
-```
-
-当前 slot0 部署在不修改 meta-pass 分区表的前提下，使用空的 slot2 作为 Capture 数据区：
-
-```text
 Capture data start: 0x560000（ota_2 起始）
 Capture data end:   0x7FD000（最后 4 KiB 保留给 slot 显示名）
 Capture data size:  0x29D000 = 2736128 bytes
 ```
 
-固件运行时只在 slot2 不是当前运行分区，且 slot2 为空或包含有效的 pass-radar 批次头时使用它。发现 slot2 被其他内容占用时，直接拒绝使用，不擦除、不追加覆盖。
+两条路径下，固件都只在该区不是当前运行分区、且为空或包含合法
+pass-radar 批次头时接受它。发现被其他内容占用时直接拒绝，不擦除、
+不追加覆盖。
 
 约束：
 
-- 开发者部署可以把 pass-radar 运行在 slot0 或 slot1；当前运行在 slot0 时，可以把空 slot2 保留为 Capture 数据区；普通发布版本不依赖 slot2；
-- 构建门禁必须检查应用末尾不得进入 Capture data 区；
-- meta-pass slot2 安装器只写入镜像覆盖范围，不擦除整个 ota_2；
+- standalone/开发镜像在声明的模板偏移处使用 `capture` 分区；在
+  meta-pass v2 下物理偏移由池分配器决定，声明只提供
+  label/subtype/size；
+- 构建门禁必须检查应用末尾不得进入声明的数据区；
+- v1 回退路径下，meta-pass slot2 安装器只写入镜像覆盖范围，不擦除整个 ota_2；
 - 重新安装/更新固件前必须保留数据区；
 - 不得覆盖 `cardid@0x356000` 或 `otadata@0x7FE000`；
-- 数据区不是 app 分区表中的独立 data partition，而是 slot2 尾部的受控原始 Flash 区域，故只能由本项目固定偏移访问。
+- 片上批次格式（RCB1/RCC1/RCOK）不变，只有容器选择是动态的。
 
 ## 5. 容量预算
 
 当前一次 Capture 约 99～100 条记录，实际压缩 payload 约 1.4 KiB。容量设计使用最坏上限而不是平均值：
 
 ```text
-每个 Capture 最坏物理占用：header 对齐 4096 + payload 对齐 8192 + commit 对齐 4096 = 16384 bytes
+每个 Capture 最坏物理占用：填充头扇区 4096 + payload 扇区 4096 + commit 扇区 4096 = 12288 bytes（payload 不超过 4096 字节编码上限时任一 Capture 都占这 3 个扇区）
 Capture 数据从对齐后的批次头 4096 bytes 之后开始。
-slot2 理论最坏容量为 167 条 Capture；实现会保留安全余量，并在运行时显示准确的剩余容量。
-slot2 数据区：2736128 bytes
+容量运行时按分区推导：floor((区大小 - 4096) / 12288)。
+声明 1 MiB carve：85 条 Capture；2 MiB carve：170 条（配置上限 160 条）。
+legacy v1 ota_2 区（2736128 bytes）：222 条 Capture。
+begin() 把更大的请求批次量钳制到容量，而不是失败。
 室内和室外记录共享同一追加式容量；切换环境不会重置或覆盖当前批次。
 ```
 

@@ -35,7 +35,8 @@ uint32_t radar_capture_batch_crc32(const void *data, size_t length) {
     return ~crc;
 }
 
-bool radar_capture_batch_header_valid(const radar_capture_batch_header_t *header) {
+bool radar_capture_batch_header_valid_cap(
+    const radar_capture_batch_header_t *header, size_t capacity) {
     if (!header || header->magic != RADAR_CAPTURE_BATCH_MAGIC ||
         header->version < RADAR_CAPTURE_BATCH_FORMAT_VERSION_MIN ||
         header->version > RADAR_CAPTURE_BATCH_FORMAT_VERSION ||
@@ -44,11 +45,17 @@ bool radar_capture_batch_header_valid(const radar_capture_batch_header_t *header
         header->committed_captures > header->expected_captures ||
         header->next_offset < radar_capture_batch_data_offset() ||
         (header->next_offset & (RADAR_CAPTURE_BATCH_SECTOR_SIZE - 1u)) != 0 ||
-        header->next_offset > RADAR_CAPTURE_BATCH_FLASH_SIZE) return false;
+        header->next_offset > capacity) return false;
     radar_capture_batch_header_t copy = *header;
     uint32_t expected = copy.header_crc32;
     copy.header_crc32 = 0;
     return expected == radar_capture_batch_crc32(&copy, sizeof(copy));
+}
+
+bool radar_capture_batch_header_valid(const radar_capture_batch_header_t *header) {
+    // Legacy fixed-capacity form: bounded by the v1 ota_2 fallback region.
+    return radar_capture_batch_header_valid_cap(
+        header, RADAR_CAPTURE_BATCH_FLASH_SIZE);
 }
 
 uint32_t radar_capture_batch_record_crc32(
@@ -240,8 +247,53 @@ static bool partition_data_is_erased(const esp_partition_t *partition,
     return true;
 }
 
+// Accept either an erased region or one already initialized by this batch
+// format. Any other content is treated as an occupied partition and is never
+// erased or appended over.
+static esp_err_t accept_data_partition(const esp_partition_t *partition,
+                                       size_t data_size) {
+    if (!partition_data_is_erased(partition, data_size)) {
+        radar_capture_batch_header_t existing;
+        if (esp_partition_read(partition, 0, &existing, sizeof(existing)) != ESP_OK ||
+            !radar_capture_batch_header_valid_cap(&existing, data_size)) {
+            ESP_LOGE(TAG, "BATCH data unavailable: partition is occupied");
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+    return ESP_OK;
+}
+
 static esp_err_t find_partition(void) {
     if (s_partition) return ESP_OK;
+
+    // 1. meta-pass v2 (dynslot): the launcher materializes the child-declared
+    // DATA carve under label "capture" when booting this firmware. The full
+    // extent is usable; capacity is the carve size.
+    const esp_partition_t *data = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, RADAR_CAPTURE_BATCH_DATA_SUBTYPE,
+        RADAR_CAPTURE_BATCH_DATA_LABEL);
+    if (data) {
+        // Usable floor: batch header sector plus one full worst-case capture
+        // span (padded header + payload + commit sectors).
+        size_t floor = radar_capture_batch_data_offset() +
+                       radar_capture_batch_capture_span(
+                           RADAR_CAPTURE_BATCH_MAX_PAYLOAD);
+        if (data->size < floor) {
+            ESP_LOGE(TAG, "BATCH data unavailable: capture partition too small");
+            return ESP_ERR_INVALID_STATE;
+        }
+        esp_err_t err = accept_data_partition(data, data->size);
+        if (err != ESP_OK) return err;
+        s_partition = data;
+        s_data_size = data->size;
+        ESP_LOGI(TAG, "BATCH data partition=%s address=0x%lx size=%u",
+                 RADAR_CAPTURE_BATCH_DATA_LABEL,
+                 (unsigned long)s_partition->address, (unsigned)s_data_size);
+        return ESP_OK;
+    }
+
+    // 2. Legacy meta-pass v1: an empty, non-running ota_2 slot. Its final
+    // 4 KiB holds the slot display-name blob and stays untouched.
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_partition_t *slot2 = esp_partition_find_first(
         ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_2, NULL);
@@ -250,20 +302,11 @@ static esp_err_t find_partition(void) {
         ESP_LOGE(TAG, "BATCH data unavailable: slot2 is missing or running");
         return slot2 ? ESP_ERR_INVALID_STATE : ESP_ERR_NOT_FOUND;
     }
-    // Accept either an erased slot or a slot already initialized by this
-    // batch format. Any other content is treated as an occupied firmware/data
-    // slot and is never erased or appended over.
     size_t data_size = slot2->size - RADAR_CAPTURE_BATCH_NAME_SECTOR_SIZE;
-    if (!partition_data_is_erased(slot2, data_size)) {
-        radar_capture_batch_header_t existing;
-        if (esp_partition_read(slot2, 0, &existing, sizeof(existing)) != ESP_OK ||
-            !radar_capture_batch_header_valid(&existing)) {
-            ESP_LOGE(TAG, "BATCH data unavailable: slot2 is occupied");
-            return ESP_ERR_INVALID_STATE;
-        }
-    }
+    esp_err_t err = accept_data_partition(slot2, data_size);
+    if (err != ESP_OK) return err;
     s_partition = slot2;
-    s_data_size = slot2->size - RADAR_CAPTURE_BATCH_NAME_SECTOR_SIZE;
+    s_data_size = data_size;
     if (s_data_size > RADAR_CAPTURE_BATCH_FLASH_SIZE) {
         s_data_size = RADAR_CAPTURE_BATCH_FLASH_SIZE;
     }
@@ -312,7 +355,8 @@ esp_err_t radar_capture_batch_open(void) {
     s_open = true;
     radar_capture_batch_header_t header;
     err = read_bytes(0, &header, sizeof(header));
-    if (err != ESP_OK || !radar_capture_batch_header_valid(&header)) {
+    if (err != ESP_OK ||
+        !radar_capture_batch_header_valid_cap(&header, s_data_size)) {
         s_active = false;
         s_batch_id = 0;
         s_expected_captures = 0;
@@ -343,6 +387,25 @@ esp_err_t radar_capture_batch_begin(uint32_t batch_id, uint32_t expected_capture
     if (batch_id == 0 || expected_captures == 0 ||
         expected_captures > RADAR_CAPTURE_BATCH_MAX_CAPTURES) {
         return ESP_ERR_INVALID_ARG;
+    }
+    // Capacity is partition-derived (dynslot carve size or legacy ota_2). Every
+    // capture costs 3 erase sectors even for small payloads (padded header,
+    // payload, commit), so a small carve cannot honor the requested count.
+    // Clamp instead of failing: capture stays usable, the batch just ends
+    // earlier. Callers pass RADAR_CAPTURE_BATCH_MAX_CAPTURES unconditionally.
+    size_t span_max =
+        radar_capture_batch_capture_span(RADAR_CAPTURE_BATCH_MAX_PAYLOAD);
+    uint32_t capacity_captures =
+        span_max != 0 ? (uint32_t)((s_data_size -
+                                    radar_capture_batch_data_offset()) /
+                                   span_max)
+                      : 0u;
+    if (capacity_captures == 0) return ESP_ERR_NO_MEM;
+    if (expected_captures > capacity_captures) {
+        ESP_LOGW(TAG, "batch id=%lu expected=%lu clamped to %lu (capacity=%u)",
+                 (unsigned long)batch_id, (unsigned long)expected_captures,
+                 (unsigned long)capacity_captures, (unsigned)s_data_size);
+        expected_captures = capacity_captures;
     }
     esp_err_t err = esp_partition_erase_range(s_partition, 0,
                                                s_data_size);

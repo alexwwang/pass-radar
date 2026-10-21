@@ -159,42 +159,62 @@ NEW BATCH
 
 If the planned total exceeds the available capacity, the developer must export the current batch and explicitly create a new batch at a campaign boundary. This is a capacity constraint, not an indoor/outdoor design split.
 
-## 4. slot2 data layout
+## 4. Batch data region
 
-The meta-pass partition table confirms:
+`radar_capture_batch_open()` tries two discovery paths in order:
+
+1. **meta-pass v2 (dynslot) — primary.** pass-radar declares a DATA
+   partition (`capture`, subtype `0x81`, 1 MiB) in its own partition table.
+   The meta-pass installer reads that declaration from the embedded table and
+   carves a pool DATA record at install time; the user may pick a larger
+   capacity (1 MiB steps, the declared size is the floor). When the launcher
+   boots pass-radar it materializes the carved table with only the active
+   play's DATA entries, so the firmware resolves the region by label through
+   `esp_partition_find_first()`. The full carve extent is usable (DATA
+   carves have no tail sector) and the capacity is whatever was carved —
+   never below the declared 1 MiB. The declared 1 MiB holds 85 worst-case
+   Captures; `begin()` clamps the requested batch count to the capacity
+   instead of failing. Under the v2 lifecycle the carve is owned by the
+   launcher: uninstall archives it, pool pressure may reclaim ARCHIVED data,
+   and a re-install requesting a smaller size is rejected.
+2. **meta-pass v1 — legacy fallback.** an empty `ota_2` slot:
 
 ```text
 ota_2: 0x560000 ~ 0x7FE000, size 0x29E000, approximately 2.61 MiB
-```
-
-Without changing the meta-pass partition table, the current slot0 deployment uses the empty slot2 partition as the Capture data area:
-
-```text
 Capture data start: 0x560000 (ota_2 start)
 Capture data end:   0x7FD000 (last 4 KiB reserved for slot display-name blob)
 Capture data size:  0x29D000 = 2736128 bytes
 ```
 
-The firmware selects slot2 at runtime only when it is not the running application and is either erased or contains a valid pass-radar batch header. An occupied slot2 is rejected rather than erased.
+In both cases the firmware accepts the region only when it is not the
+running application and is either erased or contains a valid pass-radar
+batch header. An occupied region is rejected rather than erased.
 
 Constraints:
 
-- this developer deployment may run pass-radar from slot0 or slot1; when it runs from slot0, an empty slot2 may be reserved for Capture data; ordinary releases do not depend on slot2;
-- the build gate must reject an application that enters the Capture region;
-- the meta-pass slot2 installer must write only the image-covered range and must not erase all of ota_2;
+- standalone/dev images use the declared `capture` partition at its fixed
+  template offset; under meta-pass v2 the physical offset is chosen by the
+  pool allocator and only label/subtype/size come from the declaration;
+- the build gate must reject an application that enters the declared data
+  region;
+- on the v1 fallback path, the meta-pass slot2 installer must write only the
+  image-covered range and must not erase all of ota_2;
 - firmware updates must preserve the data tail;
 - `cardid@0x356000` and `otadata@0x7FE000` must never be touched;
-- this is not a separate partition-table data partition: it is a controlled raw Flash region at a fixed offset inside slot2, accessed only by this project.
+- the on-flash batch format (RCB1/RCC1/RCOK) is unchanged; only the
+  container selection is dynamic.
 
 ## 5. Capacity budget
 
 A current Capture has approximately 99–100 records and an observed compressed payload around 1.4 KiB. Capacity uses the worst bound rather than the average:
 
 ```text
-One Capture worst-case physical span: aligned header 4096 + aligned payload 8192 + aligned commit 4096 = 16384 bytes
+One Capture worst-case physical span: padded header sector 4096 + payload sector 4096 + commit sector 4096 = 12288 bytes (any payload up to the 4096-byte codec ceiling costs the same 3 sectors)
 Capture data begins after the aligned batch header at 4096 bytes.
-Theoretical worst-case slot2 capacity: 167 Capture records; the implementation keeps a safety reserve and reports the exact remaining capacity at runtime.
-slot2 data region: 2736128 bytes
+Capacity is partition-derived at runtime: floor((region size - 4096) / 12288).
+Declared 1 MiB carve: 85 Captures; 2 MiB carve: 170 (the 160-capture configured maximum).
+Legacy v1 ota_2 region (2736128 bytes): 222 Captures.
+begin() clamps a larger requested batch count to this capacity instead of failing.
 Indoor and outdoor records share this same append-only capacity; changing environment does not reset or overwrite the batch.
 ```
 

@@ -266,7 +266,7 @@ The developer Capture path stores up to 128 observations in RAM at a 250 ms cade
 
 The developer batch fields contain the available raw RSSI, peer liveness, FTM status/distance/spread/session count, BLE state/RSSI/age, CSI frame count, and environment level. Batch metadata includes firmware version, capture ID, batch/run/scene labels, boot sequence, reset reason, target label, record count, and CRC32. Final model fitting remains a computer-side developer task; ordinary users do not tune parameters on-device.
 
-The current developer path uses the existing empty `ota_2` slot as raw Capture storage when pass-radar runs from slot0 or slot1. It uses `0x560000–0x7FD000` (the final 4 KiB remains reserved for the slot display-name blob). If slot2 is occupied or is the running application, Capture refuses to start rather than erasing firmware. Ordinary product operation does not depend on this storage.
+The current developer path resolves its raw Capture storage at runtime, in priority order: (1) under meta-pass v2 (dynslot), the child-declared `capture` DATA carve (subtype `0x81`, declared 1 MiB, user-extensible at install), materialized by the launcher for the active play and found by label — the full carve extent is usable; (2) on legacy meta-pass v1, the empty `ota_2` slot at `0x560000–0x7FD000` (the final 4 KiB remains reserved for the slot display-name blob). If the region is occupied or is the running application, Capture refuses to start rather than erasing firmware. `begin()` clamps the requested batch count to the partition-derived capacity (a 1 MiB carve holds 85 worst-case Captures). Ordinary product operation does not depend on this storage.
 
 ## 11. Historical compressed NVS design (superseded for developer batch builds)
 

@@ -4,7 +4,17 @@
 
 ## 未发布
 
+## v0.2.0 (2026-10-21)
+
 ### 修复
+- 采集不改上下文直接 START 时 SAVE 必败 `CAPTURE_SAVE FAIL BATCH err=ESP_ERR_INVALID_STATE`：上电默认房间大小是 `LARGE`，而默认空间是 `OUTDOOR_OPEN`——采集矩阵规定户外开阔地只允许 `NOT_APPLICABLE`，batch append 守卫在完整 43 秒跑完后才拒绝（菜单选项有可用性过滤、选不出该组合，只有未初始化的默认值会踩）。默认值改为 `NOT_APPLICABLE`，与默认室外场景自洽（2026-10-21 真机定位根因）
+- meta-pass v2（dynslot）启动器下批采集存储不可用：固件写死查找 v1 固定
+  `ota_2` 槽，动态槽位表上永远解析不到（`BATCH data unavailable: slot2 is
+  missing`），采集数据存不下来。批次数据区改为按优先级发现：子固件声明的
+  `capture` DATA carve（subtype `0x81`，partitions.csv 声明 1 MiB，安装时
+  用户可扩大），由启动器为 active play 物化、按标签解析；回退到 v1 空
+  `ota_2` 槽。容量运行时按分区推导，`begin()` 把请求批次量钳制到容量
+  （1 MiB carve = 85 个最坏情况 Capture；片上 RCB1/RCC1/RCOK 格式不变）
 - 真机首轮问题:10 米内扫盘报 OUT OF RANGE（100ms 跳频 + BLE 扫描抢射频）
   ——跳频驻留提高到 250ms，扫盘/标定期间暂停 BLE 扫描
 - FTM 建立不了会话：连续发起失败时暂停 BLE 扫描 5 秒让路，成功或超时后恢复

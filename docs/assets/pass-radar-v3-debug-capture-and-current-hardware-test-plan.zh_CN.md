@@ -280,7 +280,7 @@ Debug 页面显示 `CAPTURE [OK]`；OK 进入独立的 Capture 菜单。UP/DOWN 
 
 开发者批次保存可用的原始 RSSI、对端存活、FTM 状态/距离/分歧/session 数、BLE 状态/RSSI/年龄、CSI 帧数和环境等级。批次元数据还包含固件版本、采集 ID、batch/run/scene 标签、boot sequence、复位原因、目标标签、记录数和 CRC32。最终模型拟合仍在电脑端由开发者完成，普通用户不在设备上调参。
 
-当前开发者路径在 pass-radar 运行于 slot0 或 slot1 时，使用现有空的 `ota_2` 槽作为原始 Capture 存储，范围为 `0x560000–0x7FD000`（最后 4 KiB 保留给 slot 显示名）。如果 slot2 已被占用或就是当前运行分区，Capture 会拒绝开始，不擦除固件。普通产品运行不依赖该存储区。
+当前开发者路径在运行时按优先级解析原始 Capture 存储区：(1) 在 meta-pass v2（dynslot）下，使用子固件声明的 `capture` DATA carve（subtype `0x81`，声明 1 MiB，安装时用户可扩大），由启动器为 active play 物化并按标签查得，carve 全额可用；(2) 在 meta-pass v1 下，使用空的 `ota_2` 槽 `0x560000–0x7FD000`（最后 4 KiB 保留给 slot 显示名）。如果存储区已被占用或就是当前运行分区，Capture 会拒绝开始，不擦除固件。`begin()` 把请求批次量钳制到按分区推导的容量（1 MiB carve 可存 85 个最坏情况 Capture）。普通产品运行不依赖该存储区。
 
 ## 11. 历史压缩 NVS 方案（开发者批次版本已取代）
 

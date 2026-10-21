@@ -112,6 +112,13 @@ run_static_checks() {
         main/radar_capture_condition.c \
         -o "${test_dir}/test_radar_capture_batch_flash"
     "${test_dir}/test_radar_capture_batch_flash"
+    # Dynslot DATA-carve path: label-resolved "capture" partition, capacity
+    # clamping, and the occupied/too-small region guards.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Itests/mock_esp \
+        tests/test_radar_capture_batch_data.c main/radar_capture_batch.c \
+        main/radar_capture_condition.c \
+        -o "${test_dir}/test_radar_capture_batch_data"
+    "${test_dir}/test_radar_capture_batch_data"
     # C↔Python feature-replay parity (package A3): the C harness prints
     # radar_obstruct/radar_fusion features for fixed vectors, the Python side
     # recomputes them via tools/model_fit/features.py (|Δ| ≤ 1e-4).

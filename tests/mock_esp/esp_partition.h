@@ -24,6 +24,7 @@ typedef struct {
 
 enum {
     ESP_PARTITION_TYPE_APP = 0,
+    ESP_PARTITION_TYPE_DATA = 1,
     ESP_PARTITION_SUBTYPE_APP_OTA_2 = 2,
 };
 

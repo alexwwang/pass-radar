@@ -16,7 +16,9 @@ static int failures;
 
 int main(void) {
     CHECK(RADAR_CAPTURE_BATCH_FLASH_SIZE == 0x29D000u,
-          "full usable ota_2 capacity");
+          "legacy v1 ota_2 fallback capacity stays stable");
+    CHECK(RADAR_CAPTURE_BATCH_DATA_SUBTYPE == 0x81u,
+          "capture carve uses the meta-pass DATA subtype whitelist slot");
     CHECK(sizeof(radar_capture_batch_header_t) == 128,
           "batch header size");
     CHECK(radar_capture_batch_data_offset() == 0x1000u,
@@ -25,7 +27,9 @@ int main(void) {
           "batch payload ceiling must equal the codec ceiling");
     CHECK(RADAR_CAPTURE_BATCH_MAX_PAYLOAD == 4096u,
           "codec worst case is 128 records x 32 bytes");
-    CHECK(radar_capture_batch_capacity_fits(78, RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
+    CHECK(radar_capture_batch_capacity_fits(RADAR_CAPTURE_BATCH_FLASH_SIZE,
+                                            78,
+                                            RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
           "78 worst-case captures fit with aligned batch header");
     CHECK(sizeof(radar_capture_batch_capture_header_t) == 112,
           "capture header size");
@@ -34,7 +38,8 @@ int main(void) {
           "alignment overflow rejected");
     CHECK(radar_capture_batch_capture_span(SIZE_MAX) == 0,
           "capture span overflow rejected");
-    CHECK(!radar_capture_batch_capacity_fits(1, SIZE_MAX),
+    CHECK(!radar_capture_batch_capacity_fits(RADAR_CAPTURE_BATCH_FLASH_SIZE,
+                                             1, SIZE_MAX),
           "oversized payload capacity rejected");
     CHECK(radar_capture_batch_commit_offset(0, 1466) == 8192,
           "observed payload commit offset follows padded header and payload");
@@ -46,12 +51,30 @@ int main(void) {
     CHECK(radar_capture_batch_capture_span(RADAR_CAPTURE_BATCH_MAX_PAYLOAD) ==
               12288,
           "worst payload span includes header/payload/commit sectors");
-    CHECK(radar_capture_batch_capacity_fits(78, RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
-          "78 worst-case captures fit slot2 data area");
-    CHECK(radar_capture_batch_capacity_fits(160, RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
-          "160 worst-case captures fit unified batch capacity");
-    CHECK(!radar_capture_batch_capacity_fits(161, RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
+    CHECK(radar_capture_batch_capacity_fits(RADAR_CAPTURE_BATCH_FLASH_SIZE,
+                                            78,
+                                            RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
+          "78 worst-case captures fit legacy ota_2 data area");
+    CHECK(radar_capture_batch_capacity_fits(RADAR_CAPTURE_BATCH_FLASH_SIZE,
+                                            160,
+                                            RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
+          "160 worst-case captures fit legacy ota_2 capacity");
+    CHECK(!radar_capture_batch_capacity_fits(RADAR_CAPTURE_BATCH_FLASH_SIZE,
+                                             161,
+                                             RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
           "161 captures exceed the configured batch limit");
+    // 1 MiB dynslot carve (the declared minimum): sector-quantized spans
+    // (3 x 4 KiB per capture) bound the batch to 85 worst-case captures;
+    // begin() clamps the requested count to this instead of failing.
+    CHECK(radar_capture_batch_capacity_fits(0x100000u, 85,
+                                            RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
+          "85 worst-case captures fit the 1 MiB declared carve");
+    CHECK(!radar_capture_batch_capacity_fits(0x100000u, 86,
+                                             RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
+          "86 worst-case captures exceed the 1 MiB declared carve");
+    CHECK(radar_capture_batch_capacity_fits(0x200000u, 160,
+                                            RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
+          "160 worst-case captures fit a 2 MiB carve");
     CHECK(RADAR_CAPTURE_SCENE_I_LOS == (1u << 8),
           "indoor LOS scene encoding is stable");
     CHECK(RADAR_CAPTURE_SCENE_O_DYNAMIC ==
@@ -132,8 +155,9 @@ int main(void) {
     CHECK(radar_capture_condition_propagation(RADAR_CAPTURE_LINK_MULTIPATH) ==
               RADAR_CAPTURE_PROPAGATION_MULTIPATH,
           "multipath propagation mapping");
-    CHECK(radar_capture_batch_capacity_fits(78, 1466),
-          "78 observed-size captures fit slot2 data area");
+    CHECK(radar_capture_batch_capacity_fits(RADAR_CAPTURE_BATCH_FLASH_SIZE,
+                                            78, 1466),
+          "78 observed-size captures fit legacy ota_2 data area");
     CHECK(radar_capture_budget_fits(RADAR_CAPTURE_BUDGET_MEASURED_MIN_LARGEST,
                                     RADAR_CAPTURE_BUDGET_RAW_RECORD_BYTES *
                                         RADAR_CAPTURE_BUDGET_MAX_RECORDS),

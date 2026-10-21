@@ -4,7 +4,20 @@ English | [简体中文](CHANGELOG.zh_CN.md)
 
 ## Unreleased
 
+## v0.2.0 (2026-10-21)
+
 ### Fixed
+- Batch Capture SAVE failing with `CAPTURE_SAVE FAIL BATCH err=ESP_ERR_INVALID_STATE` whenever the operator started a run without touching the Capture menu context: the power-on default room size was `LARGE` while the default space is `OUTDOOR_OPEN`, and the capture matrix admits only `NOT_APPLICABLE` for outdoor-open space — the batch append guard rejected the meta after the full 43 s run (menu-driven selections are filtered and never produce that pair; only the uninitialized defaults did). Default is now `NOT_APPLICABLE`, self-consistent with the default outdoor scene (root-caused on hardware 2026-10-21)
+- Batch Capture storage under the meta-pass v2 (dynslot) launcher: the
+  hardcoded v1 `ota_2` lookup never resolves on the dynamic slot table
+  (`BATCH data unavailable: slot2 is missing`), so no collected run could be
+  stored. The batch region is now discovered in priority order: the
+  child-declared `capture` DATA carve (subtype `0x81`, declared 1 MiB in
+  `partitions.csv`, user-extensible at install), materialized by the
+  launcher for the active play and resolved by label; then the legacy v1
+  empty `ota_2` slot. Capacity is partition-derived at runtime and `begin()`
+  clamps the requested batch count to it (1 MiB carve = 85 worst-case
+  Captures; the on-flash RCB1/RCC1/RCOK format is unchanged)
 - Device-test round 1 findings: sweeps reporting OUT OF RANGE within 10 m
   (radio starvation during 100ms channel hops + BLE scan) — hop dwell raised
   to 250 ms and BLE scanning paused during sweeps/calibration

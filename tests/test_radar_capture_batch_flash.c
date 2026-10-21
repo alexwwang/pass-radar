@@ -21,12 +21,13 @@ static int failures;
     } \
 } while (0)
 
-static uint8_t flash_memory[RADAR_CAPTURE_BATCH_SLOT2_SIZE];
+static uint8_t flash_memory[RADAR_CAPTURE_BATCH_LEGACY_SLOT2_SIZE];
 static esp_partition_t mock_partition = {
-    .address = 0,
-    .size = RADAR_CAPTURE_BATCH_SLOT2_SIZE,
+    .address = 0x560000,
+    .size = RADAR_CAPTURE_BATCH_LEGACY_SLOT2_SIZE,
 };
 mock_flash_t g_mock_flash;  // defined here; esp_partition.h declares it extern
+const esp_partition_t *g_mock_data_partition = NULL;
 const esp_partition_t *g_mock_slot2_partition = &mock_partition;
 const esp_partition_t *g_mock_running_partition = NULL;
 
@@ -71,6 +72,7 @@ static void reset_flash(int write_mode) {
     g_mock_flash.memory = flash_memory;
     g_mock_flash.size = sizeof(flash_memory);
     g_mock_flash.write_mode = write_mode;
+    g_mock_data_partition = NULL;   // force the legacy ota_2 fallback path
     g_mock_slot2_partition = &mock_partition;
     g_mock_running_partition = NULL;
 }
