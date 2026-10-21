@@ -159,7 +159,11 @@ static uint32_t s_capture_id;
 static uint16_t s_scene_id = RADAR_CAPTURE_SCENE_O_LOS;
 static uint8_t s_condition_obstruction = RADAR_CAPTURE_OBSTRUCTION_NONE;
 static uint8_t s_room_geometry = RADAR_CAPTURE_ROOM_GEOMETRY_OUTDOOR_OPEN;
-static uint8_t s_room_size = RADAR_CAPTURE_ROOM_SIZE_LARGE;
+// OUTDOOR_OPEN 空间在采集矩阵里只允许 NOT_APPLICABLE(见
+// radar_capture_context_option_available_for_space 首分支);默认 LARGE 会让
+// 不修改上下文的直接 START 在 SAVE 阶段被 batch append 守卫拒绝
+// (ESP_ERR_INVALID_STATE,2026-10-21 真机定位)。默认必须与场景/空间三元自洽。
+static uint8_t s_room_size = RADAR_CAPTURE_ROOM_SIZE_NOT_APPLICABLE;
 static uint8_t s_material = RADAR_CAPTURE_MATERIAL_MIXED;
 static uint8_t s_furniture_density = RADAR_CAPTURE_FURNITURE_LOW;
 static uint8_t s_boundary = RADAR_CAPTURE_BOUNDARY_OPEN;
