@@ -708,14 +708,23 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
             // 独立模式上行服务:AP 热点 + 迷你 HTTP(手机拉批次 → CF)。
             // meta-pass 子固件模式下请用启动器自带手机管理,勿进本页
             // (AP 重配置会打断 FTM 测距会话)。
-            if (radar_upload_enter() == ESP_OK) {
+            // enter 里的 STA join 最长等 10s,必须放锁外,否则冻结
+            // LVGL 整 10 秒(task_wdt 点名真机踩雷)。锁平衡同 LONG2
+            // 先例:先解锁、早 return,不再走函数末尾的公共 unlock。
+            bsp_lvgl_unlock();
+            esp_err_t ue = radar_upload_enter();
+            if (ue != ESP_OK) {
+                ESP_LOGW(TAG, "upload enter failed: %s", esp_err_to_name(ue));
+                return;
+            }
+            if (bsp_lvgl_lock(500)) {
                 radar_ui_show_upload();
                 if (!s_upload_ui_timer) {
                     s_upload_ui_timer = lv_timer_create(upload_ui_refresh, 1000, NULL);
                 }
-            } else {
-                ESP_LOGW(TAG, "upload enter failed");
+                bsp_lvgl_unlock();
             }
+            return;
         }
         break;
 

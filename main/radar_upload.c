@@ -125,6 +125,7 @@ static SemaphoreHandle_t s_sta_sem;
 static SemaphoreHandle_t s_prov_sem;
 static TaskHandle_t s_prov_task;
 static bool s_events_registered;
+static volatile bool s_join_in_progress;   // 守卫:补投的 STA_START 不再重复 connect
 
 // ---- 凭据读写(meta-pass 契约,两固件互通) ----
 
@@ -155,7 +156,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *data) {
     (void)arg; (void)base; (void)data;
     if (id == WIFI_EVENT_STA_START) {
-        (void)esp_wifi_connect();
+        if (!s_join_in_progress) (void)esp_wifi_connect();
     } else if (id == WIFI_EVENT_STA_DISCONNECTED && s_sta_sem) {
         xSemaphoreGive(s_sta_sem);   // 等 IP 的一方据此判失败
     }
@@ -189,8 +190,6 @@ static esp_err_t sta_join_with(const char *ssid, const char *pass) {
         s_sta_sem = xSemaphoreCreateBinary();
         if (!s_sta_sem) return ESP_ERR_NO_MEM;
     }
-    xSemaphoreTake(s_sta_sem, 0);   // 清残留
-
     wifi_config_t sta;
     memset(&sta, 0, sizeof(sta));
     memcpy(sta.sta.ssid, ssid, sizeof(sta.sta.ssid) - 1);
@@ -198,7 +197,23 @@ static esp_err_t sta_join_with(const char *ssid, const char *pass) {
     sta.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &sta);
     if (err != ESP_OK) return err;
+    xSemaphoreTake(s_sta_sem, 0);   // 清残留
+    // 守卫必须先于补投事件置位:STA_START 处理会走到自连 handler,晚置位
+    // 会让它拿旧配置抢先 connect,把这里的 set_config 撞成 "cannot set
+    // config"(真机踩雷)。守卫期间 handler 跳过 connect,由本函数唯一发起。
+    s_join_in_progress = true;
+    // STA 接口早于本 netif 启动(radar_espnow 先起 WiFi,STA_START 已在
+    // 启动时发完):默认胶合层的 wifi_start(netif up + input 绑定 + rxcb)
+    // 从未执行 —— 不补投则首个 RX 包打到 netif->input==NULL 直接空指针
+    // 崩(真机踩雷)。补投对胶合层幂等。
+    if (esp_event_post(WIFI_EVENT, WIFI_EVENT_STA_START, NULL, 0,
+                       pdMS_TO_TICKS(1000)) != ESP_OK) {
+        s_join_in_progress = false;
+        return ESP_FAIL;
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));   // 让胶合层先完成 netif up 再 connect
     err = esp_wifi_connect();   // APSTA 模式下 STA 接口已启动
+    s_join_in_progress = false;
     if (err != ESP_OK) return err;
 
     if (xSemaphoreTake(s_sta_sem, pdMS_TO_TICKS(STA_TIMEOUT_MS)) != pdTRUE) {
@@ -523,6 +538,21 @@ static esp_err_t h_scan(httpd_req_t *req) {
     return ret;
 }
 
+// 配网任务:接到通知后读 NVS 凭据并连 STA;成功原地转 STA 模式
+// (httpd 绑 0.0.0.0 不动,手机回路由器后开新地址即可继续)。
+static void prov_task_main(void *arg);
+
+// 信号量必须与任务同生:任务首行就 take,晚了就是 NULL 断言(真机踩雷)。
+static void prov_task_ensure(void) {
+    if (s_prov_task) return;
+    if (!s_prov_sem) s_prov_sem = xSemaphoreCreateBinary();
+    if (!s_prov_sem) return;
+    if (xTaskCreate(prov_task_main, "up_prov", 4096, NULL, 4,
+                    &s_prov_task) != pdPASS) {
+        s_prov_task = NULL;            // 门户仍可改凭据,下次再建
+    }
+}
+
 // POST /api/wifi?ssid=..&pass=.. —— 表单提交:校验→存 NVS→通知配网任务。
 // 不在 handler 里动 WiFi(httpd 任务栈与全局状态纪律:handler 只做参数搬运);
 // 超限拒绝而非截断(截断会把长 SSID 悄悄改写成连不上的另一个名字)。
@@ -541,11 +571,9 @@ static esp_err_t h_wifi(httpd_req_t *req) {
     if (!creds_save(ssid, pass)) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save failed");
     }
-    if (!s_prov_sem) {
-        s_prov_sem = xSemaphoreCreateBinary();
-        if (!s_prov_sem) {
-            return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no task");
-        }
+    prov_task_ensure();                // STA 直进模式下任务可能还没建
+    if (!s_prov_task) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no task");
     }
     ESP_LOGI(TAG, "provisioning creds for ssid=%s", ssid);
     xSemaphoreGive(s_prov_sem);
@@ -651,12 +679,7 @@ esp_err_t radar_upload_enter(void) {
         snprintf(s_ip, sizeof(s_ip), "192.168.4.1");
         s_mode = have_creds ? RADAR_UPLOAD_AP : RADAR_UPLOAD_PROV;
         (void)dns_relay_start();               // captive portal 弹窗信号
-        if (!s_prov_task) {
-            if (xTaskCreate(prov_task_main, "up_prov", 4096, NULL, 4,
-                            &s_prov_task) != pdPASS) {
-                s_prov_task = NULL;            // 门户仍可改凭据,下次进再建
-            }
-        }
+        prov_task_ensure();
     }
 
     const esp_err_t err = start_httpd();
