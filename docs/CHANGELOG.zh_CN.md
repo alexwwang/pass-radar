@@ -5,7 +5,7 @@
 ## 未发布
 
 ### 新增
-- 独立安装模式上行服务（方案 A 独立通道）：`radar_upload.c` 在 Wi-Fi SoftAP 上挂迷你 HTTP 服务（开放热点 `passradar-up`，默认 `192.168.4.1`），主页面 DOWN 双击进入、同手势退出。设备提供 boot 页，加载云端托管模块 `capture-upload.js`（metapass.chuanxilu.net，与 meta-pass 手机管理同构交互），暴露 `GET /api/capture/info`（批次概览含设备哈希）与分块 `GET /api/capture/read`（4096B 块、边界校验）。手机拉取 RCB1 原始区后代传 `POST /api/capture/ingest`——与 meta-pass 子固件通道汇入同一 ingest → R2 路径。退出时恢复 FTM SoftAP 配置。另有 CLI 兜底 `tools/capture_upload.py`：esptool 读片上传，可持本地 cardid 核对设备哈希
+- 独立安装模式上行服务（方案 A 独立通道）：`radar_upload.c` 提供手机端批次导出的迷你 HTTP 服务，主页面 DOWN 双击进入、同手势退出。**Wi-Fi 优先**：进入时复用 meta-pass 配网凭据（NVS 命名空间 `metapass`，key `sta_ssid`/`sta_pass`——设备经历过 meta-pass 配网即存在，刷 standalone 固件不清 NVS），STA 连家庭路由器（默认 STA netif + DHCP，10 秒超时）——手机与设备同一局域网，拉取 + 上传全程 Wi-Fi，零蜂窝流量。无凭据/连接失败退回开放热点 `passradar-up`（默认 `192.168.4.1`），设备屏幕**明示**上传将经手机数据网络——知情，不偷跑。设备提供 boot 页，加载云端托管模块 `capture-upload.js`（metapass.chuanxilu.net，与 meta-pass 手机管理同构交互），暴露 `GET /api/capture/info`（批次概览含设备哈希）与分块 `GET /api/capture/read`（4096B 块、边界校验）。手机拉取 RCB1 原始区后代传 `POST /api/capture/ingest`——与 meta-pass 子固件通道汇入同一 ingest → R2 路径。退出按模式清理：STA 断开（频道还原）或恢复 FTM SoftAP 配置。另有 CLI 兜底 `tools/capture_upload.py`：esptool 读片上传，可持本地 cardid 核对设备哈希
 - 批次头 v6：头部 reserved 前 16B 改为 `device_hash[16]`——`SHA-256(cardid 前 16B)` 截断 16 字节，由 `radar_capture_device_hash()` 在 `begin()` 盖章（按分区 label `cardid` + `SUBTYPE_ANY` 解析，独立安装 partitions.csv 与子固件 carve 表同 label 不同 subtype 均命中，同一代码路径）。cardid 明文不出设备；持 cardid 者在本地重算哈希即可核对数据集来自哪台设备。无 cardid（未 provisioned 开发板）时盖确定性的全擦除输入哈希。新增公共访问器 `radar_capture_batch_data_size()` / `radar_capture_batch_data_read()`（边界校验的原始区读取，供上行服务用）
 
 ## v0.2.0 (2026-10-21)

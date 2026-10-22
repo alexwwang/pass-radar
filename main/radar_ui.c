@@ -1,6 +1,7 @@
 // radar_ui.c —— 极坐标雷达 UI:追踪 / 扫盘 / 结果 / 标定 四个子页面。
 // 使用 ui_pixel 基元 + lv_obj 定位块构建 240×320 雷达画面。
 #include "radar_ui.h"
+#include "radar_upload.h"
 #include "ui_pixel.h"
 #include "radar_sweep.h"
 #include "radar_ftm.h"
@@ -256,9 +257,21 @@ static void build_upload_page(void) {
     s_scr = ui_pixel_screen_create("UPLOAD");
     s_upload_label = add_info_label(s_scr, 78, &lv_font_montserrat_14);
     lv_obj_set_width(s_upload_label, 230);
-    lv_label_set_text(s_upload_label,
-                      "WiFi: passradar-up\nWeb: http://192.168.4.1\n"
-                      "\n批次上传后自动完成\nDOWN x2 = exit");
+    char text[220];
+    if (radar_upload_is_sta()) {
+        // Wi-Fi 优先:手机与设备同一局域网,全程 Wi-Fi。
+        snprintf(text, sizeof(text),
+                 "WiFi: %s\n手机同 WiFi 开\nhttp://%s\n\n全程 Wi-Fi 上传\n"
+                 "DOWN x2 = exit",
+                 radar_upload_sta_ssid(), radar_upload_ap_ip());
+    } else {
+        // 热点兜底:无 Wi-Fi 凭据,上传必经手机数据网络 —— 明示,不偷跑。
+        snprintf(text, sizeof(text),
+                 "热点: passradar-up\n连上后开 http://%s\n\n无 Wi-Fi 凭据:\n"
+                 "上传将经手机数据网络!\nDOWN x2 = exit",
+                 radar_upload_ap_ip());
+    }
+    lv_label_set_text(s_upload_label, text);
     lv_screen_load(s_scr);
 }
 

@@ -23,7 +23,15 @@ esp_err_t radar_upload_enter(void);
 esp_err_t radar_upload_exit(void);
 bool radar_upload_active(void);
 
-// AP 网卡 IP 文本(进入成功后可用,供 UI 展示),如 "192.168.4.1"。
+// AP 网卡 IP 文本(进入成功后可用,供 UI 展示),STA 模式为局域网 IP,
+// 热点模式为 "192.168.4.1"。
 const char *radar_upload_ap_ip(void);
+
+// 进入成功后的实际上行模式:true = 已连家庭 Wi-Fi(全程 Wi-Fi 上传);
+// false = 开放热点兜底(上传将经手机数据网络,UI 必须明示)。
+bool radar_upload_is_sta(void);
+
+// STA 模式连上的路由器 SSID(UI 展示);热点模式为空串。
+const char *radar_upload_sta_ssid(void);
 
 #endif
