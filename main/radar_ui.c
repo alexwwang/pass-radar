@@ -253,26 +253,50 @@ static void build_debug_page(void) {
 
 static lv_obj_t *s_upload_label;
 
-static void build_upload_page(void) {
-    s_scr = ui_pixel_screen_create("UPLOAD");
-    s_upload_label = add_info_label(s_scr, 78, &lv_font_montserrat_14);
-    lv_obj_set_width(s_upload_label, 230);
+// 上行页文案随模式切换(STA/PROV/AP,配网成功后 PROV→STA 由刷新定时器
+// radar_ui_update_upload 接住)。IP 用 radar_upload_ap_ip():STA 是局域网
+// IP,热点恒 192.168.4.1。
+static void upload_page_set_text(void) {
+    if (!s_upload_label) return;
     char text[220];
-    if (radar_upload_is_sta()) {
+    switch (radar_upload_mode()) {
+    case RADAR_UPLOAD_STA:
         // Wi-Fi 优先:手机与设备同一局域网,全程 Wi-Fi。
         snprintf(text, sizeof(text),
                  "WiFi: %s\n手机同 WiFi 开\nhttp://%s\n\n全程 Wi-Fi 上传\n"
                  "DOWN x2 = exit",
                  radar_upload_sta_ssid(), radar_upload_ap_ip());
-    } else {
-        // 热点兜底:无 Wi-Fi 凭据,上传必经手机数据网络 —— 明示,不偷跑。
+        break;
+    case RADAR_UPLOAD_PROV:
+        // 无凭据:热点即配网门户,captive portal 自动弹页。
         snprintf(text, sizeof(text),
-                 "热点: passradar-up\n连上后开 http://%s\n\n无 Wi-Fi 凭据:\n"
-                 "上传将经手机数据网络!\nDOWN x2 = exit",
-                 radar_upload_ap_ip());
+                 "热点: passradar-up\n手机连上后自动弹配网页\n"
+                 "(或开 http://%s)\n填 Wi-Fi 后回路由器\n等设备屏幕出现 IP\n"
+                 "DOWN x2 = exit", radar_upload_ap_ip());
+        break;
+    default:
+        // AP 兜底(有凭据但连不上):明示数据网络,门户可重配。
+        snprintf(text, sizeof(text),
+                 "WiFi 连接失败\n热点: passradar-up\n重配: http://%s\n"
+                 "直接上传(经数据网络):\nhttp://%s/up\nDOWN x2 = exit",
+                 radar_upload_ap_ip(), radar_upload_ap_ip());
+        break;
     }
     lv_label_set_text(s_upload_label, text);
+}
+
+static void build_upload_page(void) {
+    s_scr = ui_pixel_screen_create("UPLOAD");
+    s_upload_label = add_info_label(s_scr, 78, &lv_font_montserrat_14);
+    lv_obj_set_width(s_upload_label, 230);
+    upload_page_set_text();
     lv_screen_load(s_scr);
+}
+
+// main 的 1s 定时器回调:停留在上行页期间跟随模式变化刷新文案
+// (PROV 配网成功转 STA、join 失败等),离页自停由 main 侧删定时器。
+void radar_ui_update_upload(void) {
+    if (s_page == RADAR_PAGE_UPLOAD) upload_page_set_text();
 }
 
 static void page_teardown(void) {

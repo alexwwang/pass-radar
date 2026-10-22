@@ -649,6 +649,19 @@ static void start_calib(void) {
     lv_timer_set_repeat_count(s_calib_timer, 1);
 }
 
+// 上行页 1s 刷新:跟随 radar_upload_mode() 变化(PROV 配网成功转 STA、
+// join 失败等)。离页自删(含 metapass 长按回启动器等所有出口)。
+static lv_timer_t *s_upload_ui_timer;
+
+static void upload_ui_refresh(lv_timer_t *t) {
+    if (radar_ui_current_page() != RADAR_PAGE_UPLOAD) {
+        lv_timer_delete(t);
+        s_upload_ui_timer = NULL;
+        return;
+    }
+    radar_ui_update_upload();
+}
+
 // ---------- 按键分发(button 任务,须持有锁) ----------
 
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
@@ -697,6 +710,9 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
             // (AP 重配置会打断 FTM 测距会话)。
             if (radar_upload_enter() == ESP_OK) {
                 radar_ui_show_upload();
+                if (!s_upload_ui_timer) {
+                    s_upload_ui_timer = lv_timer_create(upload_ui_refresh, 1000, NULL);
+                }
             } else {
                 ESP_LOGW(TAG, "upload enter failed");
             }

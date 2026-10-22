@@ -66,6 +66,9 @@ typedef struct {
 // 切换到诊断页并刷新(由 main.c 调用;入口=追踪页 UP 长按)。
 void radar_ui_show_debug(void);
 void radar_ui_show_upload(void);
+// 上行页停留期间由 main 的 1s lv_timer 调用:跟随 radar_upload_mode()
+// 变化刷新文案(PROV 配网成功转 STA、join 失败等)。
+void radar_ui_update_upload(void);
 void radar_ui_update_debug(const radar_debug_info_t *info);
 void radar_ui_show_capture_menu(void);
 void radar_ui_show_capture_editor(radar_capture_context_field_t field);
