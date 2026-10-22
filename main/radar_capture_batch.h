@@ -47,8 +47,9 @@ typedef int esp_err_t;
 #define RADAR_CAPTURE_BATCH_MAGIC 0x52434231u /* RCB1 */
 #define RADAR_CAPTURE_BATCH_CAPTURE_MAGIC 0x52434331u /* RCC1 */
 #define RADAR_CAPTURE_BATCH_COMMIT_MAGIC 0x52434f4bu /* RCOK */
-#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 5u
-// 读取侧兼容：v3 批次的 reserved 区全零（sessions=0），v4 接受 [3,4]。
+#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 6u
+// 读取侧兼容:[3,6] 可读(头部字段布局未变);v6 起 reserved 前 16B 为
+// device_hash,v3-v5 该处为 reserved(全 0,读者不得依赖)。
 #define RADAR_CAPTURE_BATCH_FORMAT_VERSION_MIN 3u
 #define RADAR_CAPTURE_CONDITION_SCHEMA_VERSION 1u
 #define RADAR_CAPTURE_CARD_HEIGHT_LOW_MAX_M 1.0f
@@ -216,7 +217,11 @@ typedef struct __attribute__((packed)) {
     uint32_t committed_captures;
     uint32_t next_offset;
     uint32_t header_crc32;
-    uint8_t reserved[100];
+    // v6+: 采集设备身份 = SHA-256(cardid 分区前 16B) 截前 16B(cardid 明文永不
+    // 随数据出设备;核对真身在本地持 cardid 重算比对)。v3-v5 此处为 reserved
+    // (全 0 或 0xFF,读者不得依赖)。
+    uint8_t device_hash[16];
+    uint8_t reserved[84];
 } radar_capture_batch_header_t;
 
 _Static_assert(sizeof(radar_capture_batch_header_t) == 128,
@@ -371,6 +376,19 @@ bool radar_capture_batch_header_valid_cap(
 bool radar_capture_batch_header_valid(const radar_capture_batch_header_t *header);
 bool radar_capture_batch_capture_header_valid(
     const radar_capture_batch_capture_header_t *header);
+
+// ── 采集设备身份(v6+ 批次头 device_hash 的单一来源) ──────────────
+// SHA-256(cardid 分区前 16B) 截前 16B;cardid 明文不出设备,核对真身在本地持
+// cardid 重算比对。分区在独立安装(partitions.csv)与 meta-pass 子固件
+// (carve 物化表)下 label 相同、subtype 不同,按 label + SUBTYPE_ANY 解析。
+// cardid 不可读(未 provisioned 开发板)时退化为全 0xFF 输入的确定性哈希
+// ("未身份"),不阻塞采集。
+esp_err_t radar_capture_device_hash(uint8_t out[16]);
+
+// ── 上行服务(radar_upload)用原始读取接口 ─────────────────────────
+// 不要求活动批次;offset/length 相对批数据区起点,越界即拒。
+size_t radar_capture_batch_data_size(void);
+esp_err_t radar_capture_batch_data_read(size_t offset, void *dst, size_t length);
 
 // Flash-backed operations. The data region is resolved at open time: the
 // child-declared "capture" DATA carve under meta-pass v2 (full extent

@@ -250,6 +250,18 @@ static void build_debug_page(void) {
     lv_screen_load(s_scr);
 }
 
+static lv_obj_t *s_upload_label;
+
+static void build_upload_page(void) {
+    s_scr = ui_pixel_screen_create("UPLOAD");
+    s_upload_label = add_info_label(s_scr, 78, &lv_font_montserrat_14);
+    lv_obj_set_width(s_upload_label, 230);
+    lv_label_set_text(s_upload_label,
+                      "WiFi: passradar-up\nWeb: http://192.168.4.1\n"
+                      "\n批次上传后自动完成\nDOWN x2 = exit");
+    lv_screen_load(s_scr);
+}
+
 static void page_teardown(void) {
     if (s_scr) {
         lv_obj_delete(s_scr);
@@ -269,6 +281,7 @@ static void page_teardown(void) {
         s_result_sector = NULL;
         s_calib_bar = NULL;
         s_debug_label = NULL;
+        s_upload_label = NULL;
         s_capture_menu_label = NULL;
         s_capture_editor_label = NULL;
         s_capture_count_label = NULL;
@@ -470,6 +483,12 @@ void radar_ui_show_debug(void) {
     page_teardown();
     s_page = RADAR_PAGE_DEBUG;
     build_debug_page();
+}
+
+void radar_ui_show_upload(void) {
+    page_teardown();
+    s_page = RADAR_PAGE_UPLOAD;
+    build_upload_page();
 }
 
 void radar_ui_show_capture_menu(void) {

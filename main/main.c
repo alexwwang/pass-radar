@@ -31,6 +31,7 @@
 #include "radar_ble.h"
 #include "radar_espnow.h"
 #include "radar_ftm.h"
+#include "radar_upload.h"
 #include "radar_fusion.h"
 #include "radar_obstruct.h"
 #include "radar_csi.h"
@@ -690,6 +691,15 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         } else if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
             // 诊断/回归页:meta-pass 占用任意键长按(回启动器),改用双击。
             radar_ui_show_debug();
+        } else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_DOUBLE) {
+            // 独立模式上行服务:AP 热点 + 迷你 HTTP(手机拉批次 → CF)。
+            // meta-pass 子固件模式下请用启动器自带手机管理,勿进本页
+            // (AP 重配置会打断 FTM 测距会话)。
+            if (radar_upload_enter() == ESP_OK) {
+                radar_ui_show_upload();
+            } else {
+                ESP_LOGW(TAG, "upload enter failed");
+            }
         }
         break;
 
@@ -736,6 +746,14 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
             radar_ui_show_capture_menu();
         } else if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
+            radar_ui_show_main();
+        }
+        break;
+
+    case RADAR_PAGE_UPLOAD:
+        // DOWN 双击退出上行服务并恢复 FTM AP 配置。
+        if (btn == BSP_BTN_DOWN && ev == BSP_BTN_DOUBLE) {
+            (void)radar_upload_exit();
             radar_ui_show_main();
         }
         break;

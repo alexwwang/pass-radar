@@ -30,6 +30,7 @@ mock_flash_t g_mock_flash;  // defined here; esp_partition.h declares it extern
 const esp_partition_t *g_mock_data_partition = NULL;
 const esp_partition_t *g_mock_slot2_partition = &mock_partition;
 const esp_partition_t *g_mock_running_partition = NULL;
+const esp_partition_t *g_mock_cardid_partition = NULL;
 
 static void fill_meta(radar_capture_batch_capture_meta_t *meta,
                       uint32_t batch_id, uint32_t run_id) {

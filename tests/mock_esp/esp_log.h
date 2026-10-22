@@ -13,6 +13,7 @@ typedef int esp_err_t;
 #define ESP_ERR_INVALID_ARG 0x102
 #define ESP_ERR_INVALID_STATE 0x103
 #define ESP_ERR_NOT_FOUND 0x105
+#define ESP_ERR_INVALID_SIZE 0x10C
 #define ESP_ERR_INVALID_CRC 0x109
 
 // Keep the tag argument referenced so source-level variables like

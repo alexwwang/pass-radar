@@ -17,9 +17,10 @@ idf_component_register(
          "radar_capture_codec.c"
          "radar_capture_session_agg.c"
          "radar_capture_batch.c"
+         "radar_upload.c"
          "radar_ftm.c"
          "radar_ble.c"
          "radar_ui.c"
     INCLUDE_DIRS "."
-    REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash app_update mbedtls bt
+    REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash app_update mbedtls bt esp_http_server
 )

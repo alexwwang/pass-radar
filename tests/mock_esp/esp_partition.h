@@ -20,20 +20,31 @@ extern mock_flash_t g_mock_flash;
 typedef struct {
     uint32_t address;
     uint32_t size;
+    // 可选独立后备存储(如 cardid 分区内容);NULL = 读写 g_mock_flash.memory。
+    const uint8_t *backing;
 } esp_partition_t;
 
 enum {
     ESP_PARTITION_TYPE_APP = 0,
     ESP_PARTITION_TYPE_DATA = 1,
     ESP_PARTITION_SUBTYPE_APP_OTA_2 = 2,
+    ESP_PARTITION_SUBTYPE_ANY = 0xff,
 };
+
+static inline const uint8_t *mock_part_base(const esp_partition_t *partition) {
+    return (partition && partition->backing) ? partition->backing
+                                             : g_mock_flash.memory;
+}
 
 static inline esp_err_t esp_partition_read(const esp_partition_t *partition,
                                            size_t offset, void *data,
                                            size_t length) {
-    if (!partition || !g_mock_flash.memory || offset + length > g_mock_flash.size)
+    const uint8_t *base = mock_part_base(partition);
+    size_t limit = (partition && partition->backing) ? partition->size
+                                                     : g_mock_flash.size;
+    if (!partition || !base || offset + length > limit)
         return ESP_ERR_INVALID_ARG;
-    memcpy(data, g_mock_flash.memory + offset, length);
+    memcpy(data, base + offset, length);
     return ESP_OK;
 }
 

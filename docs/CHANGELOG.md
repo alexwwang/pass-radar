@@ -4,6 +4,10 @@ English | [简体中文](CHANGELOG.zh_CN.md)
 
 ## Unreleased
 
+### Added
+- Standalone upload service (plan A standalone channel): `radar_upload.c` hosts a minimal HTTP service on the Wi-Fi SoftAP (open hotspot `passradar-up`, default `192.168.4.1`), entered from the main page with DOWN double-click and exited the same way. The device serves a boot page that loads the cloud-hosted `capture-upload.js` module (metapass.chuanxilu.net, same interaction model as the meta-pass phone management), exposing `GET /api/capture/info` (batch overview incl. device hash) and chunked `GET /api/capture/read` (4096-byte blocks, bounds-checked). The phone pulls the raw RCB1 region and relays it to `POST /api/capture/ingest` — the same ingest → R2 path as the meta-pass child channel. Exiting restores the FTM SoftAP configuration. A CLI fallback `tools/capture_upload.py` reads the region via esptool and can verify a device hash against a locally known cardid
+- Batch header v6: `device_hash[16]` replaces the first 16 bytes of the header reserved area — `SHA-256(cardid[0:16])` truncated to 16 bytes, stamped by `radar_capture_device_hash()` at `begin()` (read via partition label `cardid` + `SUBTYPE_ANY`, so the same code path serves standalone installs (partitions.csv subtype nvs) and meta-pass child installs (carve table subtype 0x02)). The raw cardid never leaves the device; holders verify identity locally by recomputing the hash. Firmware without a readable cardid (unprovisioned dev board) stamps the deterministic erased-input hash. New public accessors `radar_capture_batch_data_size()` / `radar_capture_batch_data_read()` (bounds-checked raw region reads for the upload service)
+
 ## v0.2.0 (2026-10-21)
 
 ### Fixed

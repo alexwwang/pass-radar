@@ -22,6 +22,7 @@ typedef enum {
     RADAR_PAGE_CAPTURE_MENU, // Debug二级Capture菜单
     RADAR_PAGE_CAPTURE_EDITOR, // Capture上下文候选值编辑
     RADAR_PAGE_CAPTURE,    // 静态距离自动采集
+    RADAR_PAGE_UPLOAD,     // 独立模式上行服务:AP 热点 + 迷你 HTTP(手机拉批次)
 } radar_page_t;
 
 // 诊断页数据快照(由 main.c 每 100ms 填充)。
@@ -64,6 +65,7 @@ typedef struct {
 
 // 切换到诊断页并刷新(由 main.c 调用;入口=追踪页 UP 长按)。
 void radar_ui_show_debug(void);
+void radar_ui_show_upload(void);
 void radar_ui_update_debug(const radar_debug_info_t *info);
 void radar_ui_show_capture_menu(void);
 void radar_ui_show_capture_editor(radar_capture_context_field_t field);

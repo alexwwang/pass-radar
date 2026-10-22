@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
+#include "mbedtls/sha256.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -349,6 +350,36 @@ static esp_err_t write_padded(size_t offset, const void *data, size_t length) {
     return err;
 }
 
+esp_err_t radar_capture_device_hash(uint8_t out[16]) {
+    if (!out) return ESP_ERR_INVALID_ARG;
+    uint8_t id[16];
+    // label + SUBTYPE_ANY:独立安装(partitions.csv subtype=nvs)与 meta-pass
+    // 子固件(carve 物化 subtype=0x02)同 label 不同 subtype,都能命中。
+    const esp_partition_t *cardid = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "cardid");
+    if (!cardid || esp_partition_read(cardid, 0, id, sizeof(id)) != ESP_OK) {
+        memset(id, 0xFF, sizeof(id));   // 未 provisioned 开发板:确定性"未身份"输入
+    }
+    uint8_t digest[32];
+    if (mbedtls_sha256(id, sizeof(id), digest, 0) != 0) return ESP_FAIL;
+    memcpy(out, digest, 16);
+    return ESP_OK;
+}
+
+size_t radar_capture_batch_data_size(void) {
+    if (find_partition() != ESP_OK) return 0;
+    return s_data_size;
+}
+
+esp_err_t radar_capture_batch_data_read(size_t offset, void *dst, size_t length) {
+    if (!dst && length) return ESP_ERR_INVALID_ARG;
+    if (find_partition() != ESP_OK) return ESP_ERR_NOT_FOUND;
+    if (offset > s_data_size || length > s_data_size - offset) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return read_bytes(offset, dst, length);
+}
+
 esp_err_t radar_capture_batch_open(void) {
     esp_err_t err = find_partition();
     if (err != ESP_OK) return err;
@@ -420,6 +451,11 @@ esp_err_t radar_capture_batch_begin(uint32_t batch_id, uint32_t expected_capture
         .committed_captures = 0,
         .next_offset = radar_capture_batch_data_offset(),
     };
+    // v6+: 批次头盖设备身份哈希(cardid 明文不出设备)。失败不阻塞采集,
+    // 头部记全零 = "未身份" 批次。
+    if (radar_capture_device_hash(header.device_hash) != ESP_OK) {
+        memset(header.device_hash, 0, sizeof(header.device_hash));
+    }
     header.header_crc32 = radar_capture_batch_crc32(&header, sizeof(header));
     // Recompute with the checksum field zeroed, then store the checksum.
     header.header_crc32 = 0;
