@@ -17,6 +17,7 @@
 #include "radar_upload.h"
 
 #include "radar_capture_batch.h"
+#include "radar_identity.h"
 
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -440,6 +441,30 @@ static esp_err_t h_info(httpd_req_t *req) {
     return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
 }
 
+// GET /api/identity —— v7 设备身份:MAC 派生哈希 + Ed25519 公钥,供注册
+// 到云端 KV(first-wins 绑定后可验签,见 capture-sig-contract)。
+static esp_err_t h_identity(httpd_req_t *req) {
+    uint8_t hash[16], pubkey[32];
+    if (radar_identity_get(hash, pubkey) != ESP_OK) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "identity unavailable");
+    }
+    char device[33], key[65];
+    for (int i = 0; i < 16; i++) snprintf(device + i * 2, 3, "%02x", hash[i]);
+    device[32] = '\0';
+    for (int i = 0; i < 32; i++) snprintf(key + i * 2, 3, "%02x", pubkey[i]);
+    key[64] = '\0';
+    char json[180];
+    snprintf(json, sizeof(json),
+             "{\"device\":\"%s\",\"pubkey\":\"%s\",\"kind\":\"mac-ed25519\"}",
+             device, key);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+}
+
 // GET /api/capture/read?offset=N&len=M —— 原始字节块,相对批数据区起点,
 // 越界 400(与 meta-pass data/read 同形:设备解析,调用方不给绝对地址)。
 static esp_err_t h_read(httpd_req_t *req) {
@@ -615,6 +640,7 @@ static esp_err_t start_httpd(void) {
         { "/", HTTP_GET, h_root, NULL },
         { "/up", HTTP_GET, h_up, NULL },
         { "/api/capture/info", HTTP_GET, h_info, NULL },
+        { "/api/identity", HTTP_GET, h_identity, NULL },
         { "/api/capture/read", HTTP_GET, h_read, NULL },
         { "/api/scan", HTTP_GET, h_scan, NULL },
         { "/api/wifi", HTTP_POST, h_wifi, NULL },
@@ -681,6 +707,11 @@ esp_err_t radar_upload_enter(void) {
         (void)dns_relay_start();               // captive portal 弹窗信号
         prov_task_ensure();
     }
+
+    // v7:进上传模式即懒签批次(全载荷 SHA-256 + Ed25519 写 trailer 扇区,
+    // 幂等;无批次秒回)。发生在 upload 任务上下文,不持 LVGL 锁,百毫秒级
+    // 延迟可接受。
+    (void)radar_capture_batch_sign_if_needed();
 
     const esp_err_t err = start_httpd();
     if (err != ESP_OK) {

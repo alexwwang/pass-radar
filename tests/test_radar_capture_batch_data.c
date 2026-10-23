@@ -33,8 +33,7 @@ mock_flash_t g_mock_flash;  // defined here; esp_partition.h declares it extern
 const esp_partition_t *g_mock_data_partition = &mock_partition;
 const esp_partition_t *g_mock_slot2_partition = NULL;  // no legacy ota_2
 const esp_partition_t *g_mock_running_partition = NULL;
-// 默认无 cardid(全 0xFF 退化路径);身份用例在测试体内重装带 backing 的分区。
-const esp_partition_t *g_mock_cardid_partition = NULL;
+// cardid mock 已随身份源弃用移除(v7 起身份 = MAC 派生,见 radar_identity)。
 
 static void reset_flash(int write_mode) {
     memset(flash_memory, 0xff, sizeof(flash_memory));
@@ -102,8 +101,9 @@ int main(void) {
           "occupied carve is rejected");
 
     // --- Happy path on a 1 MiB carve under AND-write semantics: begin(160)
-    // must clamp to the 85 captures that fit (3 sectors per capture), all
-    // appends succeed, and export returns every committed record.
+    // must clamp to the 84 captures that fit (3 sectors per capture; v7 trailer
+    // sector removed one capture's worth of payload space), all appends
+    // succeed, and export returns every committed record.
     reset_flash(1);
     CHECK(radar_capture_batch_open() == ESP_OK,
           "open resolves the capture DATA carve");
@@ -120,50 +120,30 @@ int main(void) {
         }
         appended++;
     }
-    CHECK(appended == 85, "1 MiB carve holds exactly 85 worst-case captures");
+    CHECK(appended == 84, "1 MiB carve holds exactly 84 worst-case captures");
     uint32_t exported = 0;
     CHECK(radar_capture_batch_export(export_cb, &exported) == ESP_OK,
           "export succeeds on the DATA carve path");
-    CHECK(exported == 85, "every committed record exports");
+    CHECK(exported == 84, "every committed record exports");
 
-    // --- v6+ 身份盖章:begin 把 SHA-256(cardid 前 16B) 截断写进头部
-    // device_hash;期望值用 Python hashlib 独立计算(be45cb26…),与固件内
-    // mbedtls 实现跨实现对拍。无 cardid 分区走全 0xFF 退化(5ac6a594…)。
-    static const uint8_t cardid_bytes[16] = {
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-    };
-    static const uint8_t expect_hash[16] = {
-        0xbe, 0x45, 0xcb, 0x26, 0x05, 0xbf, 0x36, 0xbe,
-        0xbd, 0xe6, 0x84, 0x84, 0x1a, 0x28, 0xf0, 0xfd,
-    };
-    static const uint8_t expect_erased[16] = {
-        0x5a, 0xc6, 0xa5, 0x94, 0x5f, 0x16, 0x50, 0x09,
-        0x11, 0x21, 0x91, 0x29, 0x98, 0x4b, 0xa8, 0xb3,
-    };
-    static const esp_partition_t mock_cardid = {
-        .address = 0x356000,
-        .size = 0x4000,
-        .backing = cardid_bytes,
+    // --- v7 身份盖章:begin 把 MAC 派生 device_hash 写进头部。身份实现
+    // (efuse MAC + PSA Ed25519)只在目标机构建,宿主机用确定性桩
+    // (mock_radar_identity.c,0x5A*16);真机派生链由 bring-up 与云端验签
+    // 交叉对拍。cardid 方案已弃用(分区整片可擦,身份链会断)。
+    static const uint8_t expect_stub[16] = {
+        0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,
+        0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,
     };
     radar_capture_batch_header_t hdr;
 
     reset_flash(1);
-    g_mock_cardid_partition = &mock_cardid;
     CHECK(radar_capture_batch_begin(batch_id, 1) == ESP_OK,
-          "begin with cardid partition installed");
+          "begin stamps identity into the header");
     memcpy(&hdr, flash_memory, sizeof(hdr));
-    CHECK(hdr.magic == RADAR_CAPTURE_BATCH_MAGIC && hdr.version == 6,
-          "header magic + v6 version written");
-    CHECK(memcmp(hdr.device_hash, expect_hash, 16) == 0,
-          "device_hash = SHA-256(cardid[0:16]) truncated (cross-checked)");
-    g_mock_cardid_partition = NULL;
-
-    reset_flash(1);
-    CHECK(radar_capture_batch_begin(batch_id, 1) == ESP_OK,
-          "begin without cardid partition still works");
-    memcpy(&hdr, flash_memory, sizeof(hdr));
-    CHECK(memcmp(hdr.device_hash, expect_erased, 16) == 0,
-          "no cardid -> deterministic erased-input fallback hash");
+    CHECK(hdr.magic == RADAR_CAPTURE_BATCH_MAGIC && hdr.version == 7,
+          "header magic + v7 version written");
+    CHECK(memcmp(hdr.device_hash, expect_stub, 16) == 0,
+          "device_hash = MAC-derived identity (host stub)");
     CHECK(hdr.header_crc32 != 0, "header crc covers the stamped hash");
 
     // --- 上行读取接口:容量可见、越界拒绝、不要求活动批次。

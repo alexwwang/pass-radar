@@ -47,10 +47,16 @@ typedef int esp_err_t;
 #define RADAR_CAPTURE_BATCH_MAGIC 0x52434231u /* RCB1 */
 #define RADAR_CAPTURE_BATCH_CAPTURE_MAGIC 0x52434331u /* RCC1 */
 #define RADAR_CAPTURE_BATCH_COMMIT_MAGIC 0x52434f4bu /* RCOK */
-#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 6u
-// 读取侧兼容:[3,6] 可读(头部字段布局未变);v6 起 reserved 前 16B 为
-// device_hash,v3-v5 该处为 reserved(全 0,读者不得依赖)。
+#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 7u
+// 读取侧兼容:[3,7] 可读(头部字段布局未变);v6 起 reserved 前 16B 为
+// device_hash(源:v6=cardid 哈希,v7=MAC 哈希),v3-v5 该处为 reserved
+// (全 0 或 0xFF,读者不得依赖)。v7 起批数据区最后一扇区为 SGN1 签名
+// trailer,载荷区上界相应缩短 4 KiB。
 #define RADAR_CAPTURE_BATCH_FORMAT_VERSION_MIN 3u
+// SGN1 签名 trailer(capture-sig-contract v1):Ed25519 设备签名 +
+// 载荷 SHA-256,证明批次头与载荷未被篡改(防伪造身份/防换数据)。
+#define RADAR_CAPTURE_BATCH_TRAILER_MAGIC 0x314e4753u /* SGN1 */
+#define RADAR_CAPTURE_BATCH_TRAILER_FORMAT_VERSION 1u
 #define RADAR_CAPTURE_CONDITION_SCHEMA_VERSION 1u
 #define RADAR_CAPTURE_CARD_HEIGHT_LOW_MAX_M 1.0f
 #define RADAR_CAPTURE_CARD_HEIGHT_CHEST_MAX_M 1.8f
@@ -226,6 +232,38 @@ typedef struct __attribute__((packed)) {
 
 _Static_assert(sizeof(radar_capture_batch_header_t) == 128,
                "batch header must be 128 bytes");
+
+// v7 签名 trailer:独占批数据区最后一扇区(4096B 起始处,写入前先擦扇区,
+// 因此绝不能与载荷共存同一扇区)。布局见 capture-sig-contract v1。
+typedef struct __attribute__((packed)) {
+    uint32_t magic;                  // = RADAR_CAPTURE_BATCH_TRAILER_MAGIC
+    uint16_t version;                // = RADAR_CAPTURE_BATCH_TRAILER_FORMAT_VERSION
+    uint16_t size;                   // = sizeof(trailer)
+    uint32_t batch_id;               // 必须等于 RCB1 头 batch_id
+    // 与 RCB1 头 device_hash 同源同值(MAC 派生);冗余存储使 trailer 自校验。
+    uint8_t device_hash[16];
+    // SHA-256(region[header_size .. region_size-4096)):载荷区全部字节,
+    // 含未写尾巴的 0xFF(擦除态恒定,摘要稳定)。
+    uint8_t payload_sha256[32];
+    // Ed25519 纯签名,覆盖 preimage = SIG_DOMAIN || version u16le ||
+    // batch_id u32le || device_hash || payload_sha256(67B)。
+    uint8_t sig[64];
+    uint32_t crc32;                  // bytes [0,124),crc 字段按 0 计
+} radar_capture_batch_trailer_t;
+
+_Static_assert(sizeof(radar_capture_batch_trailer_t) == 128,
+               "batch trailer must be 128 bytes");
+
+// v7:载荷区上界 = 批数据区大小 - 一个扇区(trailer 占最后一扇区)。
+static inline size_t radar_capture_batch_payload_end(size_t region_size) {
+    return region_size >= RADAR_CAPTURE_BATCH_SECTOR_SIZE
+               ? region_size - RADAR_CAPTURE_BATCH_SECTOR_SIZE
+               : 0;
+}
+
+// trailer CRC 校验(magic/version/size 字段语义校验由调用方做)。
+bool radar_capture_batch_trailer_crc_ok(
+    const radar_capture_batch_trailer_t *trailer);
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -406,6 +444,10 @@ typedef esp_err_t (*radar_capture_batch_record_cb)(
 esp_err_t radar_capture_batch_export(radar_capture_batch_record_cb callback,
                                       void *context);
 esp_err_t radar_capture_batch_erase(void);
+// v7:上传模式进入时调用——有已提交批次且 trailer 未签名(或批次已变)则
+// 重算载荷 SHA-256、Ed25519 签名并写入最后一扇区。幂等;无批次不动。
+// 代价:全载荷区读一遍 + 一次签名,约百毫秒级,只在进上传模式时发生。
+esp_err_t radar_capture_batch_sign_if_needed(void);
 bool radar_capture_batch_can_append(size_t max_payload_length);
 const char *radar_capture_batch_space_status(void);
 uint32_t radar_capture_batch_id(void);

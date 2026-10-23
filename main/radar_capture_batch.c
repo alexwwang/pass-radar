@@ -1,5 +1,6 @@
 #include "radar_capture_batch.h"
 #include "radar_capture_condition.h"
+#include "radar_identity.h"
 
 #include "esp_log.h"
 #include "esp_partition.h"
@@ -22,6 +23,20 @@ static bool s_active;
 static uint32_t s_batch_id;
 static uint32_t s_capture_count;
 static size_t s_next_offset;
+
+// v7:载荷区上界(trailer 占最后一扇区,扫描/导出/裁剪都不得越过)。
+static size_t trailer_offset(void) {
+    return s_partition ? radar_capture_batch_payload_end(s_data_size) : 0;
+}
+
+bool radar_capture_batch_trailer_crc_ok(
+    const radar_capture_batch_trailer_t *trailer) {
+    if (!trailer) return false;
+    radar_capture_batch_trailer_t copy = *trailer;
+    uint32_t expected = copy.crc32;
+    copy.crc32 = 0;
+    return expected == radar_capture_batch_crc32(&copy, sizeof(copy));
+}
 
 uint32_t radar_capture_batch_crc32(const void *data, size_t length) {
     const uint8_t *bytes = data;
@@ -166,7 +181,8 @@ static esp_err_t discard_uncommitted_tail(size_t offset) {
         (offset & (RADAR_CAPTURE_BATCH_SECTOR_SIZE - 1u)) != 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    return esp_partition_erase_range(s_partition, offset, s_data_size - offset);
+    return esp_partition_erase_range(s_partition, offset,
+                                     trailer_offset() - offset);
 }
 
 static esp_err_t scan_committed_records(void) {
@@ -178,7 +194,7 @@ static esp_err_t scan_committed_records(void) {
     if (!payload) return ESP_ERR_NO_MEM;
 
     while (count < s_expected_captures &&
-           offset + sizeof(capture) + sizeof(commit) <= s_data_size) {
+           offset + sizeof(capture) + sizeof(commit) <= trailer_offset()) {
         esp_err_t err = read_bytes(offset, &capture, sizeof(capture));
         if (err != ESP_OK || is_erased((const uint8_t *)&capture, sizeof(capture))) {
             break;
@@ -278,7 +294,8 @@ static esp_err_t find_partition(void) {
         // span (padded header + payload + commit sectors).
         size_t floor = radar_capture_batch_data_offset() +
                        radar_capture_batch_capture_span(
-                           RADAR_CAPTURE_BATCH_MAX_PAYLOAD);
+                           RADAR_CAPTURE_BATCH_MAX_PAYLOAD) +
+                       RADAR_CAPTURE_BATCH_SECTOR_SIZE;
         if (data->size < floor) {
             ESP_LOGE(TAG, "BATCH data unavailable: capture partition too small");
             return ESP_ERR_INVALID_STATE;
@@ -352,18 +369,11 @@ static esp_err_t write_padded(size_t offset, const void *data, size_t length) {
 
 esp_err_t radar_capture_device_hash(uint8_t out[16]) {
     if (!out) return ESP_ERR_INVALID_ARG;
-    uint8_t id[16];
-    // label + SUBTYPE_ANY:独立安装(partitions.csv subtype=nvs)与 meta-pass
-    // 子固件(carve 物化 subtype=0x02)同 label 不同 subtype,都能命中。
-    const esp_partition_t *cardid = esp_partition_find_first(
-        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "cardid");
-    if (!cardid || esp_partition_read(cardid, 0, id, sizeof(id)) != ESP_OK) {
-        memset(id, 0xFF, sizeof(id));   // 未 provisioned 开发板:确定性"未身份"输入
-    }
-    uint8_t digest[32];
-    if (mbedtls_sha256(id, sizeof(id), digest, 0) != 0) return ESP_FAIL;
-    memcpy(out, digest, 16);
-    return ESP_OK;
+    // v7 起身份源 = Wi-Fi/BLE 双 MAC 派生(cardid 方案已弃用:cardid 可被
+    // erase-flash 整片抹除,真机身份链断裂后不可恢复;MAC 无此单点)。
+    // v6 及更早的存量批次头是 cardid 哈希,云上按不透明哈希对待,不影响。
+    uint8_t pubkey[32];
+    return radar_identity_get(out, pubkey);
 }
 
 size_t radar_capture_batch_data_size(void) {
@@ -427,7 +437,7 @@ esp_err_t radar_capture_batch_begin(uint32_t batch_id, uint32_t expected_capture
     size_t span_max =
         radar_capture_batch_capture_span(RADAR_CAPTURE_BATCH_MAX_PAYLOAD);
     uint32_t capacity_captures =
-        span_max != 0 ? (uint32_t)((s_data_size -
+        span_max != 0 ? (uint32_t)((trailer_offset() -
                                     radar_capture_batch_data_offset()) /
                                    span_max)
                       : 0u;
@@ -478,7 +488,8 @@ bool radar_capture_batch_can_append(size_t max_payload_length) {
         s_capture_count >= RADAR_CAPTURE_BATCH_MAX_CAPTURES ||
         s_next_offset > s_data_size) return false;
     size_t span = radar_capture_batch_capture_span(max_payload_length);
-    return span != 0 && span <= s_data_size - s_next_offset;
+    return span != 0 && s_next_offset <= trailer_offset() &&
+           span <= trailer_offset() - s_next_offset;
 }
 
 esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *meta,
@@ -608,7 +619,7 @@ esp_err_t radar_capture_batch_export(radar_capture_batch_record_cb callback,
     size_t payload_capacity = 0;
 
     while (exported < s_expected_captures &&
-           offset + sizeof(header) + sizeof(commit) <= s_data_size) {
+           offset + sizeof(header) + sizeof(commit) <= trailer_offset()) {
         esp_err_t err = read_bytes(offset, &header, sizeof(header));
         if (err != ESP_OK || !radar_capture_batch_capture_header_valid(&header) ||
             header.batch_id != s_batch_id || header.run_id != exported + 1u) break;
@@ -680,6 +691,130 @@ const char *radar_capture_batch_space_status(void) {
 
 uint32_t radar_capture_batch_id(void) { return s_batch_id; }
 uint32_t radar_capture_batch_count(void) { return s_capture_count; }
+
+// 流式 SHA-256 载荷区 [data_offset, trailer_offset),4 KiB 分块不上大栈。
+static esp_err_t payload_digest(uint8_t out[32]) {
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    int rc = mbedtls_sha256_starts(&ctx, 0);
+    uint8_t *buf = malloc(RADAR_CAPTURE_BATCH_SECTOR_SIZE);
+    if (!buf) {
+        mbedtls_sha256_free(&ctx);
+        return ESP_ERR_NO_MEM;
+    }
+    for (size_t off = radar_capture_batch_data_offset();
+         rc == 0 && off < trailer_offset();) {
+        size_t chunk = trailer_offset() - off;
+        if (chunk > RADAR_CAPTURE_BATCH_SECTOR_SIZE) {
+            chunk = RADAR_CAPTURE_BATCH_SECTOR_SIZE;
+        }
+        if (read_bytes(off, buf, chunk) != ESP_OK) {
+            rc = -1;
+            break;
+        }
+        rc = mbedtls_sha256_update(&ctx, buf, chunk);
+        off += chunk;
+    }
+    if (rc == 0) rc = mbedtls_sha256_finish(&ctx, out);
+    mbedtls_sha256_free(&ctx);
+    free(buf);
+    return rc == 0 ? ESP_OK : ESP_FAIL;
+}
+
+// preimage = SIG_DOMAIN || version u16le || batch_id u32le || device_hash ||
+// payload_sha256(67B)。version/batch_id 小端手工编码,避免打包结构填充歧义。
+static size_t build_sig_preimage(uint8_t out[67], uint16_t version,
+                                 uint32_t batch_id,
+                                 const uint8_t device_hash[16],
+                                 const uint8_t payload_sha256[32]) {
+    size_t n = 0;
+    const size_t dom = strlen(RADAR_IDENTITY_SIG_DOMAIN);
+    memcpy(out + n, RADAR_IDENTITY_SIG_DOMAIN, dom);
+    n += dom;
+    out[n++] = (uint8_t)(version & 0xffu);
+    out[n++] = (uint8_t)(version >> 8);
+    out[n++] = (uint8_t)(batch_id & 0xffu);
+    out[n++] = (uint8_t)((batch_id >> 8) & 0xffu);
+    out[n++] = (uint8_t)((batch_id >> 16) & 0xffu);
+    out[n++] = (uint8_t)((batch_id >> 24) & 0xffu);
+    memcpy(out + n, device_hash, 16);
+    n += 16;
+    memcpy(out + n, payload_sha256, 32);
+    n += 32;
+    return n;
+}
+
+esp_err_t radar_capture_batch_sign_if_needed(void) {
+    if (!s_open) {
+        esp_err_t err = radar_capture_batch_open();
+        if (err != ESP_OK) return err;
+    }
+    if (!s_active || s_capture_count == 0) return ESP_OK;
+    if (trailer_offset() < radar_capture_batch_data_offset()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    radar_capture_batch_header_t header;
+    if (read_bytes(0, &header, sizeof(header)) != ESP_OK ||
+        header.batch_id != s_batch_id) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // 幂等:trailer 完好且批次/签名未变则跳过。
+    radar_capture_batch_trailer_t existing;
+    bool need = true;
+    if (read_bytes(trailer_offset(), &existing, sizeof(existing)) == ESP_OK &&
+        existing.magic == RADAR_CAPTURE_BATCH_TRAILER_MAGIC) {
+        bool sig_blank = true;
+        for (size_t i = 0; i < sizeof(existing.sig); i++) {
+            if (existing.sig[i] != 0xffu && existing.sig[i] != 0x00u) {
+                sig_blank = false;
+                break;
+            }
+        }
+        need = sig_blank || existing.batch_id != s_batch_id ||
+               memcmp(existing.device_hash, header.device_hash,
+                      sizeof(existing.device_hash)) != 0;
+    }
+    if (!need) return ESP_OK;
+
+    radar_capture_batch_trailer_t trailer = {
+        .magic = RADAR_CAPTURE_BATCH_TRAILER_MAGIC,
+        .version = RADAR_CAPTURE_BATCH_TRAILER_FORMAT_VERSION,
+        .size = sizeof(trailer),
+        .batch_id = s_batch_id,
+    };
+    memcpy(trailer.device_hash, header.device_hash,
+           sizeof(trailer.device_hash));
+    if (payload_digest(trailer.payload_sha256) != ESP_OK) return ESP_FAIL;
+    uint8_t preimage[67];
+    const size_t plen = build_sig_preimage(
+        preimage, trailer.version, trailer.batch_id, trailer.device_hash,
+        trailer.payload_sha256);
+    if (radar_identity_sign(preimage, plen, trailer.sig) != ESP_OK) {
+        memset(preimage, 0, sizeof(preimage));
+        ESP_LOGE(TAG, "batch sign failed (identity unavailable)");
+        return ESP_FAIL;
+    }
+    memset(preimage, 0, sizeof(preimage));
+    trailer.crc32 = 0;
+    trailer.crc32 =
+        radar_capture_batch_crc32(&trailer, sizeof(trailer));
+
+    esp_err_t err =
+        esp_partition_erase_range(s_partition, trailer_offset(),
+                                  RADAR_CAPTURE_BATCH_SECTOR_SIZE);
+    if (err == ESP_OK) {
+        err = esp_partition_write(s_partition, trailer_offset(), &trailer,
+                                  sizeof(trailer));
+    }
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "batch signed id=%lu sha=%02x%02x sig=%02x%02x",
+                 (unsigned long)s_batch_id, trailer.payload_sha256[0],
+                 trailer.payload_sha256[1], trailer.sig[0], trailer.sig[1]);
+    }
+    return err;
+}
 
 uint16_t radar_capture_scene_menu_id(unsigned index) {
     static const uint16_t ids[RADAR_CAPTURE_BATCH_MENU_SCENE_MAX] = {

@@ -63,7 +63,7 @@ static inline void mbedtls_sha256_init(mbedtls_sha256_context *ctx) {
     memset(ctx, 0, sizeof(*ctx));
 }
 
-static inline void mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224) {
+static inline int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224) {
     (void)is224;
     static const uint32_t INIT[8] = {
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
@@ -72,10 +72,11 @@ static inline void mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
     memcpy(ctx->state, INIT, sizeof(INIT));
     ctx->bitlen = 0;
     ctx->blocklen = 0;
+    return 0;
 }
 
-static inline void mbedtls_sha256_update(mbedtls_sha256_context *ctx,
-                                         const uint8_t *data, size_t len) {
+static inline int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
+                                        const uint8_t *data, size_t len) {
     for (size_t i = 0; i < len; i++) {
         ctx->block[ctx->blocklen++] = data[i];
         if (ctx->blocklen == 64) {
@@ -84,10 +85,11 @@ static inline void mbedtls_sha256_update(mbedtls_sha256_context *ctx,
         }
     }
     ctx->bitlen += (uint64_t)len * 8;
+    return 0;
 }
 
-static inline void mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
-                                         uint8_t out[32]) {
+static inline int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
+                                        uint8_t out[32]) {
     uint64_t bitlen = ctx->bitlen;
     ctx->block[ctx->blocklen++] = 0x80;
     if (ctx->blocklen > 56) {
@@ -104,6 +106,7 @@ static inline void mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
         out[i * 4 + 2] = (uint8_t)(ctx->state[i] >> 8);
         out[i * 4 + 3] = (uint8_t)ctx->state[i];
     }
+    return 0;
 }
 
 static inline int mbedtls_sha256(const uint8_t *input, size_t ilen,
@@ -114,6 +117,10 @@ static inline int mbedtls_sha256(const uint8_t *input, size_t ilen,
     mbedtls_sha256_update(&ctx, input, ilen);
     mbedtls_sha256_finish(&ctx, output);
     return 0;
+}
+
+static inline void mbedtls_sha256_free(mbedtls_sha256_context *ctx) {
+    (void)ctx;
 }
 
 #endif

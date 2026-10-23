@@ -109,14 +109,14 @@ run_static_checks() {
     # NOR AND-write mock to prove append/export survives padded writes.
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Itests/mock_esp \
         tests/test_radar_capture_batch_flash.c main/radar_capture_batch.c \
-        main/radar_capture_condition.c \
+        main/radar_capture_condition.c tests/mock_radar_identity.c \
         -o "${test_dir}/test_radar_capture_batch_flash"
     "${test_dir}/test_radar_capture_batch_flash"
     # Dynslot DATA-carve path: label-resolved "capture" partition, capacity
     # clamping, and the occupied/too-small region guards.
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Itests/mock_esp \
         tests/test_radar_capture_batch_data.c main/radar_capture_batch.c \
-        main/radar_capture_condition.c \
+        main/radar_capture_condition.c tests/mock_radar_identity.c \
         -o "${test_dir}/test_radar_capture_batch_data"
     "${test_dir}/test_radar_capture_batch_data"
     # C↔Python feature-replay parity (package A3): the C harness prints
