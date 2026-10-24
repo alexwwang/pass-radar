@@ -126,6 +126,14 @@ run_static_checks() {
         tests/test_features_parity.c main/radar_obstruct.c \
         main/radar_fusion.c main/radar_sweep.c \
         -o "${test_dir}/test_features_parity" -lm
+    # Vendor ed25519 ↔ RFC 8032 官方向量(签名链根基,防实现损坏)。
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -DED25519_NO_SEED \
+        tests/test_ed25519_rfc8032.c main/vendor/ed25519/fe.c \
+        main/vendor/ed25519/ge.c main/vendor/ed25519/sc.c \
+        main/vendor/ed25519/sha512.c main/vendor/ed25519/keypair.c \
+        main/vendor/ed25519/sign.c \
+        -o "${test_dir}/test_ed25519_rfc8032"
+    "${test_dir}/test_ed25519_rfc8032"
     "${python_cmd}" tests/test_features_parity.py "${test_dir}/test_features_parity"
     "${python_cmd}" tests/test_model_fit.py
     "${python_cmd}" tests/test_verify_firmware.py
