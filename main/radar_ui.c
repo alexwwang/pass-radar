@@ -268,8 +268,10 @@ static void upload_page_set_text(void) {
         // Wi-Fi 优先:手机与设备同一局域网,全程 Wi-Fi。
         snprintf(text, sizeof(text),
                  "WiFi: %s\nPhone on same WiFi\nopen http://%s\n\n"
-                 "Upload over Wi-Fi\nDOWN x2 = exit",
-                 radar_upload_sta_ssid(), radar_upload_ap_ip());
+                 "Upload over Wi-Fi\nReprovision:\nhttp://%s/prov\n"
+                 "DOWN x2 = exit",
+                 radar_upload_sta_ssid(), radar_upload_ap_ip(),
+                 radar_upload_ap_ip());
         break;
     case RADAR_UPLOAD_PROV:
         // 无凭据:热点即配网门户,captive portal 自动弹页。

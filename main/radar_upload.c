@@ -204,6 +204,10 @@ static esp_err_t sta_join_with(const char *ssid, const char *pass) {
     memcpy(sta.sta.ssid, ssid, sizeof(sta.sta.ssid) - 1);
     memcpy(sta.sta.password, pass, sizeof(sta.sta.password) - 1);
     sta.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    if (s_sta_joined) {   // 重配场景:先断开旧 AP,否则 connect 当漫游处理不落新配置
+        (void)esp_wifi_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &sta);
     if (err != ESP_OK) return err;
     xSemaphoreTake(s_sta_sem, 0);   // 清残留
@@ -407,6 +411,23 @@ static esp_err_t h_root(httpd_req_t *req) {
     char host[64] = {0};
     if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK
         && strncmp(host, "192.168.4.1", sizeof("192.168.4.1") - 1) != 0) {
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+        httpd_resp_set_hdr(req, "Content-Length", "0");
+        return httpd_resp_send(req, "", 0);
+    }
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, PROV_HTML, HTTPD_RESP_USE_STRLEN);
+}
+
+// GET /prov —— 配网门户(任意模式可达:STA 连上后重配的唯一入口,
+// 不依赖热点;Host 检查只在热点模式下做 captive portal 弹页)。
+static esp_err_t h_prov(httpd_req_t *req) {
+    char host[64] = {0};
+    if (s_mode != RADAR_UPLOAD_STA &&
+        httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK &&
+        strncmp(host, "192.168.4.1", sizeof("192.168.4.1") - 1) != 0) {
         httpd_resp_set_status(req, "302 Found");
         httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
         httpd_resp_set_hdr(req, "Content-Length", "0");
@@ -703,13 +724,41 @@ static esp_err_t h_wifi(httpd_req_t *req) {
     return httpd_resp_sendstr(req, "ok");
 }
 
+// 起热点 + 门户兜底(PROV 无凭据首进 / AP join 失败 / STA 重配失败共用)。
+// 成功返回 ESP_OK 并置 s_mode;失败返回错误,调用方决定退出。
+static esp_err_t ap_fallback_start(bool have_creds) {
+    if (esp_wifi_get_config(WIFI_IF_AP, &s_saved_ap) != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;   // Wi-Fi 未初始化(enter 时机过早)
+    }
+    if (!s_ap_netif) {
+        s_ap_netif = esp_netif_create_default_wifi_ap();
+        if (!s_ap_netif) return ESP_FAIL;
+    }
+    wifi_config_t up;
+    memset(&up, 0, sizeof(up));
+    memcpy(up.ap.ssid, UPLOAD_AP_SSID, sizeof(UPLOAD_AP_SSID) - 1);
+    up.ap.ssid_len = sizeof(UPLOAD_AP_SSID) - 1;
+    up.ap.channel = UPLOAD_AP_CHANNEL;
+    up.ap.authmode = WIFI_AUTH_OPEN;       // 开放:免输密码,热点即配对
+    up.ap.max_connection = 4;
+    up.ap.ftm_responder = false;           // 上传期间不做 FTM responder
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &up);
+    if (err != ESP_OK) return err;
+    s_ap_dirty = true;
+    snprintf(s_ip, sizeof(s_ip), "192.168.4.1");
+    s_mode = have_creds ? RADAR_UPLOAD_AP : RADAR_UPLOAD_PROV;
+    (void)dns_relay_start();               // captive portal 弹窗信号
+    prov_task_ensure();
+    return ESP_OK;
+}
+
 // 配网任务:接到通知后读 NVS 凭据并连 STA;成功原地转 STA 模式
 // (httpd 绑 0.0.0.0 不动,手机回路由器后开新地址即可继续)。
 static void prov_task_main(void *arg) {
     (void)arg;
     for (;;) {
         xSemaphoreTake(s_prov_sem, portMAX_DELAY);
-        if (!s_active || s_mode == RADAR_UPLOAD_STA) continue;
+        if (!s_active) continue;   // 已连上也要允许重配(POST /api/wifi 重新触发)
         char ssid[33], pass[65];
         if (!creds_load(ssid, pass)) {
             ESP_LOGW(TAG, "prov: creds gone after save?!");
@@ -721,8 +770,15 @@ static void prov_task_main(void *arg) {
             s_join_failed = false;
             ESP_LOGI(TAG, "prov: joined, mode=sta ip=%s", s_ip);
         } else {
+            // 重配前若已在 STA,此时已断开旧网:必须起热点兜底,否则设备失联。
             s_join_failed = true;
-            ESP_LOGW(TAG, "prov: join failed, staying on hotspot");
+            const bool was_sta = (s_mode == RADAR_UPLOAD_STA);
+            if (ap_fallback_start(true) == ESP_OK) {
+                ESP_LOGW(TAG, "prov: join failed, fell back to hotspot%s",
+                         was_sta ? " (from sta)" : "");
+            } else {
+                ESP_LOGE(TAG, "prov: join failed and ap fallback failed");
+            }
         }
     }
 }
@@ -749,6 +805,7 @@ static esp_err_t start_httpd(void) {
     }
     const httpd_uri_t uris[] = {
         { "/", HTTP_GET, h_root, NULL },
+        { "/prov", HTTP_GET, h_prov, NULL },
         { "/up", HTTP_GET, h_up, NULL },
         { "/api/capture/info", HTTP_GET, h_info, NULL },
         { "/api/identity", HTTP_GET, h_identity, NULL },
@@ -822,35 +879,11 @@ esp_err_t radar_upload_enter(void) {
         s_mode = RADAR_UPLOAD_STA;
     } else {
         if (have_creds) s_join_failed = true;
-        if (esp_wifi_get_config(WIFI_IF_AP, &s_saved_ap) != ESP_OK) {
+        const esp_err_t ap_err = ap_fallback_start(have_creds);
+        if (ap_err != ESP_OK) {
             radar_ble_pause(false);
-            return ESP_ERR_INVALID_STATE;   // Wi-Fi 未初始化(enter 时机过早)
+            return ap_err;
         }
-        if (!s_ap_netif) {
-            s_ap_netif = esp_netif_create_default_wifi_ap();
-            if (!s_ap_netif) {
-                radar_ble_pause(false);
-                return ESP_FAIL;
-            }
-        }
-        wifi_config_t up;
-        memset(&up, 0, sizeof(up));
-        memcpy(up.ap.ssid, UPLOAD_AP_SSID, sizeof(UPLOAD_AP_SSID) - 1);
-        up.ap.ssid_len = sizeof(UPLOAD_AP_SSID) - 1;
-        up.ap.channel = UPLOAD_AP_CHANNEL;
-        up.ap.authmode = WIFI_AUTH_OPEN;       // 开放:免输密码,热点即配对
-        up.ap.max_connection = 4;
-        up.ap.ftm_responder = false;           // 上传期间不做 FTM responder
-        esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &up);
-        if (err != ESP_OK) {
-            radar_ble_pause(false);
-            return err;
-        }
-        s_ap_dirty = true;
-        snprintf(s_ip, sizeof(s_ip), "192.168.4.1");
-        s_mode = have_creds ? RADAR_UPLOAD_AP : RADAR_UPLOAD_PROV;
-        (void)dns_relay_start();               // captive portal 弹窗信号
-        prov_task_ensure();
     }
 
     // v7:进上传模式即懒签批次(全载荷 SHA-256 + Ed25519 写 trailer 扇区,
