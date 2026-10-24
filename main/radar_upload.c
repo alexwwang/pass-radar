@@ -26,6 +26,7 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_random.h"   // scan 列表顺序打散,避免按信号排序泄露环境
+#include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -511,39 +512,92 @@ static esp_err_t h_read(httpd_req_t *req) {
 // {"networks":[{"ssid":"...","rssi":-52,"auth":true},...]}
 // 收尾语义(照抄 meta_store_net.c r8 修复):"扫描完成但记录未取"的残留态会
 // 同时卡死下一次扫描与 STA 连接,故 get_ap_records 必须无条件执行。
-#define PROV_SCAN_MAX 20
+#define PROV_SCAN_MAX 30
+#define SCAN_CACHE_TTL_MS 120000
+
+// 全信道扫描缓存(enter 时 AP 未起,扫描不受热点信道锁定;见 scan_full_sync)。
+static wifi_ap_record_t s_scan_cache[PROV_SCAN_MAX];
+static uint16_t s_scan_count;
+static int64_t s_scan_cache_ms;
+
+// AP 接口下去扫全信道再回 APSTA。阻塞 ~2s,只在进上传模式时跑一次。
+static void scan_full_sync(void) {
+    s_scan_count = 0;
+    s_scan_cache_ms = 0;
+    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return;
+    wifi_scan_config_t cfg = { .show_hidden = true };
+    if (esp_wifi_scan_start(&cfg, true) == ESP_OK) {
+        uint16_t count = PROV_SCAN_MAX;
+        if (esp_wifi_scan_get_ap_records(&count, s_scan_cache) == ESP_OK) {
+            s_scan_count = count;
+        }
+    }
+    (void)esp_wifi_set_mode(WIFI_MODE_APSTA);
+    s_scan_cache_ms = esp_timer_get_time() / 1000;
+    ESP_LOGI(TAG, "full scan cached count=%u", (unsigned)s_scan_count);
+    for (uint16_t i = 0; i < s_scan_count; i++) {
+        ESP_LOGI(TAG, "scan[%u] ssid=%s rssi=%d ch=%u auth=%d",
+                 (unsigned)i, (const char *)s_scan_cache[i].ssid,
+                 (int)s_scan_cache[i].rssi,
+                 (unsigned)s_scan_cache[i].primary,
+                 (int)s_scan_cache[i].authmode);
+    }
+}
+
+// 现场(APSTA)扫描结果并入缓存:同 SSID 更新 RSSI/信道,新 SSID 追加。
+static void scan_cache_merge(const wifi_ap_record_t *records, uint16_t count) {
+    for (uint16_t i = 0; i < count; i++) {
+        uint16_t j;
+        for (j = 0; j < s_scan_count; j++) {
+            if (strcmp((const char *)s_scan_cache[j].ssid,
+                       (const char *)records[i].ssid) == 0) break;
+        }
+        if (j < s_scan_count) {
+            s_scan_cache[j] = records[i];
+        } else if (s_scan_count < PROV_SCAN_MAX) {
+            s_scan_cache[s_scan_count++] = records[i];
+        }
+    }
+}
 
 static esp_err_t h_scan(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
-    esp_wifi_scan_start(NULL, false);
-    // 阻塞等扫描完成(全信道 ~1.5-2s)。httpd 在独立任务,页面 fetch 无超时,
-    // 配网门户单用途,期间阻塞可接受;手机已连热点,beacon 暂停不断开已建链。
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    const bool cache_fresh =
+        s_scan_count > 0 && now_ms - s_scan_cache_ms < SCAN_CACHE_TTL_MS;
 
-    uint16_t count = PROV_SCAN_MAX;
-    wifi_ap_record_t *records = malloc((size_t)count * sizeof(wifi_ap_record_t));
-    if (!records) {
-        return httpd_resp_sendstr(req, "{\"networks\":[]}");
+    if (!cache_fresh) {
+        // 缓存过期:现场扫一轮(APSTA,信道受限结果不全)并入缓存。
+        esp_err_t start_err = esp_wifi_scan_start(NULL, false);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        uint16_t count = PROV_SCAN_MAX;
+        wifi_ap_record_t *records =
+            malloc((size_t)count * sizeof(wifi_ap_record_t));
+        if (records) {
+            const esp_err_t fetch =
+                esp_wifi_scan_get_ap_records(&count, records);
+            if (fetch == ESP_OK) {
+                scan_cache_merge(records, count);
+            } else {
+                ESP_LOGW(TAG, "scan fetch failed: %s",
+                         esp_err_to_name(fetch));
+            }
+            free(records);
+            (void)start_err;
+        }
+        s_scan_cache_ms = now_ms;
     }
-    // 无论扫到多少条(含 0),get_ap_records 成功返回即完成清态。
-    const esp_err_t fetch = esp_wifi_scan_get_ap_records(&count, records);
-    if (fetch != ESP_OK) {
-        ESP_LOGW(TAG, "scan fetch failed: %s", esp_err_to_name(fetch));
-        free(records);
-        return httpd_resp_sendstr(req, "{\"networks\":[]}");
-    }
-    if (count == 0) {
-        free(records);
+
+    if (s_scan_count == 0) {
         return httpd_resp_sendstr(req, "{\"networks\":[]}");
     }
 
     // 每条上界:转义 ssid(4x32+1=129)+固定 JSON(~48);外加首尾包装。
-    const size_t cap = 32 + (size_t)count * (129 + 48);
+    const size_t cap = 32 + (size_t)s_scan_count * (129 + 48);
     char *json = malloc(cap);
     if (!json) {
-        free(records);
         return httpd_resp_sendstr(req, "{\"networks\":[]}");
     }
     size_t len = 0;
@@ -551,22 +605,21 @@ static esp_err_t h_scan(httpd_req_t *req) {
     const char *head = "{\"networks\":[";
     memcpy(json, head, strlen(head));
     len = strlen(head);
-    for (uint16_t i = 0; i < count; i++) {
+    for (uint16_t i = 0; i < s_scan_count; i++) {
         // 有界组装:溢出即截断输出(页面把残缺列表按空处理,无危害)。
         char esc[129];
-        json_escape_ssid((const char *)records[i].ssid, esc, sizeof(esc));
+        json_escape_ssid((const char *)s_scan_cache[i].ssid, esc, sizeof(esc));
         char item[200];
         snprintf(item, sizeof(item), "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%s}",
-                 i ? "," : "", esc, (int)records[i].rssi,
-                 records[i].authmode != WIFI_AUTH_OPEN ? "true" : "false");
+                 i ? "," : "", esc, (int)s_scan_cache[i].rssi,
+                 s_scan_cache[i].authmode != WIFI_AUTH_OPEN ? "true" : "false");
         size_t n = strlen(item);
         if (len + n + 2 >= cap) break;
         memcpy(json + len, item, n);
         len += n;
     }
-    const char *tail = "]}";
-    if (len + 3 < cap) { memcpy(json + len, tail, 3); len += 2; }
-    free(records);
+    json[len++] = ']';
+    json[len++] = '}';
     const esp_err_t ret = httpd_resp_send(req, json, len);
     free(json);
     return ret;
@@ -696,6 +749,12 @@ esp_err_t radar_upload_enter(void) {
         if (esp_wifi_get_config(WIFI_IF_AP, &s_saved_ap) != ESP_OK) {
             return ESP_ERR_INVALID_STATE;   // Wi-Fi 未初始化(enter 时机过早)
         }
+        // 全信道预扫描并缓存:APSTA 下 softAP 占着信道,扫描被锁在热点
+        // 信道只能看到同信道 AP(真机踩雷:手机能看到十几个,设备只扫到
+        // 2 个,目标路由永不在列)。此刻上传 AP 还没起,先切纯 STA 扫全
+        // 信道,再回 APSTA 起热点;门户 /api/scan 优先吃缓存(120s 内),
+        // 过期后合并现场扫描结果。
+        scan_full_sync();
         if (!s_ap_netif) {
             s_ap_netif = esp_netif_create_default_wifi_ap();
             if (!s_ap_netif) return ESP_FAIL;
