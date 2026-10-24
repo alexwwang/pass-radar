@@ -49,4 +49,13 @@ bool radar_upload_join_failed(void);
 // STA 模式连上的路由器 SSID(UI 展示);未连为空串。
 const char *radar_upload_sta_ssid(void);
 
+// ---- 分裂启动(上传专用启动) ----
+// Wi-Fi 扫描/关联被 BT 共存调度压死(真机:贴脸路由扫不到、控制器运行时
+// 无法安全下电)。方案:DOWN 双击 → 置 NVS 标志 + esp_restart → 下次启动
+// 跳过 BLE 初始化(BT 控制器根本不上电,与 meta-pass 同条件)并自动进
+// 上传模式;退出上传页再清标志 + restart 回完整固件。
+void radar_upload_boot_request(void);      // 置标志并重启(调用不返回)
+bool radar_upload_boot_requested(void);    // 启动早期检查
+void radar_upload_boot_clear(void);        // 清标志(退出时;随后重启)
+
 #endif

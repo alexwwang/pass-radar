@@ -281,6 +281,10 @@ void radar_ble_deinit(void) {
 
 bool radar_ble_ready(void) { return s_ready && s_sync_seen; }
 
+void radar_ble_suspend(void) { radar_ble_deinit(); }
+
+esp_err_t radar_ble_resume(void) { return radar_ble_init(); }
+
 void radar_ble_pause(bool paused) {
     if (paused == s_scan_paused) return;
     s_scan_paused = paused;

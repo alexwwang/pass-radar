@@ -17,6 +17,14 @@ esp_err_t radar_ble_init(void);
 // 停止扫描/广播并释放 NimBLE host/controller 资源。可重复调用。
 void radar_ble_deinit(void);
 
+// 上传模式级挂起/恢复:整个 BT 控制器下电(nimble_port_deinit 内部
+// esp_bt_controller_disable/deinit),Wi-Fi 扫描/关联不再受共存调度挤压
+// (真机踩雷:控制器开着时驱动强制回退默认扫描参数,全信道扫描实际只在
+// 主信道有有效驻留,贴脸的路由都扫不到)。恢复 = 重新 init + host 重新
+// sync。每会话一次,代价约 1s,可接受。
+void radar_ble_suspend(void);
+esp_err_t radar_ble_resume(void);
+
 // 暂停/恢复哨兵扫描(保留广播):扫盘跳频与标定期间让出射频时间片,
 // 避免 Coded PHY 长窗口扫描挤压 ESP-NOW/FTM 收包。幂等。
 void radar_ble_pause(bool paused);

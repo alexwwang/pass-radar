@@ -396,6 +396,7 @@ static void json_escape_ssid(const char *in, char *out, size_t cap) {
 // GET / —— 按模式分流:STA 直接给上传 boot 页;热点模式给配网门户
 // (Host 非本机 = captive portal 探测 → 302 弹配置页,照抄 meta-pass)。
 static esp_err_t h_root(httpd_req_t *req) {
+    ESP_LOGI(TAG, "http hit: / (mode=%d)", (int)s_mode);
     if (s_mode == RADAR_UPLOAD_STA) {
         char html[sizeof(SHELL_HTML_FMT) + 16];
         snprintf(html, sizeof(html), SHELL_HTML_FMT, s_ip);
@@ -539,13 +540,7 @@ static void scan_full_sync(void) {
     }
     const int64_t t0 = esp_timer_get_time();
     if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return;
-    wifi_scan_config_t cfg = {
-        .show_hidden = true,
-        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-        .scan_time = { .active = { .min = 120, .max = 300 },
-                       .passive = 400 },
-    };
-    if (esp_wifi_scan_start(&cfg, false) == ESP_OK) {
+    if (esp_wifi_scan_start(NULL, false) == ESP_OK) {
         vTaskDelay(pdMS_TO_TICKS(5000));
         uint16_t count = PROV_SCAN_MAX;
         if (esp_wifi_scan_get_ap_records(&count, s_scan_cache) != ESP_OK) {
@@ -785,8 +780,10 @@ const char *radar_upload_sta_ssid(void) { return s_ssid; }
 esp_err_t radar_upload_enter(void) {
     if (s_active) return ESP_OK;
     ESP_LOGI(TAG, "upload enter: begin");
-    // BLE 让射频必须最先做:join 与全信道扫描都被 BLE 扫描饿死(真机踩雷:
-    // join 反复超时、扫描只回 2 条)。此后所有失败分支都要恢复 BLE。
+    // BLE 挂起必须最先做,让 join 与扫描拿到干净射频。注意:不能下电
+    // BT 控制器(nimble_port_stop/deinit 与 host 任务竞态,真机必崩:
+    // Guru Meditation @ nimble_port_run);host 停扫即可,扫描配置用
+    // NULL 默认参数(自定义 dwell 在 BT 使能时被驱动拒绝)。
     radar_ble_pause(true);
     // 信道域扩到 1-13:默认世界域只到 11,路由器若在 12/13 信道则既扫不到
     // 也连不上(真机踩雷:join 昨天还行今天全超时,疑似路由自动切信道)。
@@ -901,3 +898,36 @@ esp_err_t radar_upload_exit(void) {
 }
 
 bool radar_upload_active(void) { return s_active; }
+
+// ---- 分裂启动 ----
+// NVS 独立命名空间,不碰 metapass 凭据区。
+#define UPLOAD_BOOT_NS  "upboot"
+#define UPLOAD_BOOT_KEY "req"
+
+bool radar_upload_boot_requested(void) {
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open(UPLOAD_BOOT_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    const esp_err_t e = nvs_get_u8(h, UPLOAD_BOOT_KEY, &v);
+    nvs_close(h);
+    return e == ESP_OK && v == 1u;
+}
+
+void radar_upload_boot_clear(void) {
+    nvs_handle_t h;
+    if (nvs_open(UPLOAD_BOOT_NS, NVS_READWRITE, &h) == ESP_OK) {
+        (void)nvs_set_u8(h, UPLOAD_BOOT_KEY, 0);
+        (void)nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+void radar_upload_boot_request(void) {
+    nvs_handle_t h;
+    if (nvs_open(UPLOAD_BOOT_NS, NVS_READWRITE, &h) == ESP_OK) {
+        (void)nvs_set_u8(h, UPLOAD_BOOT_KEY, 1);
+        (void)nvs_commit(h);
+        nvs_close(h);
+    }
+    esp_restart();   // 不返回
+}

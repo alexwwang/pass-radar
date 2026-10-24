@@ -706,34 +706,12 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
             radar_ui_show_debug();
         } else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_DOUBLE) {
             ESP_LOGI(TAG, "key: DOWN double on main page");
-            // 独立模式上行服务:AP 热点 + 迷你 HTTP(手机拉批次 → CF)。
-            // meta-pass 子固件模式下请用启动器自带手机管理,勿进本页
-            // (AP 重配置会打断 FTM 测距会话)。
-            // enter 里的 STA join 最长等 10s,必须放锁外,否则冻结
-            // LVGL 整 10 秒(task_wdt 点名真机踩雷)。锁平衡同 LONG2
-            // 先例:先解锁、早 return,不再走函数末尾的公共 unlock。
+            // 分裂启动:置标志 + 重启,以"BT 控制器不上电"的干净射频启动并
+            // 自动进上传模式。运行时关 BT 与 NimBLE host 任务有 deinit 竞态
+            // (真机必崩 Guru Meditation),重启是唯一无竞态路径;也根治共存
+            // 调度对扫描/join 的挤压(与 meta-pass 同条件)。
             bsp_lvgl_unlock();
-            // 先切页面给即时反馈,再干重活:enter 里 join(7s)+全信道扫描
-            // (5s)是秒级阻塞,之前页面在 enter 返回后才切,全程黑屏无响应,
-            // 真机被判"双击无效"。mode 此时 = NONE,页面显示 Starting…,
-            // 由 1s 刷新定时器跟随进展。
-            if (bsp_lvgl_lock(500)) {
-                radar_ui_show_upload();
-                if (!s_upload_ui_timer) {
-                    s_upload_ui_timer = lv_timer_create(upload_ui_refresh, 1000, NULL);
-                }
-                bsp_lvgl_unlock();
-            }
-            esp_err_t ue = radar_upload_enter();
-            if (ue != ESP_OK) {
-                ESP_LOGW(TAG, "upload enter failed: %s", esp_err_to_name(ue));
-                if (bsp_lvgl_lock(500)) {
-                    radar_ui_show_main();
-                    bsp_lvgl_unlock();
-                }
-                return;
-            }
-            return;
+            radar_upload_boot_request();   // 不返回
         }
         break;
 
@@ -785,9 +763,15 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
         break;
 
     case RADAR_PAGE_UPLOAD:
-        // DOWN 双击退出上行服务并恢复 FTM AP 配置。
+        // DOWN 双击退出上行服务并恢复 FTM AP 配置。分裂启动模式下还要
+        // 清标志 + 重启回完整固件(恢复 BLE sentinel)。
         if (btn == BSP_BTN_DOWN && ev == BSP_BTN_DOUBLE) {
+            const bool split = radar_upload_boot_requested();
             (void)radar_upload_exit();
+            if (split) {
+                radar_upload_boot_clear();
+                esp_restart();
+            }
             radar_ui_show_main();
         }
         break;
@@ -1082,10 +1066,14 @@ static void radio_init_task(void *arg) {
                              csi_ready ? 1u : 0u, -127,
                              radar_csi_received_frames());
 
-    BaseType_t ble_task_ok = xTaskCreate(ble_init_task, "radar_ble",
-                                         6144, NULL, 1, NULL);
-    if (ble_task_ok != pdPASS) {
-        ESP_LOGW(TAG, "BLE task could not start; continuing without BLE");
+    // 分裂启动:上传专用启动不初始化 BLE(BT 控制器不上电,Wi-Fi 拿到
+    // 完整射频)。radar_ble_* 全部容忍未初始化状态(空操作/默认返回值)。
+    if (!radar_upload_boot_requested()) {
+        BaseType_t ble_task_ok = xTaskCreate(ble_init_task, "radar_ble",
+                                             6144, NULL, 1, NULL);
+        if (ble_task_ok != pdPASS) {
+            ESP_LOGW(TAG, "BLE task could not start; continuing without BLE");
+        }
     }
     if (radar_espnow_start_broadcast("pass-radar") != ESP_OK) {
         ESP_LOGW(TAG, "ESP-NOW broadcast unavailable; continuing without peer data");
@@ -1096,6 +1084,28 @@ static void radio_init_task(void *arg) {
 }
 
 // ---------- 入口 ----------
+
+// 分裂启动:等射频就绪后自动进上传模式(BT 未上电,扫描/join 与 meta-pass
+// 同条件)。页面先行,enter 秒级阻塞期间由 1s 定时器直播进展。
+static void upload_auto_task(void *arg) {
+    (void)arg;
+    for (int i = 0; i < 100 && !s_radio_ready; i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    vTaskDelay(pdMS_TO_TICKS(500));
+    if (bsp_lvgl_lock(1000)) {
+        radar_ui_show_upload();
+        if (!s_upload_ui_timer) {
+            s_upload_ui_timer = lv_timer_create(upload_ui_refresh, 1000, NULL);
+        }
+        bsp_lvgl_unlock();
+    }
+    esp_err_t ue = radar_upload_enter();
+    if (ue != ESP_OK) {
+        ESP_LOGW(TAG, "auto upload enter failed: %s", esp_err_to_name(ue));
+    }
+    vTaskDelete(NULL);
+}
 
 void app_main(void) {
     (void)radar_diag_persist_init();
@@ -1155,4 +1165,13 @@ void app_main(void) {
     }
 
     ESP_LOGI(TAG, "就绪");
+
+    // 分裂启动:BT 从不上电的干净射频里自动进上传模式。
+    if (radar_upload_boot_requested()) {
+        ESP_LOGI(TAG, "upload boot: auto-enter");
+        if (xTaskCreate(upload_auto_task, "up_auto", 6144, NULL, 2, NULL) !=
+            pdPASS) {
+            ESP_LOGW(TAG, "auto upload task could not start");
+        }
+    }
 }
