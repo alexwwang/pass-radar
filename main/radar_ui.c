@@ -260,6 +260,10 @@ static void upload_page_set_text(void) {
     if (!s_upload_label) return;
     char text[220];
     switch (radar_upload_mode()) {
+    case RADAR_UPLOAD_NONE:
+        // enter 进行中(join/扫描秒级阻塞):即时反馈,避免"按键无反应"误判。
+        snprintf(text, sizeof(text), "UPLOAD\nStarting...\nplease wait");
+        break;
     case RADAR_UPLOAD_STA:
         // Wi-Fi 优先:手机与设备同一局域网,全程 Wi-Fi。
         snprintf(text, sizeof(text),

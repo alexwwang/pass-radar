@@ -50,7 +50,7 @@
 // 该宏是 radar_espnow.c 私有,此处以字面量保持同值。
 #define HOME_CHANNEL     1
 #define READ_CHUNK_MAX   4096
-#define STA_TIMEOUT_MS   10000
+#define STA_TIMEOUT_MS   7000   // join 预算:失败路径不再浪费 10s
 
 // meta-pass 配网凭据的存放契约(meta_store_net.c):默认 NVS 分区,
 // namespace "metapass",key sta_ssid / sta_pass。本服务读同一处,
@@ -494,19 +494,26 @@ static esp_err_t h_read(httpd_req_t *req) {
         (len = strtol(val, NULL, 10)) <= 0 || len > READ_CHUNK_MAX) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad len");
     }
-    uint8_t buf[READ_CHUNK_MAX];   // 栈上:server stack_size 已配 8192
+    uint8_t *buf = malloc((size_t)len);   // 堆上:httpd 栈预算只有 5120
+    if (!buf) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no mem");
+    }
     const esp_err_t err =
         radar_capture_batch_data_read((size_t)offset, buf, (size_t)len);
     if (err == ESP_ERR_INVALID_SIZE) {
+        free(buf);
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "out of range");
     }
     if (err != ESP_OK) {
+        free(buf);
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "read failed");
     }
     s_bytes_served += (uint32_t)len;
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, (const char *)buf, (ssize_t)len);
+    const esp_err_t ret = httpd_resp_send(req, (const char *)buf, (ssize_t)len);
+    free(buf);
+    return ret;
 }
 
 // GET /api/scan → 同步扫一轮的 APSTA 结果 JSON:
@@ -526,13 +533,23 @@ static int64_t s_scan_cache_ms;
 static void scan_full_sync(void) {
     s_scan_count = 0;
     s_scan_cache_ms = 0;
+    wifi_country_t rd;
+    if (esp_wifi_get_country(&rd) == ESP_OK) {
+        ESP_LOGI(TAG, "country %s ch%u-%u", rd.cc, rd.schan, rd.nchan);
+    }
+    const int64_t t0 = esp_timer_get_time();
     if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return;
-    wifi_scan_config_t cfg = { .show_hidden = true };
+    wifi_scan_config_t cfg = {
+        .show_hidden = true,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time = { .active = { .min = 120, .max = 300 },
+                       .passive = 400 },
+    };
     if (esp_wifi_scan_start(&cfg, false) == ESP_OK) {
-        vTaskDelay(pdMS_TO_TICKS(2500));
+        vTaskDelay(pdMS_TO_TICKS(5000));
         uint16_t count = PROV_SCAN_MAX;
         if (esp_wifi_scan_get_ap_records(&count, s_scan_cache) != ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            vTaskDelay(pdMS_TO_TICKS(2000));
             count = PROV_SCAN_MAX;
             if (esp_wifi_scan_get_ap_records(&count, s_scan_cache) != ESP_OK) {
                 (void)esp_wifi_scan_stop();
@@ -548,7 +565,9 @@ static void scan_full_sync(void) {
     }
     (void)esp_wifi_set_mode(WIFI_MODE_APSTA);
     s_scan_cache_ms = esp_timer_get_time() / 1000;
-    ESP_LOGI(TAG, "full scan cached count=%u", (unsigned)s_scan_count);
+    ESP_LOGI(TAG, "full scan took %lld ms, cached count=%u",
+             (long long)((esp_timer_get_time() - t0) / 1000),
+             (unsigned)s_scan_count);
     for (uint16_t i = 0; i < s_scan_count; i++) {
         ESP_LOGI(TAG, "scan[%u] ssid=%s rssi=%d ch=%u auth=%d",
                  (unsigned)i, (const char *)s_scan_cache[i].ssid,
@@ -556,6 +575,14 @@ static void scan_full_sync(void) {
                  (unsigned)s_scan_cache[i].primary,
                  (int)s_scan_cache[i].authmode);
     }
+}
+
+// 缓存里有没有该 SSID(区分大小写;扫描结果 SSID 为原始字节)。
+static bool scan_cache_contains(const char *ssid) {
+    for (uint16_t i = 0; i < s_scan_count; i++) {
+        if (strcmp((const char *)s_scan_cache[i].ssid, ssid) == 0) return true;
+    }
+    return false;
 }
 
 // 现场(APSTA)扫描结果并入缓存:同 SSID 更新 RSSI/信道,新 SSID 追加。
@@ -707,7 +734,10 @@ static void prov_task_main(void *arg) {
 
 static esp_err_t start_httpd(void) {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.stack_size = 8192;                 // read handler 栈上 4KB 块缓冲
+    // 5120:够 handler 帧 + 有界缓冲;4KiB 大数据走 h_read 的堆缓冲,不占
+    // 栈。真机踩雷:8192 栈 + 碎片化堆(largest 7680) → 建 httpd 任务即
+    // OOM,ESP_ERR_HTTPD_TASK,上行页进不去。
+    cfg.stack_size = 5120;
     cfg.max_uri_handlers = 8;
     cfg.lru_purge_enable = true;
     esp_err_t err = httpd_start(&s_httpd, &cfg);
@@ -755,6 +785,15 @@ const char *radar_upload_sta_ssid(void) { return s_ssid; }
 esp_err_t radar_upload_enter(void) {
     if (s_active) return ESP_OK;
     ESP_LOGI(TAG, "upload enter: begin");
+    // BLE 让射频必须最先做:join 与全信道扫描都被 BLE 扫描饿死(真机踩雷:
+    // join 反复超时、扫描只回 2 条)。此后所有失败分支都要恢复 BLE。
+    radar_ble_pause(true);
+    // 信道域扩到 1-13:默认世界域只到 11,路由器若在 12/13 信道则既扫不到
+    // 也连不上(真机踩雷:join 昨天还行今天全超时,疑似路由自动切信道)。
+    wifi_country_t country = { .cc = "01", .schan = 1, .nchan = 13,
+                               .max_tx_power = 20,
+                               .policy = WIFI_COUNTRY_POLICY_MANUAL };
+    (void)esp_wifi_set_country(&country);
     s_mode = RADAR_UPLOAD_NONE;
     s_ap_dirty = false;
     s_sta_joined = false;
@@ -763,32 +802,39 @@ esp_err_t radar_upload_enter(void) {
 
     char ssid[33], pass[65];
     const bool have_creds = creds_load(ssid, pass);
-
-    // 1) Wi-Fi 优先:凭据在且连上 → 全程 Wi-Fi。
     const bool want_sta = have_creds;
+
+    // 1) 全信道预扫描(热点未起,不受 APSTA 信道锁定;BLE 已挂起):
+    //    结果既喂配网门户缓存,也决定要不要尝试 STA join——扫描确认目标
+    //    SSID 不在环境里时跳过 join,省掉 7s 死等(真机踩雷:路由对设备
+    //    不可见时每次进模式白等 10s,且全程屏幕无反馈,像"按键死了")。
+    scan_full_sync();
+    const bool ssid_visible =
+        want_sta &&
+        scan_cache_contains(ssid);
+
+    // 2) Wi-Fi 优先:凭据在、且扫描确认目标在环境里,才尝试 join。
     esp_err_t join_err = ESP_OK;
-    if (want_sta) {
+    if (ssid_visible) {
         join_err = sta_join_with(ssid, pass);
         ESP_LOGI(TAG, "sta join result: %s", esp_err_to_name(join_err));
+    } else if (want_sta) {
+        ESP_LOGW(TAG, "ssid '%s' not in scan cache, skip join", ssid);
     }
-    if (want_sta && join_err == ESP_OK) {
+    if (want_sta && join_err == ESP_OK && ssid_visible) {
         s_mode = RADAR_UPLOAD_STA;
     } else {
-        // 2) 开放热点 + 配网门户。AP 模式(有凭据但连不上)屏幕明示将走
-        //    手机数据网络;PROV 模式(无凭据)门户即首页。
         if (have_creds) s_join_failed = true;
         if (esp_wifi_get_config(WIFI_IF_AP, &s_saved_ap) != ESP_OK) {
+            radar_ble_pause(false);
             return ESP_ERR_INVALID_STATE;   // Wi-Fi 未初始化(enter 时机过早)
         }
-        // 全信道预扫描并缓存:APSTA 下 softAP 占着信道,扫描被锁在热点
-        // 信道只能看到同信道 AP(真机踩雷:手机能看到十几个,设备只扫到
-        // 2 个,目标路由永不在列)。此刻上传 AP 还没起,先切纯 STA 扫全
-        // 信道,再回 APSTA 起热点;门户 /api/scan 优先吃缓存(120s 内),
-        // 过期后合并现场扫描结果。
-        scan_full_sync();
         if (!s_ap_netif) {
             s_ap_netif = esp_netif_create_default_wifi_ap();
-            if (!s_ap_netif) return ESP_FAIL;
+            if (!s_ap_netif) {
+                radar_ble_pause(false);
+                return ESP_FAIL;
+            }
         }
         wifi_config_t up;
         memset(&up, 0, sizeof(up));
@@ -799,7 +845,10 @@ esp_err_t radar_upload_enter(void) {
         up.ap.max_connection = 4;
         up.ap.ftm_responder = false;           // 上传期间不做 FTM responder
         esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &up);
-        if (err != ESP_OK) return err;
+        if (err != ESP_OK) {
+            radar_ble_pause(false);
+            return err;
+        }
         s_ap_dirty = true;
         snprintf(s_ip, sizeof(s_ip), "192.168.4.1");
         s_mode = have_creds ? RADAR_UPLOAD_AP : RADAR_UPLOAD_PROV;
@@ -811,11 +860,6 @@ esp_err_t radar_upload_enter(void) {
     // 幂等;无批次秒回)。发生在 upload 任务上下文,不持 LVGL 锁,百毫秒级
     // 延迟可接受。
     (void)radar_capture_batch_sign_if_needed();
-
-    // BLE 扫描与 Wi-Fi 全信道扫描争射频(真机踩雷:纯 STA 扫描仍只回 2 条,
-    // 手机能看到十几个;STA join 也因此反复超时)。上传会话期间挂起 BLE,
-    // 退出时恢复(同扫盘/标定的 pause 先例)。
-    radar_ble_pause(true);
 
     const esp_err_t err = start_httpd();
     if (err != ESP_OK) {

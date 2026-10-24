@@ -713,17 +713,25 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
             // LVGL 整 10 秒(task_wdt 点名真机踩雷)。锁平衡同 LONG2
             // 先例:先解锁、早 return,不再走函数末尾的公共 unlock。
             bsp_lvgl_unlock();
-            esp_err_t ue = radar_upload_enter();
-            if (ue != ESP_OK) {
-                ESP_LOGW(TAG, "upload enter failed: %s", esp_err_to_name(ue));
-                return;
-            }
+            // 先切页面给即时反馈,再干重活:enter 里 join(7s)+全信道扫描
+            // (5s)是秒级阻塞,之前页面在 enter 返回后才切,全程黑屏无响应,
+            // 真机被判"双击无效"。mode 此时 = NONE,页面显示 Starting…,
+            // 由 1s 刷新定时器跟随进展。
             if (bsp_lvgl_lock(500)) {
                 radar_ui_show_upload();
                 if (!s_upload_ui_timer) {
                     s_upload_ui_timer = lv_timer_create(upload_ui_refresh, 1000, NULL);
                 }
                 bsp_lvgl_unlock();
+            }
+            esp_err_t ue = radar_upload_enter();
+            if (ue != ESP_OK) {
+                ESP_LOGW(TAG, "upload enter failed: %s", esp_err_to_name(ue));
+                if (bsp_lvgl_lock(500)) {
+                    radar_ui_show_main();
+                    bsp_lvgl_unlock();
+                }
+                return;
             }
             return;
         }
