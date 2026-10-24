@@ -18,6 +18,7 @@
 
 #include "radar_capture_batch.h"
 #include "radar_identity.h"
+#include "radar_ble.h"
 
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -520,17 +521,30 @@ static wifi_ap_record_t s_scan_cache[PROV_SCAN_MAX];
 static uint16_t s_scan_count;
 static int64_t s_scan_cache_ms;
 
-// AP 接口下去扫全信道再回 APSTA。阻塞 ~2s,只在进上传模式时跑一次。
+// AP 接口下去扫全信道再回 APSTA。最多 ~4s,有界自清理:残留扫描态会
+// 卡死后续扫描与 STA 连接,故拿不到结果也要 scan_stop + 取一次记录清态。
 static void scan_full_sync(void) {
     s_scan_count = 0;
     s_scan_cache_ms = 0;
     if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return;
     wifi_scan_config_t cfg = { .show_hidden = true };
-    if (esp_wifi_scan_start(&cfg, true) == ESP_OK) {
+    if (esp_wifi_scan_start(&cfg, false) == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(2500));
         uint16_t count = PROV_SCAN_MAX;
-        if (esp_wifi_scan_get_ap_records(&count, s_scan_cache) == ESP_OK) {
-            s_scan_count = count;
+        if (esp_wifi_scan_get_ap_records(&count, s_scan_cache) != ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            count = PROV_SCAN_MAX;
+            if (esp_wifi_scan_get_ap_records(&count, s_scan_cache) != ESP_OK) {
+                (void)esp_wifi_scan_stop();
+                count = PROV_SCAN_MAX;
+                if (esp_wifi_scan_get_ap_records(&count, s_scan_cache) == ESP_OK) {
+                    s_scan_count = count;
+                }
+                (void)esp_wifi_set_mode(WIFI_MODE_APSTA);
+                return;
+            }
         }
+        s_scan_count = count;
     }
     (void)esp_wifi_set_mode(WIFI_MODE_APSTA);
     s_scan_cache_ms = esp_timer_get_time() / 1000;
@@ -697,7 +711,17 @@ static esp_err_t start_httpd(void) {
     cfg.max_uri_handlers = 8;
     cfg.lru_purge_enable = true;
     esp_err_t err = httpd_start(&s_httpd, &cfg);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        // httpd_start 失败也可能留下半启动实例占住 80 端口(真机踩雷:
+        // ESP_ERR_HTTPD_TASK 后 s_httpd 非空,enter 返回失败但端口未释放,
+        // 之后每次 enter 都 listen EADDRINUSE,上行页永远进不去)。失败
+        // 必须停净:s_httpd 置空,下一次 enter 才能重来。
+        if (s_httpd) {
+            (void)httpd_stop(s_httpd);
+            s_httpd = NULL;
+        }
+        return err;
+    }
     const httpd_uri_t uris[] = {
         { "/", HTTP_GET, h_root, NULL },
         { "/up", HTTP_GET, h_up, NULL },
@@ -730,6 +754,7 @@ const char *radar_upload_sta_ssid(void) { return s_ssid; }
 
 esp_err_t radar_upload_enter(void) {
     if (s_active) return ESP_OK;
+    ESP_LOGI(TAG, "upload enter: begin");
     s_mode = RADAR_UPLOAD_NONE;
     s_ap_dirty = false;
     s_sta_joined = false;
@@ -740,7 +765,13 @@ esp_err_t radar_upload_enter(void) {
     const bool have_creds = creds_load(ssid, pass);
 
     // 1) Wi-Fi 优先:凭据在且连上 → 全程 Wi-Fi。
-    if (have_creds && sta_join_with(ssid, pass) == ESP_OK) {
+    const bool want_sta = have_creds;
+    esp_err_t join_err = ESP_OK;
+    if (want_sta) {
+        join_err = sta_join_with(ssid, pass);
+        ESP_LOGI(TAG, "sta join result: %s", esp_err_to_name(join_err));
+    }
+    if (want_sta && join_err == ESP_OK) {
         s_mode = RADAR_UPLOAD_STA;
     } else {
         // 2) 开放热点 + 配网门户。AP 模式(有凭据但连不上)屏幕明示将走
@@ -781,8 +812,14 @@ esp_err_t radar_upload_enter(void) {
     // 延迟可接受。
     (void)radar_capture_batch_sign_if_needed();
 
+    // BLE 扫描与 Wi-Fi 全信道扫描争射频(真机踩雷:纯 STA 扫描仍只回 2 条,
+    // 手机能看到十几个;STA join 也因此反复超时)。上传会话期间挂起 BLE,
+    // 退出时恢复(同扫盘/标定的 pause 先例)。
+    radar_ble_pause(true);
+
     const esp_err_t err = start_httpd();
     if (err != ESP_OK) {
+        radar_ble_pause(false);
         dns_relay_stop();
         if (s_ap_dirty) (void)esp_wifi_set_config(WIFI_IF_AP, &s_saved_ap);
         s_mode = RADAR_UPLOAD_NONE;
@@ -812,6 +849,7 @@ esp_err_t radar_upload_exit(void) {
         (void)esp_wifi_set_config(WIFI_IF_AP, &s_saved_ap);   // 恢复 FTM AP 配置
         s_ap_dirty = false;
     }
+    radar_ble_pause(false);                    // 恢复 BLE sentinel(enter 挂起)
     s_mode = RADAR_UPLOAD_NONE;
     ESP_LOGI(TAG, "upload service down (served %lu bytes)",
              (unsigned long)s_bytes_served);
