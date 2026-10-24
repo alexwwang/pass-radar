@@ -174,7 +174,13 @@ static void ip_event_handler(void *arg, esp_event_base_t base,
 // STA 连接:≤10s 拿到 IP 返回 ESP_OK,否则断开并返回错误。成功时回填
 // s_ip/s_ssid。可重入(配网任务与 enter 都可能走),靠调用方串行化。
 static esp_err_t sta_join_with(const char *ssid, const char *pass) {
-    if (!s_sta_netif) {
+    // STA_START 补投对每个 netif 生命周期只允许一次:胶合层的 start 动作
+    // 会 netif_add,而 lwIP 的 netif_add 对已在链表上的同一 struct 直接
+    // assert(真机踩雷:反复进出上行模式,二次补投 → "netif already
+    // added" 崩溃重启)。首次补投后胶合层已与接口同步,后续进模式不必
+    // 再投。
+    const bool fresh_netif = !s_sta_netif;
+    if (fresh_netif) {
         s_sta_netif = esp_netif_create_default_wifi_sta();
         if (!s_sta_netif) return ESP_FAIL;
     }
@@ -206,13 +212,16 @@ static esp_err_t sta_join_with(const char *ssid, const char *pass) {
     // STA 接口早于本 netif 启动(radar_espnow 先起 WiFi,STA_START 已在
     // 启动时发完):默认胶合层的 wifi_start(netif up + input 绑定 + rxcb)
     // 从未执行 —— 不补投则首个 RX 包打到 netif->input==NULL 直接空指针
-    // 崩(真机踩雷)。补投对胶合层幂等。
-    if (esp_event_post(WIFI_EVENT, WIFI_EVENT_STA_START, NULL, 0,
-                       pdMS_TO_TICKS(1000)) != ESP_OK) {
-        s_join_in_progress = false;
-        return ESP_FAIL;
+    // 崩(真机踩雷)。补投仅对新建 netif 做一次:胶合层 start 动作会
+    // netif_add,重复补投触发 lwIP "netif already added" 断言(真机踩雷)。
+    if (fresh_netif) {
+        if (esp_event_post(WIFI_EVENT, WIFI_EVENT_STA_START, NULL, 0,
+                           pdMS_TO_TICKS(1000)) != ESP_OK) {
+            s_join_in_progress = false;
+            return ESP_FAIL;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));   // 让胶合层先完成 netif up 再 connect
     }
-    vTaskDelay(pdMS_TO_TICKS(50));   // 让胶合层先完成 netif up 再 connect
     err = esp_wifi_connect();   // APSTA 模式下 STA 接口已启动
     s_join_in_progress = false;
     if (err != ESP_OK) return err;

@@ -263,22 +263,24 @@ static void upload_page_set_text(void) {
     case RADAR_UPLOAD_STA:
         // Wi-Fi 优先:手机与设备同一局域网,全程 Wi-Fi。
         snprintf(text, sizeof(text),
-                 "WiFi: %s\n手机同 WiFi 开\nhttp://%s\n\n全程 Wi-Fi 上传\n"
-                 "DOWN x2 = exit",
+                 "WiFi: %s\nPhone on same WiFi\nopen http://%s\n\n"
+                 "Upload over Wi-Fi\nDOWN x2 = exit",
                  radar_upload_sta_ssid(), radar_upload_ap_ip());
         break;
     case RADAR_UPLOAD_PROV:
         // 无凭据:热点即配网门户,captive portal 自动弹页。
         snprintf(text, sizeof(text),
-                 "热点: passradar-up\n手机连上后自动弹配网页\n"
-                 "(或开 http://%s)\n填 Wi-Fi 后回路由器\n等设备屏幕出现 IP\n"
-                 "DOWN x2 = exit", radar_upload_ap_ip());
+                 "Hotspot: passradar-up\nPhone joins, portal opens\n"
+                 "(or http://%s)\nEnter Wi-Fi, rejoin router\n"
+                 "wait for IP on screen\nDOWN x2 = exit",
+                 radar_upload_ap_ip());
         break;
     default:
         // AP 兜底(有凭据但连不上):明示数据网络,门户可重配。
         snprintf(text, sizeof(text),
-                 "WiFi 连接失败\n热点: passradar-up\n重配: http://%s\n"
-                 "直接上传(经数据网络):\nhttp://%s/up\nDOWN x2 = exit",
+                 "WiFi join failed\nHotspot: passradar-up\n"
+                 "Reprovision: http://%s\nDirect upload (phone data):\n"
+                 "http://%s/up\nDOWN x2 = exit",
                  radar_upload_ap_ip(), radar_upload_ap_ip());
         break;
     }
