@@ -744,6 +744,27 @@ static size_t build_sig_preimage(uint8_t out[67], uint16_t version,
     return n;
 }
 
+// 把已提交计数持久化进头部(NOR 不能原位改:擦扇区 0 重写 128B)。
+// append 只维护 RAM 计数,flash 头 committed 恒 0(UI/Worker 读到假数,
+// 真机踩雷)。放在签名前同步:上传入口是计数被消费的时刻,也避免每条
+// 记录擦写头扇区。掉电窗口 = 一次头扇区重写。
+static esp_err_t sync_committed_counter(void) {
+    radar_capture_batch_header_t header;
+    if (read_bytes(0, &header, sizeof(header)) != ESP_OK) return ESP_FAIL;
+    if (header.committed_captures == s_capture_count) return ESP_OK;
+    header.committed_captures = s_capture_count;
+    esp_err_t err = esp_partition_erase_range(s_partition, 0,
+                                              RADAR_CAPTURE_BATCH_SECTOR_SIZE);
+    if (err == ESP_OK) {
+        err = esp_partition_write(s_partition, 0, &header, sizeof(header));
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "committed counter sync failed: %s",
+                 esp_err_to_name(err));
+    }
+    return err;
+}
+
 esp_err_t radar_capture_batch_sign_if_needed(void) {
     if (!s_open) {
         esp_err_t err = radar_capture_batch_open();
@@ -759,10 +780,15 @@ esp_err_t radar_capture_batch_sign_if_needed(void) {
         header.batch_id != s_batch_id) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (sync_committed_counter() != ESP_OK) return ESP_FAIL;
 
-    // 幂等:trailer 完好且批次/签名未变则跳过。
+    // 先算当前载荷摘要。幂等判据必须包含它:批次可追加采集,只比
+    // batch/device 会拿旧签名盖新数据(真机踩雷:追加采集后上传
+    // 403 payload sha mismatch)。
+    uint8_t digest[32];
+    if (payload_digest(digest) != ESP_OK) return ESP_FAIL;
+
     radar_capture_batch_trailer_t existing;
-    bool need = true;
     if (read_bytes(trailer_offset(), &existing, sizeof(existing)) == ESP_OK &&
         existing.magic == RADAR_CAPTURE_BATCH_TRAILER_MAGIC) {
         bool sig_blank = true;
@@ -772,11 +798,13 @@ esp_err_t radar_capture_batch_sign_if_needed(void) {
                 break;
             }
         }
-        need = sig_blank || existing.batch_id != s_batch_id ||
-               memcmp(existing.device_hash, header.device_hash,
-                      sizeof(existing.device_hash)) != 0;
+        if (!sig_blank && existing.batch_id == s_batch_id &&
+            memcmp(existing.device_hash, header.device_hash,
+                   sizeof(existing.device_hash)) == 0 &&
+            memcmp(existing.payload_sha256, digest, sizeof(digest)) == 0) {
+            return ESP_OK;   // 真正幂等:内容未变
+        }
     }
-    if (!need) return ESP_OK;
 
     radar_capture_batch_trailer_t trailer = {
         .magic = RADAR_CAPTURE_BATCH_TRAILER_MAGIC,
@@ -786,7 +814,7 @@ esp_err_t radar_capture_batch_sign_if_needed(void) {
     };
     memcpy(trailer.device_hash, header.device_hash,
            sizeof(trailer.device_hash));
-    if (payload_digest(trailer.payload_sha256) != ESP_OK) return ESP_FAIL;
+    memcpy(trailer.payload_sha256, digest, sizeof(digest));
     uint8_t preimage[67];
     const size_t plen = build_sig_preimage(
         preimage, trailer.version, trailer.batch_id, trailer.device_hash,
