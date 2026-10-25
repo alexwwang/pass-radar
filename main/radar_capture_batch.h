@@ -44,9 +44,14 @@ typedef int esp_err_t;
 // Must stay identical to RADAR_CAPTURE_CODEC_MAX_PAYLOAD: one capture
 // payload is bounded by the codec's worst case (128 records x 32 bytes).
 #define RADAR_CAPTURE_BATCH_MAX_PAYLOAD 4096u
-#define RADAR_CAPTURE_BATCH_MAGIC 0x52434231u /* RCB1 */
-#define RADAR_CAPTURE_BATCH_CAPTURE_MAGIC 0x52434331u /* RCC1 */
-#define RADAR_CAPTURE_BATCH_COMMIT_MAGIC 0x52434f4bu /* RCOK */
+// 魔数按"线上字节序 = ASCII"定义:分区是小端,flash 里存 0x31 0x42…
+// 即字符串 "RCB1"。 Worker/网页/工具按字节比对(0x52 0x43 0x42 0x31),
+// 早期按 u32 值 0x52434231 定义导致线上字节是 "1BCR",任何真实上传
+// 都会在第一个 magic 门被拒(E2E 未跑通故潜伏至今;SGN1 定义本来就是
+// 对的)。改常量即完成 cutover:所有结构读写走同一 define,自洽。
+#define RADAR_CAPTURE_BATCH_MAGIC 0x31424352u /* "RCB1" */
+#define RADAR_CAPTURE_BATCH_CAPTURE_MAGIC 0x31434352u /* "RCC1" */
+#define RADAR_CAPTURE_BATCH_COMMIT_MAGIC 0x4b4f4352u /* "RCOK" */
 #define RADAR_CAPTURE_BATCH_FORMAT_VERSION 7u
 // 读取侧兼容:[3,7] 可读(头部字段布局未变);v6 起 reserved 前 16B 为
 // device_hash(源:v6=cardid 哈希,v7=MAC 哈希),v3-v5 该处为 reserved
