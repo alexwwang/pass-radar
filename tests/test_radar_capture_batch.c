@@ -41,16 +41,16 @@ int main(void) {
     CHECK(!radar_capture_batch_capacity_fits(RADAR_CAPTURE_BATCH_FLASH_SIZE,
                                              1, SIZE_MAX),
           "oversized payload capacity rejected");
-    CHECK(radar_capture_batch_commit_offset(0, 1466) == 8192,
-          "observed payload commit offset follows padded header and payload");
-    CHECK(radar_capture_batch_capture_span(1466) == 12288,
-          "observed payload span includes header/payload/commit sectors");
+    CHECK(radar_capture_batch_commit_offset(0, 1466) == 128 + 1468,
+          "v8 packed commit offset follows 128B slot + round4(payload)");
+    CHECK(radar_capture_batch_capture_span(1466) == 4096,
+          "v8 packed small-payload span is one sector");
     CHECK(radar_capture_batch_commit_offset(0, RADAR_CAPTURE_BATCH_MAX_PAYLOAD) ==
-              8192,
-          "worst payload commit offset follows padded header and payload");
+              128 + 4096,
+          "v8 worst payload commit offset follows 128B slot + payload");
     CHECK(radar_capture_batch_capture_span(RADAR_CAPTURE_BATCH_MAX_PAYLOAD) ==
-              12288,
-          "worst payload span includes header/payload/commit sectors");
+              8192,
+          "v8 worst payload span is two sectors");
     CHECK(radar_capture_batch_capacity_fits(RADAR_CAPTURE_BATCH_FLASH_SIZE,
                                             78,
                                             RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
@@ -63,15 +63,15 @@ int main(void) {
                                              161,
                                              RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
           "161 captures exceed the configured batch limit");
-    // 1 MiB dynslot carve (the declared minimum): sector-quantized spans
-    // (3 x 4 KiB per capture) bound the batch to 85 worst-case captures;
-    // begin() clamps the requested count to this instead of failing.
-    CHECK(radar_capture_batch_capacity_fits(0x100000u, 85,
+    // 1 MiB dynslot carve (the declared minimum): v8 紧凑布局最坏
+    // align(128+4096+16)=8192B/条。capacity_fits 按裸容量算 = 127 条;
+    // begin() 再减 trailer 扇区 → 实际 clamp 126(见 data 测试)。
+    CHECK(radar_capture_batch_capacity_fits(0x100000u, 127,
                                             RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
-          "85 worst-case captures fit the 1 MiB declared carve");
-    CHECK(!radar_capture_batch_capacity_fits(0x100000u, 86,
+          "127 worst-case captures fit the 1 MiB declared carve (v8)");
+    CHECK(!radar_capture_batch_capacity_fits(0x100000u, 128,
                                              RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
-          "86 worst-case captures exceed the 1 MiB declared carve");
+          "128 worst-case captures exceed the 1 MiB declared carve (v8)");
     CHECK(radar_capture_batch_capacity_fits(0x200000u, 160,
                                             RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
           "160 worst-case captures fit a 2 MiB carve");

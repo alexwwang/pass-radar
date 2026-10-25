@@ -52,12 +52,16 @@ typedef int esp_err_t;
 #define RADAR_CAPTURE_BATCH_MAGIC 0x31424352u /* "RCB1" */
 #define RADAR_CAPTURE_BATCH_CAPTURE_MAGIC 0x31434352u /* "RCC1" */
 #define RADAR_CAPTURE_BATCH_COMMIT_MAGIC 0x4b4f4352u /* "RCOK" */
-#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 7u
-// 读取侧兼容:[3,7] 可读(头部字段布局未变);v6 起 reserved 前 16B 为
+#define RADAR_CAPTURE_BATCH_FORMAT_VERSION 8u
+// 读取侧兼容:头部字段 [3,8] 可解析;记录布局 v8 起为扇区内紧凑排列,
+// 更早版本的记录必须重采(旧布局每条记录浪费 3 扇区,容量 84/85;
+// v8 小载荷 1 扇区 1 条,容量 250+,99 条轻松容纳)。
 // device_hash(源:v6=cardid 哈希,v7=MAC 哈希),v3-v5 该处为 reserved
 // (全 0 或 0xFF,读者不得依赖)。v7 起批数据区最后一扇区为 SGN1 签名
 // trailer,载荷区上界相应缩短 4 KiB。
-#define RADAR_CAPTURE_BATCH_FORMAT_VERSION_MIN 3u
+// v8 记录布局与 v3-7 不兼容(紧凑 vs 3 扇区/条):读取侧只接受 v8,
+// 旧批次由维护工具整片擦除后重采。头部字段布局本身 [3,8] 未变。
+#define RADAR_CAPTURE_BATCH_FORMAT_VERSION_MIN 8u
 // SGN1 签名 trailer(capture-sig-contract v1):Ed25519 设备签名 +
 // 载荷 SHA-256,证明批次头与载荷未被篡改(防伪造身份/防换数据)。
 #define RADAR_CAPTURE_BATCH_TRAILER_MAGIC 0x314e4753u /* SGN1 */
@@ -366,16 +370,29 @@ static inline size_t radar_capture_batch_align(size_t value) {
     return (value + mask) & ~mask;
 }
 
+// v8 紧凑记录布局:一条记录占 align(128 + payload + 16) 字节,小载荷
+// 1 扇区 1 条(旧布局头/载荷/commit 各占整扇区 = 3 扇区/条,容量被压到
+// 84)。布局:记录头@+0(固定 128B 槽,含 0xFF 填充)、载荷@+128、
+// commit@+128+round4(payload)。全部写在同一个已擦除扇区内——NOR 允许
+// 对同一擦除扇区做多次互不重叠的 byte-program(每字节只写一次),
+// write_padded 的整扇区padding是旧布局为跨扇区写commit留下的设计。
+#define RADAR_CAPTURE_BATCH_HEADER_SLOT 128u
+_Static_assert(sizeof(radar_capture_batch_capture_header_t) <=
+                   RADAR_CAPTURE_BATCH_HEADER_SLOT,
+               "capture header must fit the 128B slot");
+
+static inline size_t radar_capture_batch_round4(size_t value) {
+    return (value + 3u) & ~(size_t)3u;
+}
+
 static inline size_t radar_capture_batch_commit_offset(size_t record_offset,
                                                         size_t payload_length) {
-    // Header and payload are written as independent padded blocks.
-    size_t header_span = radar_capture_batch_align(
-        sizeof(radar_capture_batch_capture_header_t));
-    size_t payload_span = radar_capture_batch_align(payload_length);
-    if (header_span == 0 || payload_span == 0 ||
-        record_offset > SIZE_MAX - header_span ||
-        record_offset + header_span > SIZE_MAX - payload_span) return 0;
-    return record_offset + header_span + payload_span;
+    if (payload_length > SIZE_MAX - 3u) return 0;   // round4 溢出守护
+    size_t payload_slot = radar_capture_batch_round4(payload_length);
+    if (record_offset > SIZE_MAX - RADAR_CAPTURE_BATCH_HEADER_SLOT ||
+        record_offset + RADAR_CAPTURE_BATCH_HEADER_SLOT >
+            SIZE_MAX - payload_slot) return 0;
+    return record_offset + RADAR_CAPTURE_BATCH_HEADER_SLOT + payload_slot;
 }
 
 static inline size_t radar_capture_batch_data_offset(void) {
@@ -383,15 +400,13 @@ static inline size_t radar_capture_batch_data_offset(void) {
 }
 
 static inline size_t radar_capture_batch_capture_span(size_t payload_length) {
-    // Each write_padded() call occupies its own 4 KiB-aligned span. The
-    // commit marker is written after the padded payload, so aligning the
-    // combined byte count would underestimate the next record offset.
     size_t commit_offset = radar_capture_batch_commit_offset(0, payload_length);
-    size_t commit_span = radar_capture_batch_align(
-        sizeof(radar_capture_batch_commit_t));
-    if (commit_offset == 0 || commit_span == 0 ||
-        commit_offset > SIZE_MAX - commit_span) return 0;
-    return commit_offset + commit_span;
+    if (commit_offset == 0 ||
+        commit_offset > SIZE_MAX - sizeof(radar_capture_batch_commit_t)) {
+        return 0;
+    }
+    return radar_capture_batch_align(
+        commit_offset + sizeof(radar_capture_batch_commit_t));
 }
 
 static inline bool radar_capture_batch_capacity_fits(size_t capacity,

@@ -224,7 +224,7 @@ static esp_err_t scan_committed_records(void) {
             free(payload);
             return ESP_ERR_INVALID_CRC;
         }
-        err = read_bytes(offset + sizeof(capture), payload,
+        err = read_bytes(offset + RADAR_CAPTURE_BATCH_HEADER_SLOT, payload,
                          capture.payload_length);
         if (err != ESP_OK ||
             radar_capture_batch_crc32(payload, capture.payload_length) !=
@@ -348,24 +348,9 @@ static esp_err_t read_bytes(size_t offset, void *data, size_t length) {
     return esp_partition_read(s_partition, offset, data, length);
 }
 
-// Padded writes fill the alignment padding with 0xFF, never 0x00: NOR flash
-// can only clear bits (1 -> 0). The header block [offset, offset+4096) and
-// the payload block [offset+sizeof(header), offset+sizeof(header)+4096)
-// overlap when sizeof(header) < 4096, so a zero-filled header padding would
-// poison the flash bytes the payload needs to write afterwards; AND-write
-// semantics would then corrupt the payload silently and its CRC check would
-// fail on export (observed on device: append OK, export INVALID_CRC).
-// Padding with 0xFF keeps every byte writable because 0xFF & x == x.
-static esp_err_t write_padded(size_t offset, const void *data, size_t length) {
-    size_t padded = radar_capture_batch_align(length);
-    uint8_t *buffer = malloc(padded);
-    if (!buffer) return ESP_ERR_NO_MEM;
-    memset(buffer, 0xff, padded);
-    memcpy(buffer, data, length);
-    esp_err_t err = write_aligned(offset, buffer, padded);
-    free(buffer);
-    return err;
-}
+// v8 起记录写盘用"128B 槽 + 0xFF 填充合成块"(append 内联),不再整扇区
+// padding。NOR 约束不变:填充必须 0xFF(只能 1→0),否则 AND-write 会
+// 毒化同扇区内后续要写的字节。
 
 esp_err_t radar_capture_device_hash(uint8_t out[16]) {
     if (!out) return ESP_ERR_INVALID_ARG;
@@ -576,10 +561,18 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
     header.record_crc32 = radar_capture_batch_record_crc32(
         &header, payload, payload_length);
 
+    // v8:头(128B 槽)+载荷(4 对齐)合成一块写入已擦除扇区,commit 随后
+    // 同一扇区 byte-program。0xFF 填充保持"每字节只写一次"的 NOR 语义。
+    const size_t payload_slot = radar_capture_batch_round4(payload_length);
+    uint8_t *block = malloc(RADAR_CAPTURE_BATCH_HEADER_SLOT + payload_slot);
+    if (!block) return ESP_ERR_NO_MEM;
+    memset(block, 0xff, RADAR_CAPTURE_BATCH_HEADER_SLOT + payload_slot);
+    memcpy(block, &header, sizeof(header));
+    memcpy(block + RADAR_CAPTURE_BATCH_HEADER_SLOT, payload, payload_length);
     size_t offset = s_next_offset;
-    esp_err_t err = write_padded(offset, &header, sizeof(header));
-    if (err == ESP_OK) err = write_padded(offset + sizeof(header), payload,
-                                           payload_length);
+    esp_err_t err = write_aligned(offset, block,
+                                  RADAR_CAPTURE_BATCH_HEADER_SLOT + payload_slot);
+    free(block);
     if (err != ESP_OK) return err;
 
     radar_capture_batch_commit_t commit = {
@@ -590,7 +583,7 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
     };
     size_t commit_offset = radar_capture_batch_commit_offset(
         offset, payload_length);
-    err = write_padded(commit_offset, &commit, sizeof(commit));
+    err = write_aligned(commit_offset, &commit, sizeof(commit));
     if (err != ESP_OK) return err;
 
     s_capture_count++;
@@ -635,7 +628,7 @@ esp_err_t radar_capture_batch_export(radar_capture_batch_record_cb callback,
             payload = next;
             payload_capacity = header.payload_length;
         }
-        err = read_bytes(offset + sizeof(header), payload, header.payload_length);
+        err = read_bytes(offset + RADAR_CAPTURE_BATCH_HEADER_SLOT, payload, header.payload_length);
         if (err != ESP_OK ||
             radar_capture_batch_crc32(payload, header.payload_length) !=
                 header.payload_crc32) break;

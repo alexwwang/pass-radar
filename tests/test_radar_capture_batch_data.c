@@ -101,9 +101,10 @@ int main(void) {
           "occupied carve is rejected");
 
     // --- Happy path on a 1 MiB carve under AND-write semantics: begin(160)
-    // must clamp to the 84 captures that fit (3 sectors per capture; v7 trailer
-    // sector removed one capture's worth of payload space), all appends
-    // succeed, and export returns every committed record.
+    // must clamp to the 127 captures that fit (v8 紧凑布局:最坏载荷
+    // align(128+4096+16)=8192B/条,(1MiB-头扇区-trailer扇区)/8192 恰好
+    // 127;旧 3 扇区布局只有 84), all appends succeed, and export
+    // returns every committed record.
     reset_flash(1);
     CHECK(radar_capture_batch_open() == ESP_OK,
           "open resolves the capture DATA carve");
@@ -120,11 +121,11 @@ int main(void) {
         }
         appended++;
     }
-    CHECK(appended == 84, "1 MiB carve holds exactly 84 worst-case captures");
+    CHECK(appended == 127, "1 MiB carve holds exactly 127 worst-case captures (v8 packed)");
     uint32_t exported = 0;
     CHECK(radar_capture_batch_export(export_cb, &exported) == ESP_OK,
           "export succeeds on the DATA carve path");
-    CHECK(exported == 84, "every committed record exports");
+    CHECK(exported == 127, "every committed record exports");
 
     // --- v7 身份盖章:begin 把 MAC 派生 device_hash 写进头部。身份实现
     // (efuse MAC + PSA Ed25519)只在目标机构建,宿主机用确定性桩
@@ -140,8 +141,9 @@ int main(void) {
     CHECK(radar_capture_batch_begin(batch_id, 1) == ESP_OK,
           "begin stamps identity into the header");
     memcpy(&hdr, flash_memory, sizeof(hdr));
-    CHECK(hdr.magic == RADAR_CAPTURE_BATCH_MAGIC && hdr.version == 7,
-          "header magic + v7 version written");
+    CHECK(hdr.magic == RADAR_CAPTURE_BATCH_MAGIC &&
+              hdr.version == RADAR_CAPTURE_BATCH_FORMAT_VERSION,
+          "header magic + current format version written");
     CHECK(memcmp(hdr.device_hash, expect_stub, 16) == 0,
           "device_hash = MAC-derived identity (host stub)");
     CHECK(hdr.header_crc32 != 0, "header crc covers the stamped hash");
