@@ -100,17 +100,16 @@ int main(void) {
     CHECK(radar_capture_batch_open() == ESP_ERR_INVALID_STATE,
           "occupied carve is rejected");
 
-    // --- Happy path on a 1 MiB carve under AND-write semantics: begin(160)
-    // must clamp to the 127 captures that fit (v8 紧凑布局:最坏载荷
-    // align(128+4096+16)=8192B/条,(1MiB-头扇区-trailer扇区)/8192 恰好
-    // 127;旧 3 扇区布局只有 84), all appends succeed, and export
-    // returns every committed record.
+    // --- Happy path on a 1 MiB carve under AND-write semantics: begin keeps
+    // the requested count as the plan (160); the append ceiling is physical
+    // (v8 packed worst case = 127 records of 8192B), all appends succeed,
+    // and export returns every committed record.
     reset_flash(1);
     CHECK(radar_capture_batch_open() == ESP_OK,
           "open resolves the capture DATA carve");
     CHECK(radar_capture_batch_begin(batch_id, RADAR_CAPTURE_BATCH_MAX_CAPTURES) ==
               ESP_OK,
-          "begin clamps the requested count instead of failing");
+          "begin keeps the requested count as plan");
     radar_capture_batch_capture_meta_t meta;
     uint32_t appended = 0;
     while (radar_capture_batch_can_append(RADAR_CAPTURE_BATCH_MAX_PAYLOAD)) {
@@ -126,6 +125,32 @@ int main(void) {
     CHECK(radar_capture_batch_export(export_cb, &exported) == ESP_OK,
           "export succeeds on the DATA carve path");
     CHECK(exported == 127, "every committed record exports");
+
+    // --- 突破最坏情况上限:小载荷(32B)每条 1 扇区,160 条(MAX_CAPTURES)
+    // 全部落盘——expected 只是计划数,上限由物理空间决定(v7 及更早
+    // expected 被布局 clamp 到 84,第 85 次采集直接拒跑,回归守护)。
+    reset_flash(1);
+    CHECK(radar_capture_batch_open() == ESP_OK,
+          "reopen after re-begin erase");
+    CHECK(radar_capture_batch_begin(batch_id + 1u, 160) == ESP_OK,
+          "begin small-payload batch with plan 160");
+    uint8_t small[32];
+    memset(small, 0x5a, sizeof(small));
+    const uint32_t small_crc = radar_capture_batch_crc32(small, sizeof(small));
+    appended = 0;
+    while (radar_capture_batch_can_append(sizeof(small))) {
+        fill_meta(&meta, batch_id + 1u, appended + 1u);
+        if (radar_capture_batch_append(&meta, small, sizeof(small),
+                                       small_crc) != ESP_OK) {
+            break;
+        }
+        appended++;
+    }
+    CHECK(appended == 160, "160 small-payload captures all fit (breaks the 99/127 ceiling)");
+    exported = 0;
+    CHECK(radar_capture_batch_export(export_cb, &exported) == ESP_OK,
+          "export succeeds on the small-payload batch");
+    CHECK(exported == 160, "every small-payload record exports");
 
     // --- v7 身份盖章:begin 把 MAC 派生 device_hash 写进头部。身份实现
     // (efuse MAC + PSA Ed25519)只在目标机构建,宿主机用确定性桩

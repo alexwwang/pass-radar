@@ -193,7 +193,7 @@ static esp_err_t scan_committed_records(void) {
     uint8_t *payload = malloc(RADAR_CAPTURE_BATCH_MAX_PAYLOAD);
     if (!payload) return ESP_ERR_NO_MEM;
 
-    while (count < s_expected_captures &&
+    while (count < RADAR_CAPTURE_BATCH_MAX_CAPTURES &&
            offset + sizeof(capture) + sizeof(commit) <= trailer_offset()) {
         esp_err_t err = read_bytes(offset, &capture, sizeof(capture));
         if (err != ESP_OK || is_erased((const uint8_t *)&capture, sizeof(capture))) {
@@ -414,24 +414,14 @@ esp_err_t radar_capture_batch_begin(uint32_t batch_id, uint32_t expected_capture
         expected_captures > RADAR_CAPTURE_BATCH_MAX_CAPTURES) {
         return ESP_ERR_INVALID_ARG;
     }
-    // Capacity is partition-derived (dynslot carve size or legacy ota_2). Every
-    // capture costs 3 erase sectors even for small payloads (padded header,
-    // payload, commit), so a small carve cannot honor the requested count.
-    // Clamp instead of failing: capture stays usable, the batch just ends
-    // earlier. Callers pass RADAR_CAPTURE_BATCH_MAX_CAPTURES unconditionally.
-    size_t span_max =
-        radar_capture_batch_capture_span(RADAR_CAPTURE_BATCH_MAX_PAYLOAD);
-    uint32_t capacity_captures =
-        span_max != 0 ? (uint32_t)((trailer_offset() -
-                                    radar_capture_batch_data_offset()) /
-                                   span_max)
-                      : 0u;
-    if (capacity_captures == 0) return ESP_ERR_NO_MEM;
-    if (expected_captures > capacity_captures) {
-        ESP_LOGW(TAG, "batch id=%lu expected=%lu clamped to %lu (capacity=%u)",
-                 (unsigned long)batch_id, (unsigned long)expected_captures,
-                 (unsigned long)capacity_captures, (unsigned)s_data_size);
-        expected_captures = capacity_captures;
+    // expected_captures 是计划数(UI 展示用),不是可采集上限:上限由
+    // can_append 按 MAX_CAPTURES + 物理空间强制执行(v8 紧凑布局最坏
+    // 127 条、典型小载荷 250+ 条物理空间)。这里只做参数钳制与零值拒绝。
+    if (expected_captures > RADAR_CAPTURE_BATCH_MAX_CAPTURES) {
+        expected_captures = RADAR_CAPTURE_BATCH_MAX_CAPTURES;
+    }
+    if (trailer_offset() < radar_capture_batch_data_offset()) {
+        return ESP_ERR_NO_MEM;
     }
     esp_err_t err = esp_partition_erase_range(s_partition, 0,
                                                s_data_size);
@@ -469,9 +459,11 @@ esp_err_t radar_capture_batch_begin(uint32_t batch_id, uint32_t expected_capture
 
 bool radar_capture_batch_can_append(size_t max_payload_length) {
     if (!s_open || !s_active || max_payload_length == 0 ||
-        s_capture_count >= s_expected_captures ||
         s_capture_count >= RADAR_CAPTURE_BATCH_MAX_CAPTURES ||
         s_next_offset > s_data_size) return false;
+    // expected_captures 是计划数不是硬上限:追加只受 MAX_CAPTURES 与
+    // 物理空间约束(真机踩雷:v7 把 expected clamp 到 84 后采集第 85 次
+    // 直接 BATCH_SPACE 拒跑,用户想采 99 条被布局间接卡死)。
     size_t span = radar_capture_batch_capture_span(max_payload_length);
     return span != 0 && s_next_offset <= trailer_offset() &&
            span <= trailer_offset() - s_next_offset;
