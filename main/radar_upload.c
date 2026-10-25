@@ -550,6 +550,27 @@ static wifi_ap_record_t s_scan_cache[PROV_SCAN_MAX];
 static uint16_t s_scan_count;
 static int64_t s_scan_cache_ms;
 
+// STA 成功即收 softAP(开放热点 + 门户在局域网外仍广播,没道理;
+// 退出模式时恢复 APSTA,见 radar_upload_exit)。仅本服务期间生效。
+static bool s_ap_torn_down;
+
+static void ap_teardown_for_sta(void) {
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) == ESP_OK && mode != WIFI_MODE_STA) {
+        if (esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK) {
+            s_ap_torn_down = true;
+            ESP_LOGI(TAG, "softAP torn down for sta mode");
+        }
+    }
+}
+
+static void ap_restore(void) {
+    if (!s_ap_torn_down) return;
+    (void)esp_wifi_set_mode(WIFI_MODE_APSTA);
+    s_ap_torn_down = false;
+    ESP_LOGI(TAG, "softAP restored (apsta)");
+}
+
 // ---- 有界扫描:SCAN_DONE 事件 + 超时兜底 ----
 // 真机踩雷:scan_get_ap_records 在扫描未完成时会无限期阻塞,而 SCAN_DONE
 // 可能因射频状态竞争永远不来(全新配网首扫实测卡死 25min+)。一律走
@@ -755,6 +776,8 @@ static esp_err_t h_wifi(httpd_req_t *req) {
 // 起热点 + 门户兜底(PROV 无凭据首进 / AP join 失败 / STA 重配失败共用)。
 // 成功返回 ESP_OK 并置 s_mode;失败返回错误,调用方决定退出。
 static esp_err_t ap_fallback_start(bool have_creds) {
+    (void)esp_wifi_set_mode(WIFI_MODE_APSTA);   // STA 模式收过热点的路径也要能回 APSTA
+    s_ap_torn_down = false;                      // 热点回来,退出时无需再恢复
     if (esp_wifi_get_config(WIFI_IF_AP, &s_saved_ap) != ESP_OK) {
         return ESP_ERR_INVALID_STATE;   // Wi-Fi 未初始化(enter 时机过早)
     }
@@ -796,6 +819,7 @@ static void prov_task_main(void *arg) {
         if (sta_join_with(ssid, pass) == ESP_OK) {
             s_mode = RADAR_UPLOAD_STA;
             s_join_failed = false;
+            ap_teardown_for_sta();
             ESP_LOGI(TAG, "prov: joined, mode=sta ip=%s", s_ip);
         } else {
             // 重配前若已在 STA,此时已断开旧网:必须起热点兜底,否则设备失联。
@@ -905,6 +929,7 @@ esp_err_t radar_upload_enter(void) {
     }
     if (want_sta && join_err == ESP_OK && ssid_visible) {
         s_mode = RADAR_UPLOAD_STA;
+        ap_teardown_for_sta();
     } else {
         if (have_creds) s_join_failed = true;
         const esp_err_t ap_err = ap_fallback_start(have_creds);
@@ -951,6 +976,7 @@ esp_err_t radar_upload_exit(void) {
         (void)esp_wifi_set_config(WIFI_IF_AP, &s_saved_ap);   // 恢复 FTM AP 配置
         s_ap_dirty = false;
     }
+    ap_restore();                              // STA 模式收过 softAP,恢复 APSTA
     radar_ble_pause(false);                    // 恢复 BLE sentinel(enter 挂起)
     s_mode = RADAR_UPLOAD_NONE;
     ESP_LOGI(TAG, "upload service down (served %lu bytes)",
