@@ -550,8 +550,48 @@ static wifi_ap_record_t s_scan_cache[PROV_SCAN_MAX];
 static uint16_t s_scan_count;
 static int64_t s_scan_cache_ms;
 
-// AP 接口下去扫全信道再回 APSTA。最多 ~4s,有界自清理:残留扫描态会
-// 卡死后续扫描与 STA 连接,故拿不到结果也要 scan_stop + 取一次记录清态。
+// ---- 有界扫描:SCAN_DONE 事件 + 超时兜底 ----
+// 真机踩雷:scan_get_ap_records 在扫描未完成时会无限期阻塞,而 SCAN_DONE
+// 可能因射频状态竞争永远不来(全新配网首扫实测卡死 25min+)。一律走
+// 事件等待 + 超时强制 stop,绝不让调用方无限阻塞。
+
+static SemaphoreHandle_t s_scan_done_sem;
+static bool s_scan_handler_registered;
+
+static void scan_done_handler(void *arg, esp_event_base_t base, int32_t id,
+                              void *data) {
+    (void)arg; (void)base; (void)id; (void)data;
+    if (s_scan_done_sem) xSemaphoreGive(s_scan_done_sem);
+}
+
+// 启动扫描并等 SCAN_DONE;超时/启动失败返回 false(缓存按空处理)。
+static bool scan_start_and_wait(uint32_t timeout_ms) {
+    if (!s_scan_done_sem) {
+        s_scan_done_sem = xSemaphoreCreateBinary();
+        if (!s_scan_done_sem) return false;
+    }
+    if (!s_scan_handler_registered) {
+        if (esp_event_handler_instance_register(
+                WIFI_EVENT, WIFI_EVENT_SCAN_DONE, &scan_done_handler,
+                NULL, NULL) != ESP_OK) {
+            return false;
+        }
+        s_scan_handler_registered = true;
+    }
+    xSemaphoreTake(s_scan_done_sem, 0);   // 清残留
+    const esp_err_t err = esp_wifi_scan_start(NULL, false);
+    ESP_LOGI(TAG, "scan_start: %s", esp_err_to_name(err));
+    if (err != ESP_OK) return false;
+    if (xSemaphoreTake(s_scan_done_sem, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        ESP_LOGW(TAG, "scan done timeout (%ums), forcing scan_stop", (unsigned)timeout_ms);
+        (void)esp_wifi_scan_stop();
+        return false;
+    }
+    return true;
+}
+
+// AP 接口下去扫全信道再回 APSTA。最多 ~8s,有界自清理:残留扫描态会
+// 卡死后续扫描与 STA 连接,故拿不到结果也要 scan_stop 清态。
 static void scan_full_sync(void) {
     s_scan_count = 0;
     s_scan_cache_ms = 0;
@@ -561,23 +601,11 @@ static void scan_full_sync(void) {
     }
     const int64_t t0 = esp_timer_get_time();
     if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return;
-    if (esp_wifi_scan_start(NULL, false) == ESP_OK) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
+    if (scan_start_and_wait(8000)) {
         uint16_t count = PROV_SCAN_MAX;
-        if (esp_wifi_scan_get_ap_records(&count, s_scan_cache) != ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            count = PROV_SCAN_MAX;
-            if (esp_wifi_scan_get_ap_records(&count, s_scan_cache) != ESP_OK) {
-                (void)esp_wifi_scan_stop();
-                count = PROV_SCAN_MAX;
-                if (esp_wifi_scan_get_ap_records(&count, s_scan_cache) == ESP_OK) {
-                    s_scan_count = count;
-                }
-                (void)esp_wifi_set_mode(WIFI_MODE_APSTA);
-                return;
-            }
+        if (esp_wifi_scan_get_ap_records(&count, s_scan_cache) == ESP_OK) {
+            s_scan_count = count;
         }
-        s_scan_count = count;
     }
     (void)esp_wifi_set_mode(WIFI_MODE_APSTA);
     s_scan_cache_ms = esp_timer_get_time() / 1000;
@@ -627,22 +655,22 @@ static esp_err_t h_scan(httpd_req_t *req) {
 
     if (!cache_fresh) {
         // 缓存过期:现场扫一轮(APSTA,信道受限结果不全)并入缓存。
-        esp_err_t start_err = esp_wifi_scan_start(NULL, false);
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        uint16_t count = PROV_SCAN_MAX;
-        wifi_ap_record_t *records =
-            malloc((size_t)count * sizeof(wifi_ap_record_t));
-        if (records) {
-            const esp_err_t fetch =
-                esp_wifi_scan_get_ap_records(&count, records);
-            if (fetch == ESP_OK) {
-                scan_cache_merge(records, count);
-            } else {
-                ESP_LOGW(TAG, "scan fetch failed: %s",
-                         esp_err_to_name(fetch));
+        // 有界等待 SCAN_DONE,超时强制 stop——绝不在 httpd 任务里无限阻塞。
+        if (scan_start_and_wait(6000)) {
+            uint16_t count = PROV_SCAN_MAX;
+            wifi_ap_record_t *records =
+                malloc((size_t)count * sizeof(wifi_ap_record_t));
+            if (records) {
+                const esp_err_t fetch =
+                    esp_wifi_scan_get_ap_records(&count, records);
+                if (fetch == ESP_OK) {
+                    scan_cache_merge(records, count);
+                } else {
+                    ESP_LOGW(TAG, "scan fetch failed: %s",
+                             esp_err_to_name(fetch));
+                }
+                free(records);
             }
-            free(records);
-            (void)start_err;
         }
         s_scan_cache_ms = now_ms;
     }
