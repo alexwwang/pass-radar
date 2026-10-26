@@ -126,14 +126,14 @@ int main(void) {
           "export succeeds on the DATA carve path");
     CHECK(exported == 127, "every committed record exports");
 
-    // --- 突破最坏情况上限:小载荷(32B)每条 1 扇区,160 条(MAX_CAPTURES)
-    // 全部落盘——expected 只是计划数,上限由物理空间决定(v7 及更早
-    // expected 被布局 clamp 到 84,第 85 次采集直接拒跑,回归守护)。
+    // --- 无数量上限:小载荷(32B)每条占 1 扇区(4096B),1MiB 分区物理
+    // 容量 254 条全部落盘——采集次数只受存储空间限制(设计定稿回归守护;
+    // 踩雷史:v7 expected clamp 84、v8.0 残留 MAX_CAPTURES=160 条数拒采)。
     reset_flash(1);
     CHECK(radar_capture_batch_open() == ESP_OK,
           "reopen after re-begin erase");
-    CHECK(radar_capture_batch_begin(batch_id + 1u, 160) == ESP_OK,
-          "begin small-payload batch with plan 160");
+    CHECK(radar_capture_batch_begin(batch_id + 1u, 254) == ESP_OK,
+          "begin small-payload batch with plan 254");
     uint8_t small[32];
     memset(small, 0x5a, sizeof(small));
     const uint32_t small_crc = radar_capture_batch_crc32(small, sizeof(small));
@@ -146,11 +146,11 @@ int main(void) {
         }
         appended++;
     }
-    CHECK(appended == 160, "160 small-payload captures all fit (breaks the 99/127 ceiling)");
+    CHECK(appended == 254, "254 small-payload captures all fit (storage-only limit)");
     exported = 0;
     CHECK(radar_capture_batch_export(export_cb, &exported) == ESP_OK,
           "export succeeds on the small-payload batch");
-    CHECK(exported == 160, "every small-payload record exports");
+    CHECK(exported == 254, "every small-payload record exports");
 
     // --- v7 身份盖章:begin 把 MAC 派生 device_hash 写进头部。身份实现
     // (efuse MAC + PSA Ed25519)只在目标机构建,宿主机用确定性桩

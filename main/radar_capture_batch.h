@@ -38,7 +38,10 @@ typedef int esp_err_t;
 #define RADAR_CAPTURE_BATCH_FLASH_SIZE \
     (RADAR_CAPTURE_BATCH_LEGACY_SLOT2_SIZE - RADAR_CAPTURE_BATCH_NAME_SECTOR_SIZE)
 #define RADAR_CAPTURE_BATCH_SECTOR_SIZE 0x1000u
-#define RADAR_CAPTURE_BATCH_MAX_CAPTURES 160u
+// 格式 sanity 上界(头部校验、expected 钳制、scan 安全边界用),不是采集
+// 次数限制:一个 batch 的采集次数只受分区物理空间约束(1MiB 分区最坏
+// 载荷 127 次、典型载荷 253 次),代码里不再有任何按条数拒采的逻辑。
+#define RADAR_CAPTURE_BATCH_MAX_CAPTURES 65535u
 #define RADAR_CAPTURE_BATCH_MENU_SCENE_MAX 8u
 #define RADAR_CAPTURE_BATCH_MAX_RECORDS 128u
 // Must stay identical to RADAR_CAPTURE_CODEC_MAX_PAYLOAD: one capture

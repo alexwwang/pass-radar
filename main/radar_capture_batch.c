@@ -459,11 +459,10 @@ esp_err_t radar_capture_batch_begin(uint32_t batch_id, uint32_t expected_capture
 
 bool radar_capture_batch_can_append(size_t max_payload_length) {
     if (!s_open || !s_active || max_payload_length == 0 ||
-        s_capture_count >= RADAR_CAPTURE_BATCH_MAX_CAPTURES ||
         s_next_offset > s_data_size) return false;
-    // expected_captures 是计划数不是硬上限:追加只受 MAX_CAPTURES 与
-    // 物理空间约束(真机踩雷:v7 把 expected clamp 到 84 后采集第 85 次
-    // 直接 BATCH_SPACE 拒跑,用户想采 99 条被布局间接卡死)。
+    // 采集次数无数量上限,只受物理空间约束(设计定稿:batch 内采集次数
+    // 上限 = 分区剩余空间;真机踩雷史:v7 expected clamp 到 84、v8.0 残留
+    // MAX_CAPTURES=160,都把布局/常量当成了采集次数限制)。
     size_t span = radar_capture_batch_capture_span(max_payload_length);
     return span != 0 && s_next_offset <= trailer_offset() &&
            span <= trailer_offset() - s_next_offset;
@@ -507,8 +506,6 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
         meta->record_count > RADAR_CAPTURE_BATCH_MAX_RECORDS ||
         payload_length == 0 || payload_length > RADAR_CAPTURE_BATCH_MAX_PAYLOAD ||
         payload_crc32 != radar_capture_batch_crc32(payload, payload_length) ||
-        s_capture_count >= s_expected_captures ||
-        s_capture_count >= RADAR_CAPTURE_BATCH_MAX_CAPTURES ||
         s_next_offset > s_data_size ||
         radar_capture_batch_capture_span(payload_length) == 0 ||
         radar_capture_batch_capture_span(payload_length) >

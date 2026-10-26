@@ -52,17 +52,13 @@ int main(void) {
               8192,
           "v8 worst payload span is two sectors");
     CHECK(radar_capture_batch_capacity_fits(RADAR_CAPTURE_BATCH_FLASH_SIZE,
-                                            78,
+                                            334,
                                             RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
-          "78 worst-case captures fit legacy ota_2 data area");
-    CHECK(radar_capture_batch_capacity_fits(RADAR_CAPTURE_BATCH_FLASH_SIZE,
-                                            160,
-                                            RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
-          "160 worst-case captures fit legacy ota_2 capacity");
+          "334 worst-case captures fit legacy ota_2 data area");
     CHECK(!radar_capture_batch_capacity_fits(RADAR_CAPTURE_BATCH_FLASH_SIZE,
-                                             161,
+                                             335,
                                              RADAR_CAPTURE_BATCH_MAX_PAYLOAD),
-          "161 captures exceed the configured batch limit");
+          "335 captures exceed the legacy ota_2 physical capacity");
     // 1 MiB dynslot carve (the declared minimum): v8 紧凑布局最坏
     // align(128+4096+16)=8192B/条。capacity_fits 按裸容量算 = 127 条;
     // begin() 再减 trailer 扇区 → 实际 clamp 126(见 data 测试)。

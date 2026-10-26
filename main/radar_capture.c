@@ -22,8 +22,12 @@ static const char *TAG = "radar_capture";
 
 #define CAPTURE_COUNTDOWN_MS 3000u
 #define CAPTURE_SETTLE_MS 5000u
-#define CAPTURE_RUNNING_MS 30000u
+// 单次采集目标:固定 250ms 间隔采满 CAPTURE_RECORD_TARGET 条即结束。
+// 窗口 45s 是兜底(120 条 × 250ms = 30s 理论值,FTM 实际节奏 ~300ms
+// 约 36s),正常情况下先到 120 条先收工。
+#define CAPTURE_RUNNING_MS 45000u
 #define CAPTURE_SAMPLE_PERIOD_MS 250u
+#define CAPTURE_RECORD_TARGET 120u
 #define CAPTURE_MAGIC 0x52434132u /* RCA2 */
 // v2: header gains run-level FTM raw session aggregates (FORMAT_VERSION 4).
 // Old v1 blobs fail header validation and are rejected (existing path).
@@ -550,7 +554,8 @@ void radar_capture_tick(const radar_capture_observation_t *observation) {
         return;
     }
     uint32_t capture_elapsed = elapsed_ms - CAPTURE_COUNTDOWN_MS - CAPTURE_SETTLE_MS;
-    if (capture_elapsed >= CAPTURE_RUNNING_MS) {
+    if (capture_elapsed >= CAPTURE_RUNNING_MS ||
+        s_record_count >= CAPTURE_RECORD_TARGET) {
         s_phase = RADAR_CAPTURE_SUMMARY;
         s_data_valid = s_record_count > 0;
         ESP_LOGI(TAG, "CAPTURE_DONE target_m=%.1f records=%u valid=%u",
