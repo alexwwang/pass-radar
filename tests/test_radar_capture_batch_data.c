@@ -152,6 +152,23 @@ int main(void) {
           "export succeeds on the small-payload batch");
     CHECK(exported == 254, "every small-payload record exports");
 
+    // --- sync_committed_counter CRC 回归:签名路径会重写头部扇区
+    // (擦除 + 回写 committed),header_crc32 必须随内容重算。真机踩雷:
+    // 不重算 → 下次启动 header_valid_cap 拒收 → "partition is occupied"
+    // → 采集永远 ESP_ERR_INVALID_STATE。
+    reset_flash(1);
+    CHECK(radar_capture_batch_open() == ESP_OK, "reopen for sync test");
+    CHECK(radar_capture_batch_begin(batch_id + 2u, 8) == ESP_OK,
+          "begin sync-CRC test batch");
+    fill_meta(&meta, batch_id + 2u, 1u);
+    CHECK(radar_capture_batch_append(&meta, small, sizeof(small), small_crc) ==
+              ESP_OK,
+          "append one record before sign");
+    (void)radar_capture_batch_sign_if_needed();
+    CHECK(radar_capture_batch_open() == ESP_OK &&
+              radar_capture_batch_id() == batch_id + 2u,
+          "header survives committed-counter sync (CRC recomputed)");
+
     // --- v7 身份盖章:begin 把 MAC 派生 device_hash 写进头部。身份实现
     // (efuse MAC + PSA Ed25519)只在目标机构建,宿主机用确定性桩
     // (mock_radar_identity.c,0x5A*16);真机派生链由 bring-up 与云端验签

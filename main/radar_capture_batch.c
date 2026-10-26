@@ -735,6 +735,11 @@ static esp_err_t sync_committed_counter(void) {
     if (read_bytes(0, &header, sizeof(header)) != ESP_OK) return ESP_FAIL;
     if (header.committed_captures == s_capture_count) return ESP_OK;
     header.committed_captures = s_capture_count;
+    // 头部 CRC 必须随内容重算:不重算的话本次写入会把 header_crc32 变成
+    // 旧值,下一开 boot header_valid_cap 拒收 → "partition is occupied"
+    // 死锁(真机踩雷:上传签名时 sync 重写头部,之后采集永远 INVALID_STATE)。
+    header.header_crc32 = 0;
+    header.header_crc32 = radar_capture_batch_crc32(&header, sizeof(header));
     esp_err_t err = esp_partition_erase_range(s_partition, 0,
                                               RADAR_CAPTURE_BATCH_SECTOR_SIZE);
     if (err == ESP_OK) {
