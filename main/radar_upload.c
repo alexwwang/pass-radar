@@ -465,10 +465,11 @@ static esp_err_t h_info(httpd_req_t *req) {
     char device[33];
     for (int i = 0; i < 16; i++) snprintf(device + i * 2, 3, "%02x", hdr.device_hash[i]);
     device[32] = '\0';
-    char json[288];
+    char json[320];
     snprintf(json, sizeof(json),
              "{\"size\":%u,\"magic_ok\":%s,\"version\":%u,"
              "\"batch\":%lu,\"expected\":%lu,\"committed\":%lu,"
+             "\"records\":%lu,"
              "\"device\":\"%s\",\"served\":%lu}",
              (unsigned)radar_capture_batch_data_size(),
              magic_ok ? "true" : "false",
@@ -476,6 +477,7 @@ static esp_err_t h_info(httpd_req_t *req) {
              magic_ok ? (unsigned long)hdr.batch_id : 0ul,
              magic_ok ? (unsigned long)hdr.expected_captures : 0ul,
              magic_ok ? (unsigned long)hdr.committed_captures : 0ul,
+             magic_ok ? (unsigned long)radar_capture_batch_total_records() : 0ul,
              device, (unsigned long)s_bytes_served);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");

@@ -22,6 +22,7 @@ static bool s_open;
 static bool s_active;
 static uint32_t s_batch_id;
 static uint32_t s_capture_count;
+static uint32_t s_total_records;
 static size_t s_next_offset;
 
 // v7:载荷区上界(trailer 占最后一扇区,扫描/导出/裁剪都不得越过)。
@@ -188,6 +189,7 @@ static esp_err_t discard_uncommitted_tail(size_t offset) {
 static esp_err_t scan_committed_records(void) {
     size_t offset = radar_capture_batch_data_offset();
     uint32_t count = 0;
+    uint32_t total_records = 0;
     radar_capture_batch_capture_header_t capture;
     radar_capture_batch_commit_t commit;
     uint8_t *payload = malloc(RADAR_CAPTURE_BATCH_MAX_PAYLOAD);
@@ -205,6 +207,7 @@ static esp_err_t scan_committed_records(void) {
                 s_data_size) {
             err = discard_uncommitted_tail(offset);
             s_capture_count = count;
+            s_total_records = total_records;
             s_next_offset = offset;
             free(payload);
             return err;
@@ -216,6 +219,7 @@ static esp_err_t scan_committed_records(void) {
             commit.batch_id != capture.batch_id || commit.run_id != capture.run_id) {
             err = discard_uncommitted_tail(offset);
             s_capture_count = count;
+            s_total_records = total_records;
             s_next_offset = offset;
             free(payload);
             return err;
@@ -237,8 +241,10 @@ static esp_err_t scan_committed_records(void) {
         }
         offset += radar_capture_batch_capture_span(capture.payload_length);
         ++count;
+        total_records += capture.record_count;
     }
     free(payload);
+    s_total_records = total_records;
     s_capture_count = count;
     s_next_offset = offset;
     return ESP_OK;
@@ -387,6 +393,7 @@ esp_err_t radar_capture_batch_open(void) {
         s_batch_id = 0;
         s_expected_captures = 0;
         s_capture_count = 0;
+        s_total_records = 0;
         s_next_offset = radar_capture_batch_data_offset();
         return ESP_OK;
     }
@@ -451,6 +458,7 @@ esp_err_t radar_capture_batch_begin(uint32_t batch_id, uint32_t expected_capture
     s_batch_id = batch_id;
     s_expected_captures = expected_captures;
     s_capture_count = 0;
+    s_total_records = 0;
     s_next_offset = radar_capture_batch_data_offset();
     ESP_LOGI(TAG, "batch begin id=%lu expected=%lu",
              (unsigned long)batch_id, (unsigned long)expected_captures);
@@ -656,6 +664,7 @@ esp_err_t radar_capture_batch_erase(void) {
         s_batch_id = 0;
         s_expected_captures = 0;
         s_capture_count = 0;
+        s_total_records = 0;
         s_next_offset = radar_capture_batch_data_offset();
     }
     return err;
@@ -673,6 +682,7 @@ const char *radar_capture_batch_space_status(void) {
 
 uint32_t radar_capture_batch_id(void) { return s_batch_id; }
 uint32_t radar_capture_batch_count(void) { return s_capture_count; }
+uint32_t radar_capture_batch_total_records(void) { return s_total_records; }
 
 // 流式 SHA-256 载荷区 [data_offset, trailer_offset),4 KiB 分块不上大栈。
 static esp_err_t payload_digest(uint8_t out[32]) {

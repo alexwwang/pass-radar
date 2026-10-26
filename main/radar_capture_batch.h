@@ -475,6 +475,9 @@ bool radar_capture_batch_can_append(size_t max_payload_length);
 const char *radar_capture_batch_space_status(void);
 uint32_t radar_capture_batch_id(void);
 uint32_t radar_capture_batch_count(void);
+// 当前 batch 全部已提交采集的采样记录总数(各 capture.record_count 之和)。
+// 上传页用它显示"次数 · 总记录数",committed 只是次数。
+uint32_t radar_capture_batch_total_records(void);
 const char *radar_capture_scene_label(uint16_t scene_id);
 const char *radar_capture_bearing_label(uint8_t bearing);
 const char *radar_capture_environment_label(uint8_t environment);
