@@ -2,12 +2,25 @@
 
 [English](CHANGELOG.md) | 简体中文
 
-## 未发布
+## v0.3.0 (2026-10-26)
 
 ### 新增
+- 采集语义定稿(2026-10-26 设计澄清):batch 内采集次数**无任何条数上限**,只受分区物理空间约束(1MiB 分区典型载荷 254 次、最坏 127 次);`MAX_CAPTURES` 与 `expected_captures` 拒采逻辑全部移除,头部 expected 保留为计划数(钳制到格式上界 65535)。单次采集改为固定 250ms 间隔采满 **120 条**(`CAPTURE_RECORD_TARGET`,原 30s 窗口实测只出 ~99 条),45s 为兜底超时
+- `/api/capture/info` 新增 `records` 字段:batch 全部已提交采集的采样记录总数,上传页按"次数 · 总记录数"显示(不再泄露内部 expected 上界)
 - 独立安装模式上行服务（方案 A 独立通道）：`radar_upload.c` 提供手机端批次导出的迷你 HTTP 服务，主页面 DOWN 双击进入、同手势退出。**Wi-Fi 优先**：进入时复用 meta-pass 配网凭据（NVS 命名空间 `metapass`，key `sta_ssid`/`sta_pass`——设备经历过 meta-pass 配网即存在，刷 standalone 固件不清 NVS），STA 连家庭路由器（默认 STA netif + DHCP，10 秒超时）——手机与设备同一局域网，拉取 + 上传全程 Wi-Fi，零蜂窝流量。三种模式：`STA`（凭据在且连上，全程 Wi-Fi）；`PROV`（无凭据——开放热点 `passradar-up` + 内置配网门户：captive portal DNS 信号、`GET /api/scan` 扫网列表、`POST /api/wifi` 提交；成功后设备原地转 STA，门户首页 `/` 与上传 boot 页 `/up` 分离，`/up` 是知情的数据网络退路，门户页常驻链接）；`AP`（有凭据但连不上——热点兜底，屏幕明示走数据网络，门户仍可重配）。设备提供 boot 页，加载云端托管模块 `capture-upload.js`（metapass.chuanxilu.net，与 meta-pass 手机管理同构交互），暴露 `GET /api/capture/info`（批次概览含设备哈希）与分块 `GET /api/capture/read`（4096B 块、边界校验）。手机拉取 RCB1 原始区后代传 `POST /api/capture/ingest`——与 meta-pass 子固件通道汇入同一 ingest → R2 路径。配网写同一 NVS 契约，两个固件凭据互通。退出停 DNS、STA 断开（频道还原）或恢复 FTM SoftAP 配置。上行页文案经 1 秒 LVGL 定时器随模式刷新（离页自删）。另有 CLI 兜底 `tools/capture_upload.py`：esptool 读片上传，可持本地 cardid 核对设备哈希。真机验证：STA 模式局域网 IP 全套端点可用；配网门户页面、captive portal 302、扫网列表、畸形凭据拒绝均通过；凭据提交写入共享 NVS 契约并唤醒 join 任务
 - 独立安装模式上行服务真机bring-up 修复（真机测试暴露）：STA netif 创建于射频栈启动 STA 接口之后（Wi-Fi 由 ESP-NOW 拉起），默认胶合层错过 `WIFI_EVENT_STA_START`——netif 从未 up（`dhcp client start failed`），首个 RX 包打到 NULL `netif->input`（地址 0 指令访问 fault）。修复：netif/handler 创建后补投一次 `WIFI_EVENT_STA_START`（对胶合层幂等），并用 `join_in_progress` 守卫防止补投事件触发重复 `esp_wifi_connect` 与正式 `set_config` 竞争。配网任务与信号量改为同生（`prov_task_ensure`）——任务第一条指令就是 take 信号量，信号量晚建于 POST handler 等于必然 NULL 断言。`on_key` 在 `radar_upload_enter()` 期间释放 LVGL 锁（STA join 最长阻塞 10 秒，持锁会冻结渲染并触发 task_wdt）
 - 批次头 v6：头部 reserved 前 16B 改为 `device_hash[16]`——`SHA-256(cardid 前 16B)` 截断 16 字节，由 `radar_capture_device_hash()` 在 `begin()` 盖章（按分区 label `cardid` + `SUBTYPE_ANY` 解析，独立安装 partitions.csv 与子固件 carve 表同 label 不同 subtype 均命中，同一代码路径）。cardid 明文不出设备；持 cardid 者在本地重算哈希即可核对数据集来自哪台设备。无 cardid（未 provisioned 开发板）时盖确定性的全擦除输入哈希。新增公共访问器 `radar_capture_batch_data_size()` / `radar_capture_batch_data_read()`（边界校验的原始区读取，供上行服务用）
+
+### 修复
+- `sync_committed_counter` 损坏批次头:签名路径擦扇区 0 回写 committed 计数但不重算 `header_crc32`,下次启动头部校验拒收(`partition is occupied`),之后采集永远 `ESP_ERR_INVALID_STATE`(真机踩雷;已修,回写前重算 CRC,host 回归守护)
+- 云端 ingest 载荷哈希范围:Worker 曾算 `[128, len-4096)`,固件摘要按扇区对齐 `[4096, len-4096)`——真实上传必 403 payload sha mismatch。LAN 链路真机端到端已通:拉 1MiB → ingest → `verified:true`
+- Wi-Fi 共存根治(对照实验实锤根因):BLE 初始化时射频只见单信道 1-2 个网、STA join 反复超时,非硬件故障——BT 共存调度饿死 STA 扫描。DOWN 双击置 NVS 标志重启进无 BLE 启动(BT 不上电,与 meta-pass 同条件)自动进上传模式,退出清标志重启回完整固件;无 BLE 全信道扫描 15 网、join 成功
+- 任意状态可重配网:`/prov` 任意模式可达,`POST /api/wifi` 已连网也重新 join(先断旧 AP 防 connect 当漫游吞配置),失败自动热点兜底;扫描卡死修为有界 `scan_start_and_wait()`(SCAN_DONE + 硬超时)
+- 批次魔数字节序:RCB1/RCC1/RCOK 按 u32 值定义,小端落盘是 "1BCR",真实上传第一门被拒
+- 签名幂等纳入载荷摘要 + committed 计数持久化(追加采集后旧 trailer 不再被当有效)
+- Ed25519 不走 PSA:IDF 5.5.3 mbedTLS 无 Edwards 实现,vendor `orlp/ed25519`,RFC 8032 标准语义,host 测试钉死官方向量
+- v8 紧凑记录布局:头槽+载荷+commit 同扇区 byte-program(NOR 合法),小载荷 1 扇区/条,最坏容量 84→127,典型 254;`FORMAT_VERSION=8`,MIN=8 防旧布局误解析
+- 上传页交互:save/scan 提交即禁用,失败才恢复(重复提交竞态)
 
 ## v0.2.0 (2026-10-21)
 
