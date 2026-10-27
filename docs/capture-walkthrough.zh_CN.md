@@ -35,8 +35,6 @@
 
 同一环境建议采 **3~5 次**。每次可以换 DIST(距离)、BEARING(方向)或 HEIGHT(高度)再采。
 
-![扫描页](assets/capture/shot-8-sweep.png)
-
 ## 第三步:换个环境再采(可选)
 
 换个房间或到室外,重新设置 ENV 和 LINK,再采 3~5 次。

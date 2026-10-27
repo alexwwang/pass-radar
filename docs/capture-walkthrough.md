@@ -35,8 +35,6 @@ Select **START CAPTURE** in the menu and tap OK, then place the target card at t
 
 We recommend **3–5 captures** per environment. Between captures you can change DIST, BEARING or HEIGHT.
 
-![Sweep page](assets/capture/shot-8-sweep.png)
-
 ## Step 3: Another Environment (optional)
 
 Move to another room or go outside, set ENV and LINK again, and capture 3–5 more.
