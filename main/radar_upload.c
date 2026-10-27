@@ -1010,6 +1010,15 @@ bool radar_upload_boot_requested(void) {
     return e == ESP_OK && v == 1u;
 }
 
+bool radar_ui_only_requested(void) {
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open(UPLOAD_BOOT_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    const esp_err_t e = nvs_get_u8(h, "ui", &v);
+    nvs_close(h);
+    return e == ESP_OK && v == 1u;
+}
+
 void radar_upload_boot_clear(void) {
     nvs_handle_t h;
     if (nvs_open(UPLOAD_BOOT_NS, NVS_READWRITE, &h) == ESP_OK) {

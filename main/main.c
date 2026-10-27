@@ -1171,11 +1171,17 @@ void app_main(void) {
     // unsupported simulator peripherals must never block the UI task.
     // Lowest application priority: a missing/blocked radio driver must never
     // starve LVGL, the button task, or the display refresh path.
-    BaseType_t radio_task_ok = xTaskCreate(radio_init_task, "radar_radio",
-                                           8192, NULL, 1, NULL);
-    if (radio_task_ok != pdPASS) {
-        ESP_LOGW(TAG, "radio task could not start; continuing with UI only");
+    // UI-only mode (simulator/screenshots): skip BLE + radio entirely.
+    if (radar_ui_only_requested()) {
+        ESP_LOGI(TAG, "UI-only mode: BLE/radio bring-up skipped");
         radar_diag_persist_stage(RADAR_DIAG_STAGE_RUNNING, 0, -127, 0);
+    } else {
+        BaseType_t radio_task_ok = xTaskCreate(radio_init_task, "radar_radio",
+                                               8192, NULL, 1, NULL);
+        if (radio_task_ok != pdPASS) {
+            ESP_LOGW(TAG, "radio task could not start; continuing with UI only");
+            radar_diag_persist_stage(RADAR_DIAG_STAGE_RUNNING, 0, -127, 0);
+        }
     }
     // meta-pass 子固件适配:签名固件常驻,未签名试运行(重启回启动器)。
     esp_err_t mv = metapass_mark_valid();

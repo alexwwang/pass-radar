@@ -56,6 +56,9 @@ const char *radar_upload_sta_ssid(void);
 // 上传模式;退出上传页再清标志 + restart 回完整固件。
 void radar_upload_boot_request(void);      // 置标志并重启(调用不返回)
 bool radar_upload_boot_requested(void);    // 启动早期检查
+// UI-only boot (board simulators / UI screenshots): skip BLE + radio
+// bring-up entirely. Shares the upboot NVS namespace; key "ui".
+bool radar_ui_only_requested(void);
 void radar_upload_boot_clear(void);        // 清标志(退出时;随后重启)
 
 #endif
