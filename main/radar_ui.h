@@ -91,6 +91,7 @@ void radar_ui_update_capture_menu(const char *environment_name,
                                   float target_distance_m, unsigned batch_count,
                                   const char *batch_status,
                                   unsigned selected_item, bool confirm_erase,
+                                  bool confirm_drop,
                                   const char *action_status);
 void radar_ui_show_capture(float target_distance_m);
 void radar_ui_update_capture(const char *phase, float target_distance_m,

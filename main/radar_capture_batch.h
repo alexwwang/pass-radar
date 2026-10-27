@@ -478,6 +478,11 @@ uint32_t radar_capture_batch_count(void);
 // 当前 batch 全部已提交采集的采样记录总数(各 capture.record_count 之和)。
 // 上传页用它显示"次数 · 总记录数",committed 只是次数。
 uint32_t radar_capture_batch_total_records(void);
+// 删除当前 batch 最后一次已提交采集(擦尾部 + committed-1 + 头部 CRC
+// 重算;trailer 由下次进上传模式时按新载荷重签)。用户场景:采了 n 次
+// 都対、第 n+1 次采错,想保留前 n 次。只能删最后一条(append-only
+// 链)。无批次/空批次返回 ESP_ERR_INVALID_STATE。
+esp_err_t radar_capture_batch_drop_last(void);
 const char *radar_capture_scene_label(uint16_t scene_id);
 const char *radar_capture_bearing_label(uint8_t bearing);
 const char *radar_capture_environment_label(uint8_t environment);

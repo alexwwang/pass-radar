@@ -98,6 +98,7 @@ static radar_capture_context_field_t s_capture_editor_field;
 static unsigned s_capture_editor_index;
 static unsigned s_capture_menu_item;
 static bool s_capture_erase_confirm;
+static bool s_capture_drop_confirm;
 static char s_capture_action_status[32];
 
 // 内存遥测只观察 Capture 使用的 INTERNAL|8BIT 堆，不改变分配策略。
@@ -312,6 +313,7 @@ static void poll_tick(lv_timer_t *t) {
             radar_capture_batch_space_status(),
             s_capture_menu_item,
             s_capture_erase_confirm,
+            s_capture_drop_confirm,
             s_capture_action_status);
     } else if (page == RADAR_PAGE_CAPTURE) {
         radar_ftm_snapshot_t snap = {0};
@@ -826,6 +828,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     case RADAR_PAGE_CAPTURE_MENU:
         if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
             s_capture_erase_confirm = false;
+            s_capture_drop_confirm = false;
             radar_ui_show_main();
             break;
         }
@@ -842,9 +845,22 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
             }
             break;
         }
+        if (s_capture_drop_confirm) {
+            if (btn == BSP_BTN_DOWN && ev == BSP_BTN_CLICK) {
+                s_capture_drop_confirm = false;
+                snprintf(s_capture_action_status, sizeof(s_capture_action_status),
+                         "DROP CANCELLED");
+            } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+                esp_err_t err = radar_capture_batch_drop_last();
+                s_capture_drop_confirm = false;
+                snprintf(s_capture_action_status, sizeof(s_capture_action_status),
+                         "DROP LAST %s", esp_err_to_name(err));
+            }
+            break;
+        }
         if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) &&
             ev == BSP_BTN_CLICK) {
-            const unsigned item_count = 17u;
+            const unsigned item_count = 18u;
             if (btn == BSP_BTN_UP) {
                 s_capture_menu_item =
                     (s_capture_menu_item + item_count - 1u) % item_count;
@@ -969,6 +985,9 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
                 s_capture_erase_confirm = true;
                 break;
             case 15:
+                s_capture_drop_confirm = true;
+                break;
+            case 16:
                 snprintf(s_capture_action_status,
                          sizeof(s_capture_action_status), "COUNT %lu %s",
                          (unsigned long)radar_capture_batch_count(),

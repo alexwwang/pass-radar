@@ -169,6 +169,44 @@ int main(void) {
               radar_capture_batch_id() == batch_id + 2u,
           "header survives committed-counter sync (CRC recomputed)");
 
+    // --- drop_last:采错最后一次时只删尾条,保留前 n 次(用户场景)。append-only
+    // 链,删完可继续追加(run_id 复用 count+1);重启后计数/链一致。
+    reset_flash(1);
+    CHECK(radar_capture_batch_open() == ESP_OK, "reopen for drop_last test");
+    CHECK(radar_capture_batch_begin(batch_id + 3u, 8) == ESP_OK,
+          "begin drop_last test batch");
+    for (uint32_t i = 1; i <= 3; i++) {
+        fill_meta(&meta, batch_id + 3u, i);
+        CHECK(radar_capture_batch_append(&meta, small, sizeof(small), small_crc) ==
+                  ESP_OK,
+              "append before drop");
+    }
+    CHECK(radar_capture_batch_count() == 3 &&
+              radar_capture_batch_total_records() == 12,
+          "3 captures / 12 records before drop");
+    CHECK(radar_capture_batch_drop_last() == ESP_OK,
+          "drop last capture");
+    CHECK(radar_capture_batch_count() == 2 &&
+              radar_capture_batch_total_records() == 8,
+          "drop decrements count and record total");
+    fill_meta(&meta, batch_id + 3u, 3u);
+    CHECK(radar_capture_batch_append(&meta, small, sizeof(small), small_crc) ==
+              ESP_OK,
+          "append again after drop reuses run_id");
+    CHECK(radar_capture_batch_count() == 3, "count back to 3 after re-append");
+    CHECK(radar_capture_batch_drop_last() == ESP_OK &&
+              radar_capture_batch_drop_last() == ESP_OK &&
+              radar_capture_batch_drop_last() == ESP_OK,
+          "drain all three captures");
+    CHECK(radar_capture_batch_count() == 0, "count is 0 after draining");
+    CHECK(radar_capture_batch_drop_last() == ESP_ERR_INVALID_STATE,
+          "drop on empty batch rejected");
+    // 持久化:重开后头部 committed/next_offset 必须与 RAM 一致(CRC 已重算)。
+    CHECK(radar_capture_batch_open() == ESP_OK &&
+              radar_capture_batch_id() == batch_id + 3u &&
+              radar_capture_batch_count() == 0,
+          "empty batch survives reopen after drops (header CRC valid)");
+
     // --- v7 身份盖章:begin 把 MAC 派生 device_hash 写进头部。身份实现
     // (efuse MAC + PSA Ed25519)只在目标机构建,宿主机用确定性桩
     // (mock_radar_identity.c,0x5A*16);真机派生链由 bring-up 与云端验签

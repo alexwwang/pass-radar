@@ -23,6 +23,7 @@ static bool s_active;
 static uint32_t s_batch_id;
 static uint32_t s_capture_count;
 static uint32_t s_total_records;
+static size_t s_last_capture_offset;
 static size_t s_next_offset;
 
 // v7:载荷区上界(trailer 占最后一扇区,扫描/导出/裁剪都不得越过)。
@@ -239,6 +240,7 @@ static esp_err_t scan_committed_records(void) {
             free(payload);
             return ESP_ERR_INVALID_CRC;
         }
+        s_last_capture_offset = offset;
         offset += radar_capture_batch_capture_span(capture.payload_length);
         ++count;
         total_records += capture.record_count;
@@ -394,6 +396,7 @@ esp_err_t radar_capture_batch_open(void) {
         s_expected_captures = 0;
         s_capture_count = 0;
         s_total_records = 0;
+        s_last_capture_offset = 0;
         s_next_offset = radar_capture_batch_data_offset();
         return ESP_OK;
     }
@@ -459,6 +462,7 @@ esp_err_t radar_capture_batch_begin(uint32_t batch_id, uint32_t expected_capture
     s_expected_captures = expected_captures;
     s_capture_count = 0;
     s_total_records = 0;
+    s_last_capture_offset = 0;
     s_next_offset = radar_capture_batch_data_offset();
     ESP_LOGI(TAG, "batch begin id=%lu expected=%lu",
              (unsigned long)batch_id, (unsigned long)expected_captures);
@@ -583,7 +587,9 @@ esp_err_t radar_capture_batch_append(const radar_capture_batch_capture_meta_t *m
     err = write_aligned(commit_offset, &commit, sizeof(commit));
     if (err != ESP_OK) return err;
 
+    s_last_capture_offset = offset;
     s_capture_count++;
+    s_total_records += header.record_count;
     s_next_offset += radar_capture_batch_capture_span(payload_length);
     size_t free_bytes = s_data_size - s_next_offset;
     if (free_bytes * 10u <= s_data_size) {
@@ -665,6 +671,7 @@ esp_err_t radar_capture_batch_erase(void) {
         s_expected_captures = 0;
         s_capture_count = 0;
         s_total_records = 0;
+        s_last_capture_offset = 0;
         s_next_offset = radar_capture_batch_data_offset();
     }
     return err;
@@ -740,26 +747,63 @@ static size_t build_sig_preimage(uint8_t out[67], uint16_t version,
 // append 只维护 RAM 计数,flash 头 committed 恒 0(UI/Worker 读到假数,
 // 真机踩雷)。放在签名前同步:上传入口是计数被消费的时刻,也避免每条
 // 记录擦写头扇区。掉电窗口 = 一次头扇区重写。
+// 擦扇区 0 回写头部并随内容重算 header_crc32——所有头部原位重写必须走
+// 这里(踩雷史:不重算 CRC → 下 boot header_valid_cap 拒收 → occupied 死锁)。
+static esp_err_t rewrite_header_sector(radar_capture_batch_header_t *header) {
+    header->header_crc32 = 0;
+    header->header_crc32 =
+        radar_capture_batch_crc32(header, sizeof(*header));
+    esp_err_t err = esp_partition_erase_range(s_partition, 0,
+                                              RADAR_CAPTURE_BATCH_SECTOR_SIZE);
+    if (err == ESP_OK) {
+        err = esp_partition_write(s_partition, 0, header, sizeof(*header));
+    }
+    return err;
+}
+
 static esp_err_t sync_committed_counter(void) {
     radar_capture_batch_header_t header;
     if (read_bytes(0, &header, sizeof(header)) != ESP_OK) return ESP_FAIL;
     if (header.committed_captures == s_capture_count) return ESP_OK;
     header.committed_captures = s_capture_count;
-    // 头部 CRC 必须随内容重算:不重算的话本次写入会把 header_crc32 变成
-    // 旧值,下一开 boot header_valid_cap 拒收 → "partition is occupied"
-    // 死锁(真机踩雷:上传签名时 sync 重写头部,之后采集永远 INVALID_STATE)。
-    header.header_crc32 = 0;
-    header.header_crc32 = radar_capture_batch_crc32(&header, sizeof(header));
-    esp_err_t err = esp_partition_erase_range(s_partition, 0,
-                                              RADAR_CAPTURE_BATCH_SECTOR_SIZE);
-    if (err == ESP_OK) {
-        err = esp_partition_write(s_partition, 0, &header, sizeof(header));
-    }
+    esp_err_t err = rewrite_header_sector(&header);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "committed counter sync failed: %s",
                  esp_err_to_name(err));
     }
     return err;
+}
+
+esp_err_t radar_capture_batch_drop_last(void) {
+    if (!s_open || !s_active || s_capture_count == 0 ||
+        s_last_capture_offset < radar_capture_batch_data_offset()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    radar_capture_batch_capture_header_t last;
+    if (read_bytes(s_last_capture_offset, &last, sizeof(last)) != ESP_OK ||
+        last.run_id != s_capture_count || last.batch_id != s_batch_id) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGI(TAG, "batch drop_last id=%lu run=%lu records=%lu",
+             (unsigned long)s_batch_id, (unsigned long)last.run_id,
+             (unsigned long)last.record_count);
+    // 擦尾部 [last_offset, trailer_offset):最后一条 + 其后所有空闲区。
+    esp_err_t err = esp_partition_erase_range(
+        s_partition, s_last_capture_offset,
+        trailer_offset() - s_last_capture_offset);
+    if (err != ESP_OK) return err;
+    // 重新扫描重建 RAM 计数(count/next/last_offset 归位到前 n-1 条)。
+    err = scan_committed_records();
+    if (err != ESP_OK) return err;
+    // 头部 committed/next_offset 回写(helper 重算 CRC)。
+    radar_capture_batch_header_t header;
+    if (read_bytes(0, &header, sizeof(header)) != ESP_OK ||
+        header.batch_id != s_batch_id) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    header.committed_captures = s_capture_count;
+    header.next_offset = s_next_offset;
+    return rewrite_header_sector(&header);
 }
 
 esp_err_t radar_capture_batch_sign_if_needed(void) {

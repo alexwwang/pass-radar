@@ -652,12 +652,14 @@ void radar_ui_update_capture_menu(const char *environment_name,
                                   float target_distance_m, unsigned batch_count,
                                   const char *batch_status,
                                   unsigned selected_item, bool confirm_erase,
+                                  bool confirm_drop,
                                   const char *action_status) {
     if (s_page != RADAR_PAGE_CAPTURE_MENU || !s_capture_menu_label) return;
     static const char *const items[] = {
         "ENV", "LINK", "DIST", "SPACE", "ROOM SIZE", "OBSTACLE",
         "MATERIAL", "FURNITURE", "BOUNDARY", "HEIGHT", "POSE", "BEARING",
-        "START CAPTURE", "EXPORT BATCH", "NEW BATCH", "BATCH STATUS", "BACK",
+        "START CAPTURE", "EXPORT BATCH", "NEW BATCH", "DROP LAST",
+        "BATCH STATUS", "BACK",
     };
     const unsigned item_count = sizeof(items) / sizeof(items[0]);
     if (selected_item >= item_count) selected_item = 0;
@@ -665,6 +667,11 @@ void radar_ui_update_capture_menu(const char *environment_name,
     if (confirm_erase) {
         (void)snprintf(text, sizeof(text),
                        "ERASE CURRENT BATCH?\nOK YES / DOWN CANCEL\n"
+                       "COUNT %u  %s", batch_count,
+                       batch_status ? batch_status : "BATCH N/A");
+    } else if (confirm_drop) {
+        (void)snprintf(text, sizeof(text),
+                       "DROP LAST CAPTURE?\nOK YES / DOWN CANCEL\n"
                        "COUNT %u  %s", batch_count,
                        batch_status ? batch_status : "BATCH N/A");
     } else {
@@ -694,7 +701,7 @@ void radar_ui_update_capture_menu(const char *environment_name,
             (void)snprintf(menu_lines, sizeof(menu_lines),
                            "%cBOUNDARY    %s\n%cHEIGHT      %s\n%cPOSE        %s\n"
                            "%cBEARING     %s\n%cSTART CAPTURE\n%cEXPORT BATCH\n"
-                           "%cNEW BATCH\n%cBATCH STATUS\n%cBACK",
+                           "%cNEW BATCH\n%cDROP LAST\n%cBATCH STATUS\n%cBACK",
                            selected_item == 8 ? '>' : ' ',
                            boundary_name ? boundary_name : "UNKNOWN",
                            selected_item == 9 ? '>' : ' ',
@@ -707,7 +714,8 @@ void radar_ui_update_capture_menu(const char *environment_name,
                            selected_item == 13 ? '>' : ' ',
                            selected_item == 14 ? '>' : ' ',
                            selected_item == 15 ? '>' : ' ',
-                           selected_item == 16 ? '>' : ' ');
+                           selected_item == 16 ? '>' : ' ',
+                           selected_item == 17 ? '>' : ' ');
         }
         (void)snprintf(text, sizeof(text), "PAGE %u/2\n%s",
                        selected_item < 8u ? 1u : 2u, menu_lines);
