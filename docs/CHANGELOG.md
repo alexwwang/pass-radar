@@ -2,6 +2,13 @@
 
 English | [简体中文](CHANGELOG.zh_CN.md)
 
+## v0.4.0 (2026-10-27)
+
+### Added
+- DROP LAST capture: the capture menu gains a `DROP LAST` item (after `NEW BATCH`) that erases only the most recent committed capture and keeps everything before it. Flow: select DROP LAST, OK, then confirm OK (DOWN cancels). The tail region `[last_capture_offset, trailer_offset)` is erased, the RAM counters are rebuilt by re-scanning, and the batch header (committed count, next offset) is rewritten with a recomputed CRC — so a wrong capture can be discarded and immediately re-taken without losing the earlier good ones. Only the last capture is droppable (the chain is append-only); dropping repeatedly walks the batch back one capture at a time. The erased slot is reused by the next capture (run_id reclaimed). Host regression test covers: drop decrements count/record totals, re-append reclaims the slot, draining to empty then drop is rejected with `ESP_ERR_INVALID_STATE`, and state survives reopen
+- `append` now maintains `s_last_capture_offset` and `s_total_records` so the in-RAM counters stay consistent with the scan path (previously only the scan path computed them, which desynced totals after appends)
+- Internal: header rewrite after sector-0 erase is factored into `rewrite_header_sector()` (recomputes `header_crc32`), shared by the committed-counter sync and DROP LAST
+
 ## v0.3.0 (2026-10-26)
 
 ### Added

@@ -2,6 +2,13 @@
 
 [English](CHANGELOG.md) | 简体中文
 
+## v0.4.0 (2026-10-27)
+
+### 新增
+- DROP LAST 删尾采集:采集菜单新增 `DROP LAST` 项(位于 `NEW BATCH` 之后),只删除最近一次已提交采集、之前的全部保留。流程:选中 DROP LAST → OK → 确认界面 OK(DOWN 取消)。擦除尾部区间 `[last_capture_offset, trailer_offset)` 后重扫重建 RAM 计数,头部(committed 次数、next_offset)带重算 CRC 回写——采错一次可立刻丢弃重采,不丢前面好的数据。只能删最后一条(链是 append-only);反复 DROP 逐条回退。空出来的槽位由下一次采集复用(run_id 回收)。host 回归覆盖:删尾计数/记录数递减、删后重采复用槽位、排空后拒删(`ESP_ERR_INVALID_STATE`)、重开持久化
+- `append` 现在维护 `s_last_capture_offset` 与 `s_total_records`,保证 RAM 计数与 scan 路径一致(此前只有 scan 路径计算,append 后总数会失步)
+- 内部:扇区 0 擦除后的头部回写抽成 `rewrite_header_sector()`(重算 `header_crc32`),committed 计数同步与 DROP LAST 共用
+
 ## v0.3.0 (2026-10-26)
 
 ### 新增
